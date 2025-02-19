@@ -1,0 +1,24 @@
+/board-game-prototyping-app
+├── server/
+│   ├── index.js                # Main server file (WebSockets, Express setup)
+│   ├── database.js             # PostgreSQL database connection
+│   ├── sessionManager.js       # Manages session persistence
+│   ├── routes/
+│   │   ├── auth.js             # Authentication routes
+│   │   ├── projects.js         # Project CRUD & versioning
+│   │   ├── admin.js            # Admin controls
+│   │   ├── collaboration.js    # WebSocket event handling
+│   └── config.js               # Environment variables
+│
+├── client/
+│   ├── index.html              # Base HTML structure
+│   ├── js/
+│   │   ├── app.js              # Main frontend logic
+│   │   ├── canvas.js           # Handles game elements
+│   │   ├── session.js          # WebSockets & session state
+│   ├── css/
+│   │   ├── style.css           # Styling for the UI
+│
+├── .env                        # Environment variables
+├── package.json                # Node dependencies
+└── README.md                   # Project documentation
