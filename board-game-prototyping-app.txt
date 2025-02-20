@@ -2576,29 +2576,28 @@ This project aims to create an interactive board game prototyping environment th
 
 ===== ./server/database.js =====
 
+// server/database.js
 import pkg from 'pg';
 const { Pool } = pkg;
-
-import dotenv from 'dotenv';
-dotenv.config();
+import config from './config.js';
 
 const pool = new Pool({
-    user: process.env.DB_USER,
-    host: process.env.DB_HOST,
-    database: process.env.DB_NAME,
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT,
-    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+  user: config.DB_USER,
+  host: config.DB_HOST,
+  database: config.DB_NAME,
+  password: config.DB_PASSWORD,
+  port: config.DB_PORT,
+  ssl: config.DB_SSL ? { rejectUnauthorized: false } : false,
 });
 
 export const connectDB = async () => {
-    try {
-        await pool.query('SELECT 1');
-        console.log('Connected to PostgreSQL database');
-    } catch (error) {
-        console.error('Database connection error:', error);
-        process.exit(1);
-    }
+  try {
+    await pool.query('SELECT 1');
+    console.log('Connected to PostgreSQL database');
+  } catch (error) {
+    console.error('Database connection error:', error);
+    process.exit(1);
+  }
 };
 
 export default pool;
@@ -2606,138 +2605,203 @@ export default pool;
 
 ===== ./server/index.js =====
 
-import express from "express";
-import cors from "cors";
-import http from "http";
-import { WebSocketServer } from "ws";
-import path from "path";
-import { fileURLToPath } from "url";
-import authRoutes from "./routes/auth.js";
-import projectRoutes from "./routes/projects.js";
+// server/index.js
+import express from 'express';
+import cors from 'cors';
+import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { WebSocketServer } from 'ws';
 
+// Import local modules
+import authRoutes from './routes/auth.js';
+import projectRoutes from './routes/projects.js';
+import { handleWebSocketConnection } from './collaboration.js';
+import config from './config.js';
+
+// Create Express app and HTTP server
 const app = express();
 const server = http.createServer(app);
+
+// Create a WebSocket server
 const wss = new WebSocketServer({ server });
-const activeUsers = new Map();
 
 // Middleware
 app.use(express.json());
-app.use(cors({ origin: "*" }));
+app.use(cors({ origin: '*' }));
 
-// Resolve __dirname for ES modules
+// Resolve __filename and __dirname for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Serve Static Frontend Files from `/client`
-app.use(express.static(path.join(__dirname, "../client")));
+// Serve static frontend files from `/client`
+app.use(express.static(path.join(__dirname, '../client')));
 
 // API Routes
-app.use("/auth", authRoutes);
-app.use("/projects", projectRoutes);
+app.use('/auth', authRoutes);
+app.use('/projects', projectRoutes);
 
-// Serve `index.html` for the root route
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "../client/index.html"));
+// Serve index.html for root
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../client/index.html'));
 });
 
-// WebSocket Connection Handling
-wss.on("connection", (ws) => {
-  console.log("New WebSocket connection");
+// WebSocket handling
+wss.on('connection', (ws) => handleWebSocketConnection(ws, wss));
 
-  ws.on("message", (message) => {
-    try {
-      const data = JSON.parse(message);
-
-      if (data.type === "cursor-update") {
-        // Store user cursor position and track socket reference
-        activeUsers.set(data.userId, { x: data.x, y: data.y, socket: ws });
-
-        // Broadcast updated cursor positions to all clients
-        const cursorData = {
-          type: "cursor-updates",
-          cursors: Object.fromEntries(
-            [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
-          )
-        };
-
-        wss.clients.forEach(client => {
-          if (client.readyState === ws.OPEN) {
-            client.send(JSON.stringify(cursorData));
-          }
-        });
-      }
-    } catch (error) {
-      console.error("WebSocket JSON Parse Error:", error.message);
-    }
-  });
-
-  ws.on("close", () => {
-    console.log("WebSocket disconnected");
-
-    // Remove user from activeUsers when they disconnect
-    for (const [userId, userData] of activeUsers.entries()) {
-      if (userData.socket === ws) {
-        activeUsers.delete(userId);
-      }
-    }
-  });
-});
-
-// Start server
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Connect to DB first, then start the server
+(async function startServer() {
+  try {
+    const { connectDB } = await import('./database.js');
+    await connectDB();
+    server.listen(config.PORT, () => {
+      console.log(`Server running on port ${config.PORT}`);
+    });
+  } catch (err) {
+    console.error('Failed to connect to DB, exiting...', err);
+    process.exit(1);
+  }
+})();
 
 
 ===== ./server/config.js =====
 
+// server/config.js
 import dotenv from 'dotenv';
 
+// Load environment variables once
 dotenv.config();
 
 const config = {
-    PORT: process.env.PORT || 3000,
-    DB_USER: process.env.DB_USER,
-    DB_HOST: process.env.DB_HOST,
-    DB_NAME: process.env.DB_NAME,
-    DB_PASSWORD: process.env.DB_PASSWORD,
-    DB_PORT: process.env.DB_PORT,
-    DB_SSL: process.env.DB_SSL === 'true',
-    SESSION_SECRET: process.env.SESSION_SECRET,
-    JWT_SECRET: process.env.JWT_SECRET,
-    NODE_ENV: process.env.NODE_ENV || 'development',
+  PORT: process.env.PORT || 3000,
+  DB_USER: process.env.DB_USER,
+  DB_HOST: process.env.DB_HOST,
+  DB_NAME: process.env.DB_NAME,
+  DB_PASSWORD: process.env.DB_PASSWORD,
+  DB_PORT: process.env.DB_PORT,
+  DB_SSL: process.env.DB_SSL === 'true',
+  SESSION_SECRET: process.env.SESSION_SECRET,
+  JWT_SECRET: process.env.JWT_SECRET,
+  NODE_ENV: process.env.NODE_ENV || 'development',
 };
 
 export default config;
 
+
 ===== ./server/sessionManager.js =====
 
+// server/sessionManager.js
 import session from 'express-session';
 import pgSession from 'connect-pg-simple';
 import pool from './database.js';
-import dotenv from 'dotenv';
-
-dotenv.config();
+import config from './config.js';
 
 const PgSession = pgSession(session);
 
 const sessionMiddleware = session({
-    store: new PgSession({
-        pool,
-        tableName: 'user_sessions',
-    }),
-    secret: process.env.SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-        secure: process.env.NODE_ENV === 'production',
-        httpOnly: true,
-        maxAge: 1000 * 60 * 60 * 24, // 1 day
-    },
+  store: new PgSession({
+    pool,
+    tableName: 'user_sessions',
+  }),
+  secret: config.SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: config.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 1000 * 60 * 60 * 24, // 1 day
+  },
 });
 
 export default sessionMiddleware;
+
+// NOTE: Be sure to do `import sessionMiddleware from "./sessionManager.js";`
+// and then `app.use(sessionMiddleware);` in your main server file if needed.
+
+
+===== ./server/collaboration.js =====
+
+// server/collaboration.js
+import { WebSocket } from 'ws';
+
+// We'll store user cursor positions and their corresponding sockets
+const activeUsers = new Map();
+
+/**
+ * A small enumerated set of message types to avoid typos
+ */
+export const MESSAGE_TYPES = {
+  CURSOR_UPDATE: 'cursor-update',
+  CURSOR_UPDATES: 'cursor-updates'
+};
+
+/**
+ * Broadcast a message to all connected WebSocket clients.
+ */
+function broadcast(wss, data) {
+  const message = JSON.stringify(data);
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(message);
+    }
+  });
+}
+
+/**
+ * Handle a new WebSocket connection and subsequent messages.
+ */
+export function handleWebSocketConnection(ws, wss) {
+  console.log('New WebSocket connection');
+
+  ws.on('message', (rawMessage) => {
+    try {
+      const data = JSON.parse(rawMessage);
+
+      if (data.type === MESSAGE_TYPES.CURSOR_UPDATE) {
+        // Store user cursor position
+        activeUsers.set(data.userId, {
+          x: data.x,
+          y: data.y,
+          socket: ws,
+        });
+
+        /* Also store userId on ws so we can remove quickly on disconnect */
+        ws.userId = data.userId;
+
+        // Broadcast updated cursor positions to all
+        const cursorData = {
+          type: MESSAGE_TYPES.CURSOR_UPDATES,
+          cursors: Object.fromEntries(
+            [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
+          ),
+        };
+        broadcast(wss, cursorData);
+      }
+      // You can handle other event types here...
+    } catch (error) {
+      console.error('WebSocket JSON Parse Error:', error.message);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('WebSocket disconnected');
+
+    // Remove the user from activeUsers if ws.userId is set
+    if (ws.userId) {
+      activeUsers.delete(ws.userId);
+    }
+
+    // Optional: broadcast that user left
+    const cursorData = {
+      type: MESSAGE_TYPES.CURSOR_UPDATES,
+      cursors: Object.fromEntries(
+        [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
+      ),
+    };
+    broadcast(wss, cursorData);
+  });
+}
+
 
 ===== ./client/index.html =====
 

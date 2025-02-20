@@ -42,7 +42,9 @@ board-game-prototyping-app/
 │   │   ├── auth.js             # Authentication routes
 │   │   ├── projects.js         # Project CRUD & versioning
 │   │   ├── admin.js            # Admin controls
-│   │   ├── collaboration.js    # WebSocket event handling
+│   │   └── collaboration.js    # (Optional) HTTP routes for collaboration
+│   ├── ws/
+│   │   └── collaboration.js    # WebSocket event handling
 │   └── config.js               # Environment variables
 │
 ├── client/
