@@ -1,14 +1,22 @@
-body {
-    margin: 0;
-    padding: 0;
-    font-family: Arial, sans-serif;
-    background-color: #f4f4f4;
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* prevents scrolling */
 }
 
 #app {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+#gameCanvas {
+  display: block;  /* removes default inline spacing */
+  width: 100%;
+  height: 100%;
+  background-color: #222; /* example background */
 }
 
 header {
@@ -35,4 +43,24 @@ footer {
     color: white;
     text-align: center;
     padding: 10px;
+}
+
+#zoom-controls {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  background: rgba(0,0,0,0.7);
+  padding: 8px;
+  border-radius: 4px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  z-index: 10; /* ensure it's on top of the canvas */
+}
+
+
+#zoom-level {
+  min-width: 48px; /* Enough space for text like "100%" */
+  text-align: center;
 }

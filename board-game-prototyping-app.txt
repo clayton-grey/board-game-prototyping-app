@@ -2637,56 +2637,56 @@ app.use("/projects", projectRoutes);
 
 // Serve `index.html` for the root route
 app.get("/", (req, res) => {
-    res.sendFile(path.join(__dirname, "../client/index.html"));
+  res.sendFile(path.join(__dirname, "../client/index.html"));
 });
 
 // WebSocket Connection Handling
-
 wss.on("connection", (ws) => {
-    console.log("New WebSocket connection");
+  console.log("New WebSocket connection");
 
-    ws.on("message", (message) => {
-        try {
-            const data = JSON.parse(message);
+  ws.on("message", (message) => {
+    try {
+      const data = JSON.parse(message);
 
-            if (data.type === "cursor-update") {
-                // Store user cursor position
-                activeUsers.set(data.userId, { x: data.x, y: data.y });
+      if (data.type === "cursor-update") {
+        // Store user cursor position and track socket reference
+        activeUsers.set(data.userId, { x: data.x, y: data.y, socket: ws });
 
-                // Broadcast updated cursor positions to all clients
-                const cursorData = {
-                    type: "cursor-updates",
-                    cursors: Object.fromEntries(activeUsers)
-                };
+        // Broadcast updated cursor positions to all clients
+        const cursorData = {
+          type: "cursor-updates",
+          cursors: Object.fromEntries(
+            [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
+          )
+        };
 
-                wss.clients.forEach(client => {
-                    if (client.readyState === ws.OPEN) {
-                        client.send(JSON.stringify(cursorData));
-                    }
-                });
-            }
-        } catch (error) {
-            console.error("WebSocket JSON Parse Error:", error.message);
-        }
-    });
+        wss.clients.forEach(client => {
+          if (client.readyState === ws.OPEN) {
+            client.send(JSON.stringify(cursorData));
+          }
+        });
+      }
+    } catch (error) {
+      console.error("WebSocket JSON Parse Error:", error.message);
+    }
+  });
 
-    ws.on("close", () => {
-        console.log("WebSocket disconnected");
+  ws.on("close", () => {
+    console.log("WebSocket disconnected");
 
-        // Remove user from active users
-        for (const [userId, socket] of activeUsers.entries()) {
-            if (socket === ws) {
-                activeUsers.delete(userId);
-            }
-        }
-    });
+    // Remove user from activeUsers when they disconnect
+    for (const [userId, userData] of activeUsers.entries()) {
+      if (userData.socket === ws) {
+        activeUsers.delete(userId);
+      }
+    }
+  });
 });
 
-
-// Start Server
+// Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
 
 
@@ -2744,25 +2744,28 @@ export default sessionMiddleware;
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Board Game Prototyping</title>
-    <link rel="stylesheet" href="css/style.css">
-    <script src="js/session.js"></script>
-    <script src="js/canvas.js"></script>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+  <title>Board Game Prototyping</title>
+  <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
-    <div id="app">
-        <header>
-            <h1>Board Game Prototyping</h1>
-        </header>
-        <main>
-            <canvas id="gameCanvas"></canvas>
-        </main>
-        <footer>
-            <p>&copy; 2025 Board Game Prototyping</p>
-        </footer>
+  <div id="app">
+    <!-- Canvas fills #app container -->
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- Floating UI Overlay -->
+    <div id="zoom-controls">
+      <button id="zoom-out">-</button>
+      <span id="zoom-level">100%</span>
+      <button id="zoom-in">+</button>
+      <button id="frame-all">Frame</button>
     </div>
-    <script src="js/app.js"></script>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>

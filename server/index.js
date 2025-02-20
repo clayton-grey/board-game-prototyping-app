@@ -29,56 +29,54 @@ app.use("/projects", projectRoutes);
 
 // Serve `index.html` for the root route
 app.get("/", (req, res) => {
-    res.sendFile(path.join(__dirname, "../client/index.html"));
+  res.sendFile(path.join(__dirname, "../client/index.html"));
 });
 
 // WebSocket Connection Handling
 wss.on("connection", (ws) => {
-    console.log("New WebSocket connection");
+  console.log("New WebSocket connection");
 
-    ws.on("message", (message) => {
-        try {
-            const data = JSON.parse(message);
+  ws.on("message", (message) => {
+    try {
+      const data = JSON.parse(message);
 
-            if (data.type === "cursor-update") {
-                // Store user cursor position and track socket reference
-                activeUsers.set(data.userId, { x: data.x, y: data.y, socket: ws });
+      if (data.type === "cursor-update") {
+        // Store user cursor position and track socket reference
+        activeUsers.set(data.userId, { x: data.x, y: data.y, socket: ws });
 
-                // Broadcast updated cursor positions to all clients
-                const cursorData = {
-                    type: "cursor-updates",
-                    cursors: Object.fromEntries(
-                        [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
-                    )
-                };
+        // Broadcast updated cursor positions to all clients
+        const cursorData = {
+          type: "cursor-updates",
+          cursors: Object.fromEntries(
+            [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
+          )
+        };
 
-                wss.clients.forEach(client => {
-                    if (client.readyState === ws.OPEN) {
-                        client.send(JSON.stringify(cursorData));
-                    }
-                });
-            }
-        } catch (error) {
-            console.error("WebSocket JSON Parse Error:", error.message);
-        }
-    });
+        wss.clients.forEach(client => {
+          if (client.readyState === ws.OPEN) {
+            client.send(JSON.stringify(cursorData));
+          }
+        });
+      }
+    } catch (error) {
+      console.error("WebSocket JSON Parse Error:", error.message);
+    }
+  });
 
-    ws.on("close", () => {
-        console.log("WebSocket disconnected");
+  ws.on("close", () => {
+    console.log("WebSocket disconnected");
 
-        // Remove user from active users when they disconnect
-        for (const [userId, userData] of activeUsers.entries()) {
-            if (userData.socket === ws) {
-                activeUsers.delete(userId);
-            }
-        }
-    });
+    // Remove user from activeUsers when they disconnect
+    for (const [userId, userData] of activeUsers.entries()) {
+      if (userData.socket === ws) {
+        activeUsers.delete(userId);
+      }
+    }
+  });
 });
 
-
-
-// Start Server
+// Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
