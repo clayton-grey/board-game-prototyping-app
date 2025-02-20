@@ -1,17 +1,17 @@
 import os
 
-# Directories and file extensions to include
-INCLUDE_DIRS = ["client", "server"]
+# File extensions to include
 INCLUDE_EXTENSIONS = [".js", ".json", ".html", ".css", ".md", ".sql", ".yml", ".yaml", ".env"]
 
 # Output file
 OUTPUT_FILE = "board-game-prototyping-app.txt"
 
+
 def collate_project(output_file):
     with open(output_file, "w", encoding="utf-8") as out_f:
         for root, dirs, files in os.walk("."):
-            # Skip irrelevant directories
-            dirs[:] = [d for d in dirs if d in INCLUDE_DIRS]
+            # Skip hidden directories and node_modules
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "node_modules"]
 
             for file in files:
                 if any(file.endswith(ext) for ext in INCLUDE_EXTENSIONS):
@@ -21,6 +21,7 @@ def collate_project(output_file):
                         out_f.write(f.read())
 
     print(f"✅ Project successfully collated into {output_file}")
+
 
 if __name__ == "__main__":
     collate_project(OUTPUT_FILE)
