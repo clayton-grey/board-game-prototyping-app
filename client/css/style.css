@@ -1,11 +1,10 @@
-/* ./client/css/style.css */
-
+/* Basic Reset */
 html, body {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
-  overflow: hidden; /* prevents scrolling */
+  overflow: hidden;
 }
 
 #app {
@@ -14,47 +13,21 @@ html, body {
   height: 100%;
 }
 
+/* Canvas */
 #gameCanvas {
-  display: block;  /* removes default inline spacing */
+  display: block;
   width: 100%;
   height: 100%;
-  background-color: #222; /* example background */
-
-  /* Default cursor is arrow, but we'll switch to .grabbing in JS */
+  background-color: #222;
   cursor: default;
 }
-
 #gameCanvas.grabbing {
-  cursor: grabbing;       /* modern */
-  cursor: -webkit-grabbing;  /* older Chrome/Safari versions */
+  /* changed so only middle/right button uses grabbing style */
+  cursor: grabbing;
+  cursor: -webkit-grabbing;
 }
 
-header {
-  background: #333;
-  color: white;
-  padding: 10px;
-  text-align: center;
-}
-
-main {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-canvas {
-  border: 1px solid #ccc;
-  background: white;
-}
-
-footer {
-  background: #333;
-  color: white;
-  text-align: center;
-  padding: 10px;
-}
-
+/* Zoom Controls (bottom-right) */
 #zoom-controls {
   position: absolute;
   bottom: 20px;
@@ -66,21 +39,236 @@ footer {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  z-index: 10; /* ensure it's on top of the canvas */
+  z-index: 10;
 }
-
 #zoom-level {
-  min-width: 48px; /* Enough space for text like "100%" */
+  min-width: 48px;
   text-align: center;
 }
 
-/* Example styling if you'd prefer a <div> for the marquee:
-   (We are drawing in canvas code, so not strictly needed.)*/
+/* Project Info (top-left) */
+#project-info {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  z-index: 10;
+}
+#project-name {
+  font-weight: bold;
+  cursor: pointer;
+}
+#open-project-manager {
+  background: transparent;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+}
 
+/* 
+   Top-right local user row
+*/
+#user-info {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 10;
+}
+#user-name {
+  font-weight: bold;
+}
+#user-circle {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #888; /* overridden by JS */
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#user-circle-text {
+  font-weight: bold;
+}
+
+/* The login dropdown */
+#login-dropdown {
+  position: absolute;
+  top: 48px;
+  right: 0;
+  background: rgba(0,0,0,0.9);
+  padding: 8px;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 200px;
+}
+#login-dropdown.hidden {
+  display: none;
+}
+.login-row {
+  margin-bottom: 4px;
+}
+.login-row input {
+  width: 100%;
+  padding: 4px;
+  box-sizing: border-box;
+}
+.login-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.login-actions a {
+  color: #66f;
+  text-decoration: none;
+  font-size: 0.9em;
+}
+.login-actions button {
+  padding: 4px 8px;
+}
+
+/* Session users list */
+#session-users-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  position: absolute;
+  top: 70px; /* below #user-info */
+  right: 20px;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  width: 180px;
+  max-height: 140px;
+  overflow-y: auto;
+  border-radius: 4px;
+  z-index: 10;
+}
+#session-users-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.2);
+}
+#session-users-list li:last-child {
+  border-bottom: none;
+}
+.session-user-circle {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Register modal => ensure top z-index so it covers everything */
+#register-modal {
+  position: fixed;
+  top: 0; 
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999; /* ensure it's above user list */
+}
+#register-modal.hidden {
+  display: none;
+}
+#register-modal .modal-content {
+  background: #fff;
+  color: #000;
+  padding: 20px;
+  border-radius: 8px;
+  min-width: 300px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+/* Project Management modal => also high z-index */
+#project-manager-modal {
+  position: fixed;
+  top: 0; 
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+}
+#project-manager-modal.hidden {
+  display: none;
+}
+#project-manager-modal .modal-content {
+  background: #fff;
+  color: #000;
+  padding: 20px;
+  border-radius: 8px;
+  min-width: 400px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+.versions-section {
+  margin-bottom: 1em;
+}
+.versions-controls {
+  margin-bottom: 0.5em;
+  display: flex;
+  gap: 8px;
+}
+#versionsList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+#versionsList li {
+  margin: 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.danger-section {
+  margin: 1em 0;
+}
+button.danger {
+  background-color: #e10;
+  color: #fff;
+  border: none;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+#messageContainer {
+  margin-bottom: 0.5em;
+  min-height: 20px;
+  font-weight: bold;
+}
+
+/* Example marquee selection rectangle in the canvas */
 .selection-rectangle {
- position: absolute;
- border: 2px solid blue;
- background: rgba(0,0,255,0.2);
- pointer-events: none;
- z-index: 9999;
+  position: absolute;
+  border: 2px solid blue;
+  background: rgba(0,0,255,0.2);
+  pointer-events: none;
+  z-index: 9999;
 }

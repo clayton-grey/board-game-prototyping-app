@@ -1,30 +1,44 @@
 // ./server/ws/collaboration.js
 
 import { WebSocket } from 'ws';
-// server file at ./server/ws/collaboration.js
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 
 /**
- * Example in-memory server state:
- * For demonstration, we have two rectangles on the board.
- * Each element has an id, x, y, w, h, and lockedBy (indicating which user is holding it).
+ * Example in-memory server state.
+ * The serverName is "Default Project" so clients see it on first load.
  */
 const serverState = {
+  projectName: 'Default Project',
   elements: [
     { id: 1, x: 100, y: 100, w: 50, h: 50, lockedBy: null },
     { id: 2, x: 300, y: 200, w: 60, h: 80, lockedBy: null },
-  ]
+  ],
 };
 
-// Keep track of connected users/cursors from the earlier example
+/**
+ * Keep track of connected users as a Map: userId => {
+ *   userId, name, color, x, y, socket
+ * }
+ */
 const activeUsers = new Map();
 
 /**
- * Broadcast a JSON-serializable message to all connected WebSocket clients.
+ * Hash-based color assignment for consistent user colors across sessions.
  */
+function colorFromUserId(userId) {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = userId.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const r = (hash >> 16) & 0xff;
+  const g = (hash >> 8) & 0xff;
+  const b = hash & 0xff;
+  return `rgb(${r},${g},${b})`;
+}
+
 function broadcast(wss, data) {
   const message = JSON.stringify(data);
-  wss.clients.forEach(client => {
+  wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(message);
     }
@@ -32,14 +46,15 @@ function broadcast(wss, data) {
 }
 
 /**
- * Send the full element state to a single socket or broadcast to everyone.
+ * Send the full element state (elements + project name) to either one socket
+ * or broadcast to all if isBroadcast=true.
  */
 function sendElementState(wsOrWss, isBroadcast = false) {
   const payload = {
     type: MESSAGE_TYPES.ELEMENT_STATE,
-    elements: serverState.elements
+    elements: serverState.elements,
+    projectName: serverState.projectName,
   };
-
   if (isBroadcast) {
     broadcast(wsOrWss, payload);
   } else {
@@ -48,12 +63,37 @@ function sendElementState(wsOrWss, isBroadcast = false) {
 }
 
 /**
- * Handle a new WebSocket connection and subsequent messages.
+ * Broadcast list of connected users (IDs, names, colors).
  */
+function broadcastUserList(wss) {
+  const users = [...activeUsers.values()].map((u) => ({
+    userId: u.userId,
+    name: u.name,
+    color: u.color,
+  }));
+  broadcast(wss, {
+    type: MESSAGE_TYPES.SESSION_USERS,
+    users,
+  });
+}
+
+/**
+ * Broadcast all cursor positions so each client sees all cursors.
+ */
+function broadcastCursors(wss) {
+  const cursors = {};
+  for (const [uid, user] of activeUsers.entries()) {
+    cursors[uid] = { x: user.x || 0, y: user.y || 0 };
+  }
+  broadcast(wss, {
+    type: MESSAGE_TYPES.CURSOR_UPDATES,
+    cursors,
+  });
+}
+
 export function handleWebSocketConnection(ws, wss) {
   console.log('New WebSocket connection');
-
-  // On connect, send the current element state so the client can render immediately
+  // Immediately send the initial element state
   sendElementState(ws);
 
   ws.on('message', (rawMessage) => {
@@ -65,99 +105,114 @@ export function handleWebSocketConnection(ws, wss) {
       return;
     }
 
-    // Store user’s ID on the socket if it’s a cursor-update
-    if (data.type === MESSAGE_TYPES.CURSOR_UPDATE) {
-      // keep old cursor logic
-      activeUsers.set(data.userId, {
-        x: data.x,
-        y: data.y,
-        socket: ws,
-      });
-      ws.userId = data.userId;
-
-      // broadcast cursors to all
-      const cursorData = {
-        type: MESSAGE_TYPES.CURSOR_UPDATES,
-        cursors: Object.fromEntries(
-          [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
-        ),
-      };
-      broadcast(wss, cursorData);
-      return;
-    }
-
-    // Handle element-based messages
     switch (data.type) {
+      case MESSAGE_TYPES.JOIN_SESSION: {
+        const { userId, name } = data;
+        if (!userId) return;
+
+        // Derive user color from userId
+        const color = colorFromUserId(userId);
+
+        activeUsers.set(userId, {
+          userId,
+          name: name || 'Unknown',
+          color,
+          x: 0,
+          y: 0,
+          socket: ws,
+        });
+        ws.userId = userId;
+
+        broadcastUserList(wss);
+        break;
+      }
+
+      case MESSAGE_TYPES.CURSOR_UPDATE: {
+        const { userId, x, y } = data;
+        if (!userId) return;
+        const user = activeUsers.get(userId);
+        if (!user) return;
+        user.x = x;
+        user.y = y;
+
+        // Broadcast updated cursor positions
+        broadcastCursors(wss);
+
+        // For older "cursor-update" code:
+        broadcast(wss, {
+          type: 'cursor-update',
+          userId,
+          x,
+          y,
+        });
+        break;
+      }
+
       case MESSAGE_TYPES.ELEMENT_GRAB: {
-        // User wants to grab an element
         const { userId, elementId } = data;
-        const elem = serverState.elements.find(e => e.id === elementId);
-        if (!elem) return; // Invalid element
-
-        // If not locked, or locked by this same user, let them grab it
-        if (elem.lockedBy === null || elem.lockedBy === userId) {
-          elem.lockedBy = userId;
-          sendElementState(wss, true); // broadcast updated state
-        }
-        break;
-      }
-
-      case MESSAGE_TYPES.ELEMENT_MOVE: {
-        // A user is dragging an already-locked element
-        const { userId, elementId, x, y } = data;
-        const elem = serverState.elements.find(e => e.id === elementId);
-        if (!elem) return; // no such element
-        if (elem.lockedBy !== userId) return; // not allowed to move
-
-        // Update position
-        elem.x = x;
-        elem.y = y;
-        sendElementState(wss, true); // broadcast updated position
-        break;
-      }
-
-      case MESSAGE_TYPES.ELEMENT_RELEASE: {
-        // User releases the element
-        const { userId, elementId } = data;
-        const elem = serverState.elements.find(e => e.id === elementId);
+        const elem = serverState.elements.find((e) => e.id === elementId);
         if (!elem) return;
-        if (elem.lockedBy === userId) {
-          elem.lockedBy = null; // free it
+        // Lock if free or already locked by same user
+        if (!elem.lockedBy || elem.lockedBy === userId) {
+          elem.lockedBy = userId;
           sendElementState(wss, true);
         }
         break;
       }
 
+      case MESSAGE_TYPES.ELEMENT_MOVE: {
+        const { userId, elementId, x, y } = data;
+        const elem = serverState.elements.find((e) => e.id === elementId);
+        if (!elem) return;
+        if (elem.lockedBy !== userId) return; // locked by someone else => ignore
+
+        elem.x = x;
+        elem.y = y;
+        sendElementState(wss, true);
+        break;
+      }
+
+      case MESSAGE_TYPES.ELEMENT_RELEASE: {
+        const { userId, elementId } = data;
+        const elem = serverState.elements.find((e) => e.id === elementId);
+        if (!elem) return;
+        if (elem.lockedBy === userId) {
+          elem.lockedBy = null;
+          sendElementState(wss, true);
+        }
+        break;
+      }
+
+      case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
+        const { newName } = data;
+        if (typeof newName === 'string') {
+          serverState.projectName = newName;
+          broadcast(wss, {
+            type: MESSAGE_TYPES.PROJECT_NAME_CHANGE,
+            newName,
+          });
+        }
+        break;
+      }
+
       default:
-        // ignore unknown message types
+        // ignore
         break;
     }
   });
 
   ws.on('close', () => {
     console.log('WebSocket disconnected');
-
-    // Remove the user from activeUsers if ws.userId is set
-    if (ws.userId) {
-      activeUsers.delete(ws.userId);
-      // If the user was holding an element, release it
-      for (const elem of serverState.elements) {
-        if (elem.lockedBy === ws.userId) {
-          elem.lockedBy = null;
+    if (ws.userId && activeUsers.has(ws.userId)) {
+      // Release any elements locked by that user
+      for (const el of serverState.elements) {
+        if (el.lockedBy === ws.userId) {
+          el.lockedBy = null;
         }
       }
+      activeUsers.delete(ws.userId);
+      broadcastUserList(wss);
+      sendElementState(wss, true);
     }
-
-    // Broadcast cursors
-    const cursorData = {
-      type: MESSAGE_TYPES.CURSOR_UPDATES,
-      cursors: Object.fromEntries(
-        [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
-      ),
-    };
-    broadcast(wss, cursorData);
-
-    // Also broadcast new element state if any were released
-    sendElementState(wss, true);
   });
 }

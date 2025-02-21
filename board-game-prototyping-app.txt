@@ -2757,35 +2757,91 @@ dotenv.config();
 
 const router = express.Router();
 
-// User registration
+/**
+ * POST /auth/register
+ * Body: { name, email, password, confirmPassword }
+ *  - Creates a new user.
+ *  - Immediately returns a JWT token so user is "logged in" upon success.
+ */
 router.post('/register', async (req, res) => {
-    const { email, password } = req.body;
+    const { name, email, password, confirmPassword } = req.body;
+
+    if (!name || !email || !password || !confirmPassword) {
+        return res.status(400).json({ message: 'All fields are required.' });
+    }
+    if (password !== confirmPassword) {
+        return res.status(400).json({ message: 'Passwords do not match.' });
+    }
+
     try {
+        // Check if user already exists
+        const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+        if (existing.rows.length > 0) {
+            return res.status(400).json({ message: 'Email is already in use.' });
+        }
+
         const hashedPassword = await bcrypt.hash(password, 10);
+
         const result = await pool.query(
-            'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email',
-            [email, hashedPassword]
+            'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email, role',
+            [name, email, hashedPassword]
         );
-        res.status(201).json({ user: result.rows[0] });
+        const user = result.rows[0];
+
+        // Create a token
+        const token = jwt.sign(
+            { id: user.id, email: user.email, role: user.role, name: user.name },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
+        return res.status(201).json({
+            message: 'User registered successfully',
+            user,
+            token,
+        });
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: 'Server error' });
+        return res.status(500).json({ message: 'Server error' });
     }
 });
 
-// User login
+/**
+ * POST /auth/login
+ * Body: { email, password }
+ *  - Returns { user, token } if successful
+ */
 router.post('/login', async (req, res) => {
     const { email, password } = req.body;
     try {
         const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        if (result.rows.length === 0) return res.status(401).json({ message: 'Invalid credentials' });
+        if (result.rows.length === 0) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
 
         const user = result.rows[0];
         const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(401).json({ message: 'Invalid credentials' });
+        if (!isMatch) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
 
-        const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '1h' });
-        res.json({ token });
+        // Create JWT
+        const token = jwt.sign(
+            { id: user.id, email: user.email, role: user.role, name: user.name },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
+        res.json({
+            message: 'Logged in successfully',
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                role: user.role,
+            },
+            token,
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Server error' });
@@ -2797,71 +2853,237 @@ export default router;
 
 ===== ./server/routes/projects.js =====
 
+// ./server/routes/projects.js
+
 import express from "express";
 import pool from "../database.js";
 import { authenticateToken } from "../middleware/authMiddleware.js";
+import config from "../config.js";
+
+/**
+ * Helper to determine if the request user is the project owner
+ * or an admin. We'll use this for version endpoints as well.
+ */
+async function canEditProject(req, projectId) {
+  // If user is admin, allow
+  if (req.user && req.user.role === "admin") return true;
+  // Otherwise check if user is the owner
+  const result = await pool.query(
+    "SELECT owner_id FROM projects WHERE id = $1",
+    [projectId]
+  );
+  if (result.rows.length === 0) return false; // no such project
+  const ownerId = result.rows[0].owner_id;
+  return ownerId === req.user.id;
+}
 
 const router = express.Router();
 
+// ------------------------------------------
+// Standard Project CRUD
+// ------------------------------------------
+
 // Create a new project
 router.post("/", authenticateToken, async (req, res) => {
-    const { name, description } = req.body;
+  const { name, description } = req.body;
 
-    if (!req.user || !req.user.id) {
-        return res.status(400).json({ message: "User ID is missing from request" });
-    }
+  if (!req.user || !req.user.id) {
+    return res.status(400).json({ message: "User ID is missing from request" });
+  }
 
-    try {
-        const result = await pool.query(
-            "INSERT INTO projects (name, description, owner_id) VALUES ($1, $2, $3) RETURNING *",
-            [name, description, req.user.id]
-        );
-        res.status(201).json(result.rows[0]);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Server error", error: error.message });
-    }
+  try {
+    const result = await pool.query(
+      "INSERT INTO projects (name, description, owner_id) VALUES ($1, $2, $3) RETURNING *",
+      [name, description, req.user.id]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
 });
 
-// Get all projects for a user
-router.get('/', authenticateToken, async (req, res) => {
-    try {
-        const result = await pool.query('SELECT * FROM projects WHERE owner_id = $1', [req.user.id]);
-        res.json(result.rows);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
-    }
+// Get all projects for the authenticated user (owner-only in this example)
+router.get("/", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM projects WHERE owner_id = $1",
+      [req.user.id]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
-// Update a project
-router.put('/:id', authenticateToken, async (req, res) => {
-    const { id } = req.params;
-    const { name, description } = req.body;
-    try {
-        const result = await pool.query(
-            'UPDATE projects SET name = $1, description = $2 WHERE id = $3 AND owner_id = $4 RETURNING *',
-            [name, description, id, req.user.id]
-        );
-        if (result.rows.length === 0) return res.status(404).json({ message: 'Project not found' });
-        res.json(result.rows[0]);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
+// Update a project (e.g. rename)
+router.put("/:id", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  let { name, description } = req.body;
+
+  try {
+    // must be owner or admin
+    const canEdit = await canEditProject(req, id);
+    if (!canEdit) {
+      return res.status(403).json({ message: "Not authorized." });
     }
+
+    // If no description given, default to empty so query doesn't break
+    if (!description) {
+      description = "";
+    }
+
+    const result = await pool.query(
+      "UPDATE projects SET name = $1, description = $2 WHERE id = $3 RETURNING *",
+      [name, description, id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 // Delete a project
-router.delete('/:id', authenticateToken, async (req, res) => {
-    const { id } = req.params;
-    try {
-        const result = await pool.query('DELETE FROM projects WHERE id = $1 AND owner_id = $2 RETURNING *', [id, req.user.id]);
-        if (result.rows.length === 0) return res.status(404).json({ message: 'Project not found' });
-        res.json({ message: 'Project deleted' });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
+router.delete("/:id", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  try {
+    // must be owner or admin
+    const canEdit = await canEditProject(req, id);
+    if (!canEdit) {
+      return res.status(403).json({ message: "Not authorized." });
     }
+
+    const result = await pool.query(
+      "DELETE FROM projects WHERE id = $1 RETURNING *",
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+    // Here you'd also forcibly invalidate sessions using this project, if needed.
+    res.json({ message: "Project deleted" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ------------------------------------------
+// NEW: Versioning Endpoints
+// ------------------------------------------
+
+router.get("/:id/versions", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const canEdit = await canEditProject(req, id);
+    if (!canEdit) {
+      return res.status(403).json({ message: "Not authorized." });
+    }
+
+    const result = await pool.query(
+      `SELECT id, version_number, created_at
+       FROM project_versions
+       WHERE project_id = $1
+       ORDER BY version_number DESC`,
+      [id]
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error listing versions:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/:id/versions", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { project_data } = req.body || {};
+
+  try {
+    const canEdit = await canEditProject(req, id);
+    if (!canEdit) {
+      return res.status(403).json({ message: "Not authorized." });
+    }
+
+    // find max version_number
+    const maxVerResult = await pool.query(
+      `SELECT COALESCE(MAX(version_number), 0) AS max_ver
+       FROM project_versions
+       WHERE project_id = $1`,
+      [id]
+    );
+    const maxVer = maxVerResult.rows[0].max_ver || 0;
+    const newVer = maxVer + 1;
+
+    // Insert the new version row
+    const insertResult = await pool.query(
+      `INSERT INTO project_versions (project_id, version_number, project_data)
+       VALUES ($1, $2, $3)
+       RETURNING id, version_number, created_at`,
+      [id, newVer, project_data || {}]
+    );
+
+    res.status(201).json(insertResult.rows[0]);
+  } catch (error) {
+    console.error("Error creating version:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/:id/versions/:versionId/rollback", authenticateToken, async (req, res) => {
+  const { id, versionId } = req.params;
+
+  try {
+    const canEdit = await canEditProject(req, id);
+    if (!canEdit) {
+      return res.status(403).json({ message: "Not authorized." });
+    }
+
+    // Load the old version to roll back to
+    const oldVersionResult = await pool.query(
+      `SELECT id, version_number, project_data
+       FROM project_versions
+       WHERE project_id = $1
+         AND id = $2`,
+      [id, versionId]
+    );
+    if (oldVersionResult.rows.length === 0) {
+      return res.status(404).json({ message: "Version not found." });
+    }
+
+    const oldData = oldVersionResult.rows[0].project_data;
+
+    // Then create a brand-new version row representing the rollback
+    const maxVerResult = await pool.query(
+      `SELECT COALESCE(MAX(version_number), 0) AS max_ver
+       FROM project_versions
+       WHERE project_id = $1`,
+      [id]
+    );
+    const maxVer = maxVerResult.rows[0].max_ver || 0;
+    const newVer = maxVer + 1;
+
+    const rollbackInsert = await pool.query(
+      `INSERT INTO project_versions (project_id, version_number, project_data)
+       VALUES ($1, $2, $3)
+       RETURNING id, version_number, created_at`,
+      [id, newVer, oldData]
+    );
+
+    res.json({
+      message: "Project rolled back successfully",
+      newVersion: rollbackInsert.rows[0],
+    });
+  } catch (error) {
+    console.error("Error rolling back project:", error);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 export default router;
@@ -2916,85 +3138,49 @@ router.delete('/users/:id', authenticateToken, authorizeAdmin, async (req, res) 
 export default router;
 
 
-===== ./server/routes/collaboration.js =====
-
-import { WebSocketServer } from 'ws';
-
-let activeSessions = {};
-
-const setupWebSocket = (server) => {
-    const wss = new WebSocketServer({ server });
-
-    wss.on('connection', (ws) => {
-        console.log('New WebSocket connection');
-
-        ws.on('message', (message) => {
-            try {
-                const data = JSON.parse(message);
-                if (data.type === 'join-session') {
-                    if (!activeSessions[data.sessionId]) {
-                        activeSessions[data.sessionId] = new Set();
-                    }
-                    activeSessions[data.sessionId].add(ws);
-                    console.log(`User joined session ${data.sessionId}`);
-                } else if (data.type === 'canvas-update') {
-                    if (activeSessions[data.sessionId]) {
-                        activeSessions[data.sessionId].forEach(client => {
-                            if (client !== ws && client.readyState === ws.OPEN) {
-                                client.send(JSON.stringify({ type: 'canvas-update', data: data.data }));
-                            }
-                        });
-                    }
-                }
-            } catch (error) {
-                console.error('Error handling message:', error);
-            }
-        });
-
-        ws.on('close', () => {
-            Object.keys(activeSessions).forEach(sessionId => {
-                activeSessions[sessionId].delete(ws);
-                if (activeSessions[sessionId].size === 0) {
-                    delete activeSessions[sessionId];
-                }
-            });
-            console.log('WebSocket disconnected');
-        });
-    });
-};
-
-export default setupWebSocket;
-
-
 ===== ./server/ws/collaboration.js =====
 
 // ./server/ws/collaboration.js
 
 import { WebSocket } from 'ws';
-// server file at ./server/ws/collaboration.js
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 
 /**
- * Example in-memory server state:
- * For demonstration, we have two rectangles on the board.
- * Each element has an id, x, y, w, h, and lockedBy (indicating which user is holding it).
+ * Example in-memory server state.
+ * The serverName is "Default Project" so clients see it on first load.
  */
 const serverState = {
+  projectName: 'Default Project',
   elements: [
     { id: 1, x: 100, y: 100, w: 50, h: 50, lockedBy: null },
     { id: 2, x: 300, y: 200, w: 60, h: 80, lockedBy: null },
-  ]
+  ],
 };
 
-// Keep track of connected users/cursors from the earlier example
+/**
+ * Keep track of connected users as a Map: userId => {
+ *   userId, name, color, x, y, socket
+ * }
+ */
 const activeUsers = new Map();
 
 /**
- * Broadcast a JSON-serializable message to all connected WebSocket clients.
+ * Hash-based color assignment for consistent user colors across sessions.
  */
+function colorFromUserId(userId) {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = userId.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const r = (hash >> 16) & 0xff;
+  const g = (hash >> 8) & 0xff;
+  const b = hash & 0xff;
+  return `rgb(${r},${g},${b})`;
+}
+
 function broadcast(wss, data) {
   const message = JSON.stringify(data);
-  wss.clients.forEach(client => {
+  wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(message);
     }
@@ -3002,14 +3188,15 @@ function broadcast(wss, data) {
 }
 
 /**
- * Send the full element state to a single socket or broadcast to everyone.
+ * Send the full element state (elements + project name) to either one socket
+ * or broadcast to all if isBroadcast=true.
  */
 function sendElementState(wsOrWss, isBroadcast = false) {
   const payload = {
     type: MESSAGE_TYPES.ELEMENT_STATE,
-    elements: serverState.elements
+    elements: serverState.elements,
+    projectName: serverState.projectName,
   };
-
   if (isBroadcast) {
     broadcast(wsOrWss, payload);
   } else {
@@ -3018,12 +3205,37 @@ function sendElementState(wsOrWss, isBroadcast = false) {
 }
 
 /**
- * Handle a new WebSocket connection and subsequent messages.
+ * Broadcast list of connected users (IDs, names, colors).
  */
+function broadcastUserList(wss) {
+  const users = [...activeUsers.values()].map((u) => ({
+    userId: u.userId,
+    name: u.name,
+    color: u.color,
+  }));
+  broadcast(wss, {
+    type: MESSAGE_TYPES.SESSION_USERS,
+    users,
+  });
+}
+
+/**
+ * Broadcast all cursor positions so each client sees all cursors.
+ */
+function broadcastCursors(wss) {
+  const cursors = {};
+  for (const [uid, user] of activeUsers.entries()) {
+    cursors[uid] = { x: user.x || 0, y: user.y || 0 };
+  }
+  broadcast(wss, {
+    type: MESSAGE_TYPES.CURSOR_UPDATES,
+    cursors,
+  });
+}
+
 export function handleWebSocketConnection(ws, wss) {
   console.log('New WebSocket connection');
-
-  // On connect, send the current element state so the client can render immediately
+  // Immediately send the initial element state
   sendElementState(ws);
 
   ws.on('message', (rawMessage) => {
@@ -3035,121 +3247,135 @@ export function handleWebSocketConnection(ws, wss) {
       return;
     }
 
-    // Store user’s ID on the socket if it’s a cursor-update
-    if (data.type === MESSAGE_TYPES.CURSOR_UPDATE) {
-      // keep old cursor logic
-      activeUsers.set(data.userId, {
-        x: data.x,
-        y: data.y,
-        socket: ws,
-      });
-      ws.userId = data.userId;
-
-      // broadcast cursors to all
-      const cursorData = {
-        type: MESSAGE_TYPES.CURSOR_UPDATES,
-        cursors: Object.fromEntries(
-          [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
-        ),
-      };
-      broadcast(wss, cursorData);
-      return;
-    }
-
-    // Handle element-based messages
     switch (data.type) {
+      case MESSAGE_TYPES.JOIN_SESSION: {
+        const { userId, name } = data;
+        if (!userId) return;
+
+        // Derive user color from userId
+        const color = colorFromUserId(userId);
+
+        activeUsers.set(userId, {
+          userId,
+          name: name || 'Unknown',
+          color,
+          x: 0,
+          y: 0,
+          socket: ws,
+        });
+        ws.userId = userId;
+
+        broadcastUserList(wss);
+        break;
+      }
+
+      case MESSAGE_TYPES.CURSOR_UPDATE: {
+        const { userId, x, y } = data;
+        if (!userId) return;
+        const user = activeUsers.get(userId);
+        if (!user) return;
+        user.x = x;
+        user.y = y;
+
+        // Broadcast updated cursor positions
+        broadcastCursors(wss);
+
+        // For older "cursor-update" code:
+        broadcast(wss, {
+          type: 'cursor-update',
+          userId,
+          x,
+          y,
+        });
+        break;
+      }
+
       case MESSAGE_TYPES.ELEMENT_GRAB: {
-        // User wants to grab an element
         const { userId, elementId } = data;
-        const elem = serverState.elements.find(e => e.id === elementId);
-        if (!elem) return; // Invalid element
-
-        // If not locked, or locked by this same user, let them grab it
-        if (elem.lockedBy === null || elem.lockedBy === userId) {
-          elem.lockedBy = userId;
-          sendElementState(wss, true); // broadcast updated state
-        }
-        break;
-      }
-
-      case MESSAGE_TYPES.ELEMENT_MOVE: {
-        // A user is dragging an already-locked element
-        const { userId, elementId, x, y } = data;
-        const elem = serverState.elements.find(e => e.id === elementId);
-        if (!elem) return; // no such element
-        if (elem.lockedBy !== userId) return; // not allowed to move
-
-        // Update position
-        elem.x = x;
-        elem.y = y;
-        sendElementState(wss, true); // broadcast updated position
-        break;
-      }
-
-      case MESSAGE_TYPES.ELEMENT_RELEASE: {
-        // User releases the element
-        const { userId, elementId } = data;
-        const elem = serverState.elements.find(e => e.id === elementId);
+        const elem = serverState.elements.find((e) => e.id === elementId);
         if (!elem) return;
-        if (elem.lockedBy === userId) {
-          elem.lockedBy = null; // free it
+        // Lock if free or already locked by same user
+        if (!elem.lockedBy || elem.lockedBy === userId) {
+          elem.lockedBy = userId;
           sendElementState(wss, true);
         }
         break;
       }
 
+      case MESSAGE_TYPES.ELEMENT_MOVE: {
+        const { userId, elementId, x, y } = data;
+        const elem = serverState.elements.find((e) => e.id === elementId);
+        if (!elem) return;
+        if (elem.lockedBy !== userId) return; // locked by someone else => ignore
+
+        elem.x = x;
+        elem.y = y;
+        sendElementState(wss, true);
+        break;
+      }
+
+      case MESSAGE_TYPES.ELEMENT_RELEASE: {
+        const { userId, elementId } = data;
+        const elem = serverState.elements.find((e) => e.id === elementId);
+        if (!elem) return;
+        if (elem.lockedBy === userId) {
+          elem.lockedBy = null;
+          sendElementState(wss, true);
+        }
+        break;
+      }
+
+      case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
+        const { newName } = data;
+        if (typeof newName === 'string') {
+          serverState.projectName = newName;
+          broadcast(wss, {
+            type: MESSAGE_TYPES.PROJECT_NAME_CHANGE,
+            newName,
+          });
+        }
+        break;
+      }
+
       default:
-        // ignore unknown message types
+        // ignore
         break;
     }
   });
 
   ws.on('close', () => {
     console.log('WebSocket disconnected');
-
-    // Remove the user from activeUsers if ws.userId is set
-    if (ws.userId) {
-      activeUsers.delete(ws.userId);
-      // If the user was holding an element, release it
-      for (const elem of serverState.elements) {
-        if (elem.lockedBy === ws.userId) {
-          elem.lockedBy = null;
+    if (ws.userId && activeUsers.has(ws.userId)) {
+      // Release any elements locked by that user
+      for (const el of serverState.elements) {
+        if (el.lockedBy === ws.userId) {
+          el.lockedBy = null;
         }
       }
+      activeUsers.delete(ws.userId);
+      broadcastUserList(wss);
+      sendElementState(wss, true);
     }
-
-    // Broadcast cursors
-    const cursorData = {
-      type: MESSAGE_TYPES.CURSOR_UPDATES,
-      cursors: Object.fromEntries(
-        [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
-      ),
-    };
-    broadcast(wss, cursorData);
-
-    // Also broadcast new element state if any were released
-    sendElementState(wss, true);
   });
 }
 
 
 ===== ./shared/wsMessageTypes.js =====
 
-// ./client/js/wsMessageTypes.js
+// ./shared/wsMessageTypes.js
 
-/**
- * Centralized list of WebSocket message types to avoid typos.
- * You can import this file in both client and server if desired.
- */
 export const MESSAGE_TYPES = {
+  JOIN_SESSION: 'join-session',
   CURSOR_UPDATE: 'cursor-update',
   CURSOR_UPDATES: 'cursor-updates',
-  
+
   ELEMENT_GRAB: 'element-grab',
   ELEMENT_MOVE: 'element-move',
   ELEMENT_RELEASE: 'element-release',
-  
   ELEMENT_STATE: 'element-state',
+
+  PROJECT_NAME_CHANGE: 'project-name-change',
+  SESSION_USERS: 'session-users',
 };
 
 
@@ -3168,10 +3394,105 @@ export const MESSAGE_TYPES = {
 </head>
 <body>
   <div id="app">
-    <!-- Canvas fills #app container -->
+    <!-- TOP-LEFT: Project Info -->
+    <div id="project-info">
+      <!-- No more "Untitled Project" hard-coded; let the server-sent project name show -->
+      <span id="project-name" title="Click to edit project name">Test</span>
+      <button id="open-project-manager" title="Manage Project">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          fill="currentColor"
+          viewBox="0 0 16 16"
+        >
+          <path d="M3 3h10v10H3V3zm9 9V4H4v8h8z"/>
+          <path d="M8 8.5l-4 2V6l4 2.5l4-2.5v4.5l-4-2z"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- TOP-RIGHT: Local user info -->
+    <div id="user-info">
+      <span id="user-name">Anonymous</span>
+      <div id="user-circle">
+        <span id="user-circle-text">?</span>
+      </div>
+
+      <!-- Login popover if not logged in -->
+      <div id="login-dropdown" class="hidden">
+        <form id="loginForm">
+          <div class="login-row">
+            <input type="email" id="loginEmail" placeholder="Email" required />
+          </div>
+          <div class="login-row">
+            <input type="password" id="loginPassword" placeholder="Password" required />
+          </div>
+          <div class="login-actions">
+            <a href="#" id="registerLink">Register</a>
+            <button type="submit">Login</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- List of session users (below user info) -->
+    <ul id="session-users-list"></ul>
+
+    <!-- REGISTER MODAL -->
+    <div id="register-modal" class="hidden">
+      <div class="modal-content">
+        <h2>Register Account</h2>
+        <div id="register-message" class="message"></div>
+        <form id="registerForm">
+          <label for="regName">Name</label>
+          <input type="text" id="regName" required />
+
+          <label for="regEmail">Email</label>
+          <input type="email" id="regEmail" required />
+
+          <label for="regPassword">Password</label>
+          <input type="password" id="regPassword" required />
+
+          <label for="regConfirm">Confirm Password</label>
+          <input type="password" id="regConfirm" required />
+
+          <div style="margin-top: 1em;">
+            <button type="submit">Register</button>
+            <button type="button" id="registerCancelBtn">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- PROJECT MANAGEMENT MODAL -->
+    <div id="project-manager-modal" class="hidden">
+      <div class="modal-content">
+        <h2>Project Management</h2>
+        
+        <div id="messageContainer"></div>
+
+        <div class="versions-section">
+          <h3>Versions</h3>
+          <div class="versions-controls">
+            <button id="loadVersionsBtn">Load Versions</button>
+            <button id="saveNewVersionBtn">Save New Version</button>
+          </div>
+          <ul id="versionsList"></ul>
+        </div>
+
+        <div class="danger-section">
+          <button id="deleteProjectBtn" class="danger">Delete Project</button>
+        </div>
+
+        <button id="close-project-manager">Close</button>
+      </div>
+    </div>
+
+    <!-- MAIN CANVAS -->
     <canvas id="gameCanvas"></canvas>
 
-    <!-- Floating UI Overlay -->
+    <!-- ZOOM CONTROLS -->
     <div id="zoom-controls">
       <button id="zoom-out">-</button>
       <span id="zoom-level">100%</span>
@@ -3187,14 +3508,13 @@ export const MESSAGE_TYPES = {
 
 ===== ./client/css/style.css =====
 
-/* ./client/css/style.css */
-
+/* Basic Reset */
 html, body {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
-  overflow: hidden; /* prevents scrolling */
+  overflow: hidden;
 }
 
 #app {
@@ -3203,47 +3523,21 @@ html, body {
   height: 100%;
 }
 
+/* Canvas */
 #gameCanvas {
-  display: block;  /* removes default inline spacing */
+  display: block;
   width: 100%;
   height: 100%;
-  background-color: #222; /* example background */
-
-  /* Default cursor is arrow, but we'll switch to .grabbing in JS */
+  background-color: #222;
   cursor: default;
 }
-
 #gameCanvas.grabbing {
-  cursor: grabbing;       /* modern */
-  cursor: -webkit-grabbing;  /* older Chrome/Safari versions */
+  /* changed so only middle/right button uses grabbing style */
+  cursor: grabbing;
+  cursor: -webkit-grabbing;
 }
 
-header {
-  background: #333;
-  color: white;
-  padding: 10px;
-  text-align: center;
-}
-
-main {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-canvas {
-  border: 1px solid #ccc;
-  background: white;
-}
-
-footer {
-  background: #333;
-  color: white;
-  text-align: center;
-  padding: 10px;
-}
-
+/* Zoom Controls (bottom-right) */
 #zoom-controls {
   position: absolute;
   bottom: 20px;
@@ -3255,85 +3549,238 @@ footer {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  z-index: 10; /* ensure it's on top of the canvas */
+  z-index: 10;
 }
-
 #zoom-level {
-  min-width: 48px; /* Enough space for text like "100%" */
+  min-width: 48px;
   text-align: center;
 }
 
-/* Example styling if you'd prefer a <div> for the marquee:
-   (We are drawing in canvas code, so not strictly needed.)*/
+/* Project Info (top-left) */
+#project-info {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  z-index: 10;
+}
+#project-name {
+  font-weight: bold;
+  cursor: pointer;
+}
+#open-project-manager {
+  background: transparent;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+}
 
+/* 
+   Top-right local user row
+*/
+#user-info {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 10;
+}
+#user-name {
+  font-weight: bold;
+}
+#user-circle {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #888; /* overridden by JS */
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#user-circle-text {
+  font-weight: bold;
+}
+
+/* The login dropdown */
+#login-dropdown {
+  position: absolute;
+  top: 48px;
+  right: 0;
+  background: rgba(0,0,0,0.9);
+  padding: 8px;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 200px;
+}
+#login-dropdown.hidden {
+  display: none;
+}
+.login-row {
+  margin-bottom: 4px;
+}
+.login-row input {
+  width: 100%;
+  padding: 4px;
+  box-sizing: border-box;
+}
+.login-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.login-actions a {
+  color: #66f;
+  text-decoration: none;
+  font-size: 0.9em;
+}
+.login-actions button {
+  padding: 4px 8px;
+}
+
+/* Session users list */
+#session-users-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  position: absolute;
+  top: 70px; /* below #user-info */
+  right: 20px;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  width: 180px;
+  max-height: 140px;
+  overflow-y: auto;
+  border-radius: 4px;
+  z-index: 10;
+}
+#session-users-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.2);
+}
+#session-users-list li:last-child {
+  border-bottom: none;
+}
+.session-user-circle {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Register modal => ensure top z-index so it covers everything */
+#register-modal {
+  position: fixed;
+  top: 0; 
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999; /* ensure it's above user list */
+}
+#register-modal.hidden {
+  display: none;
+}
+#register-modal .modal-content {
+  background: #fff;
+  color: #000;
+  padding: 20px;
+  border-radius: 8px;
+  min-width: 300px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+/* Project Management modal => also high z-index */
+#project-manager-modal {
+  position: fixed;
+  top: 0; 
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+}
+#project-manager-modal.hidden {
+  display: none;
+}
+#project-manager-modal .modal-content {
+  background: #fff;
+  color: #000;
+  padding: 20px;
+  border-radius: 8px;
+  min-width: 400px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+.versions-section {
+  margin-bottom: 1em;
+}
+.versions-controls {
+  margin-bottom: 0.5em;
+  display: flex;
+  gap: 8px;
+}
+#versionsList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+#versionsList li {
+  margin: 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.danger-section {
+  margin: 1em 0;
+}
+button.danger {
+  background-color: #e10;
+  color: #fff;
+  border: none;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+#messageContainer {
+  margin-bottom: 0.5em;
+  min-height: 20px;
+  font-weight: bold;
+}
+
+/* Example marquee selection rectangle in the canvas */
 .selection-rectangle {
- position: absolute;
- border: 2px solid blue;
- background: rgba(0,0,255,0.2);
- pointer-events: none;
- z-index: 9999;
-}
-
-===== ./client/js/session.js =====
-
-// Ensure user ID persists across sessions
-let userId = localStorage.getItem("userId");
-if (!userId) {
-    userId = "user-" + Math.random().toString(36).substring(7);
-    localStorage.setItem("userId", userId);
-}
-
-const socket = new WebSocket("ws://localhost:3000");
-
-socket.onopen = () => {
-    console.log("Connected to WebSocket server with userId:", userId);
-};
-
-socket.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    if (data.type === "cursor-update") {
-        updateRemoteCursor(data.userId, data.x, data.y);
-    }
-};
-
-socket.onclose = () => {
-    console.log("Disconnected from WebSocket server");
-};
-
-function sendCursorPosition(x, y) {
-    const message = JSON.stringify({
-        type: "cursor-update",
-        userId: userId, // Persisted user ID
-        x: x,
-        y: y
-    });
-
-    socket.send(message);
-}
-
-// Track user mouse movement
-document.addEventListener("mousemove", (e) => {
-    sendCursorPosition(e.clientX, e.clientY);
-});
-
-// Function to update remote cursor positions
-function updateRemoteCursor(userId, x, y) {
-    let cursor = document.getElementById(`cursor-${userId}`);
-    
-    if (!cursor) {
-        cursor = document.createElement("div");
-        cursor.id = `cursor-${userId}`;
-        cursor.classList.add("remote-cursor");
-        document.body.appendChild(cursor);
-    }
-
-    cursor.style.position = "absolute";
-    cursor.style.left = `${x}px`;
-    cursor.style.top = `${y}px`;
-    cursor.style.width = "8px";
-    cursor.style.height = "8px";
-    cursor.style.background = "red";
-    cursor.style.borderRadius = "50%";
+  position: absolute;
+  border: 2px solid blue;
+  background: rgba(0,0,255,0.2);
+  pointer-events: none;
+  z-index: 9999;
 }
 
 
@@ -3341,9 +3788,19 @@ function updateRemoteCursor(userId, x, y) {
 
 // ./client/js/canvas.js
 
-import { MESSAGE_TYPES } from '/shared/wsMessageTypes.js';
+import { MESSAGE_TYPES } from "/shared/wsMessageTypes.js";
 
-// Camera & Zoom
+// Track user info (color, name) for drawing locked elements and cursors
+export const userInfoMap = new Map(); // userId -> { color, name }
+
+// Keep track of all remote cursor positions: userId -> { x, y }
+const remoteCursors = new Map();
+
+let localUserId = null;    // We'll store the local user ID
+let elements = [];
+let currentProjectName = "";
+
+// Camera / Zoom
 let camX = 0;
 let camY = 0;
 let scale = 1.0;
@@ -3357,268 +3814,214 @@ let isPanning = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
 
+// Selection & dragging
+let selectedElementIds = [];
+let lockedOffsets = {};
+let isDragging = false;
+
 // Marquee selection
 let isMarqueeSelecting = false;
-// For the rectangle in actual canvas (pixel) coordinates:
 let marqueeStartCanvasX = 0;
 let marqueeStartCanvasY = 0;
 let marqueeEndCanvasX = 0;
 let marqueeEndCanvasY = 0;
-
-// For selecting elements in world coords:
 let marqueeStartWorldX = 0;
 let marqueeStartWorldY = 0;
 let marqueeEndWorldX = 0;
 let marqueeEndWorldY = 0;
 
-// Two-step selection & drag
-let selectedElementIds = [];
-let lockedOffsets = {};
-let isDragging = false;
+// For a modular background grid
+const BASE_SPACING = 100;
 
-// Elements from server
-let elements = [];
-
-// Remote cursors
-const userId = generateRandomUserId();
-let socket;
-const cursors = new Map();
-const userColors = new Map();
-
-// Color palette
-const colorPalette = [
-  '#FF0000', // Red
-  '#0000FF', // Blue
-  '#FFFF00', // Yellow
-  '#FFA500', // Orange
-  '#008000', // Green
-  '#800080', // Purple
-];
-let colorIndex = 0;
-function getNextColor() {
-  const c = colorPalette[colorIndex % colorPalette.length];
-  colorIndex++;
-  return c;
+/**
+ * Check if a click at world coordinates (wx, wy) intersects any element.
+ */
+function findElementAt(wx, wy) {
+  for (let i = elements.length - 1; i >= 0; i--) {
+    const el = elements[i];
+    if (
+      wx >= el.x &&
+      wx <= el.x + el.w &&
+      wy >= el.y &&
+      wy <= el.y + el.h
+    ) {
+      return el;
+    }
+  }
+  return null;
 }
 
-// Quarter-cycling grid constants
-const BASE_SPACING = 100;
-const SUB_DIVISIONS = 4;
+/**
+ * Called once on page load, sets up the canvas event listeners.
+ * `userId` is used for locking, grabbing, etc.
+ */
+export function initCanvas(userId) {
+  localUserId = userId;
 
-// Canvas & context
-let canvas, ctx;
-let cssWidth = 0;
-let cssHeight = 0;
-
-export function initCanvas() {
-  canvas = document.getElementById('gameCanvas');
-  ctx = canvas.getContext('2d');
+  const canvas = document.getElementById("gameCanvas");
+  const ctx2d = canvas.getContext("2d");
 
   function resize() {
-    cssWidth = canvas.clientWidth;
-    cssHeight = canvas.clientHeight;
-
-    // For high-DPI: bigger backing store
+    const cssWidth = canvas.clientWidth;
+    const cssHeight = canvas.clientHeight;
     canvas.width = cssWidth * window.devicePixelRatio;
     canvas.height = cssHeight * window.devicePixelRatio;
-
-    // So that 1 ctx-unit = 1 CSS pixel
-    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    ctx2d.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
   }
-  window.addEventListener('resize', resize);
+  window.addEventListener("resize", resize);
   resize();
 
   // Mouse events
-  canvas.addEventListener('mousedown', onMouseDown);
-  canvas.addEventListener('mousemove', onMouseMove);
-  canvas.addEventListener('mouseup', onMouseUp);
-  canvas.addEventListener('mouseleave', onMouseUp);
+  canvas.addEventListener("mousedown", onMouseDown);
+  canvas.addEventListener("mousemove", onMouseMove);
+  canvas.addEventListener("mouseup", onMouseUp);
+  canvas.addEventListener("mouseleave", onMouseUp);
 
-  // Wheel => zoom
-  canvas.addEventListener('wheel', onWheel, { passive: false });
+  // Wheel zoom
+  canvas.addEventListener("wheel", onWheel, { passive: false });
 
   // Zoom UI
-  document.getElementById('zoom-in').addEventListener('click', () => {
-    zoomAroundPoint(scale + buttonZoomStep, cssWidth / 2, cssHeight / 2);
+  document.getElementById("zoom-in").addEventListener("click", () => {
+    zoomAroundCenter(buttonZoomStep);
   });
-  document.getElementById('zoom-out').addEventListener('click', () => {
-    zoomAroundPoint(scale - buttonZoomStep, cssWidth / 2, cssHeight / 2);
+  document.getElementById("zoom-out").addEventListener("click", () => {
+    zoomAroundCenter(-buttonZoomStep);
   });
-  document.getElementById('frame-all').addEventListener('click', frameAllElements);
+  document.getElementById("frame-all").addEventListener("click", frameAllElements);
 
   // ESC => clear selection
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
       updateSelection([]);
     }
   });
 
-  initWebSocket();
   requestAnimationFrame(render);
 }
 
-/* ----------------------------------
-   WebSocket & Remote Cursors
------------------------------------*/
-function initWebSocket() {
-  socket = new WebSocket('ws://localhost:3000');
-  socket.onopen = () => console.log('WebSocket connected');
-
-  socket.onmessage = (evt) => {
-    try {
-      const data = JSON.parse(evt.data);
-      if (!data.type) return;
-
-      switch (data.type) {
-        case MESSAGE_TYPES.CURSOR_UPDATES:
-          updateAllRemoteCursors(data.cursors);
-          break;
-        case MESSAGE_TYPES.ELEMENT_STATE:
-          elements = data.elements;
-          // remove from local selection if locked by someone else
-          selectedElementIds = selectedElementIds.filter((id) => {
-            const el = elements.find(e => e.id === id);
-            if (!el) return false;
-            return (!el.lockedBy || el.lockedBy === userId);
-          });
-          // if dragging but lost lock => stop
-          if (isDragging) {
-            for (const id of selectedElementIds) {
-              const el = elements.find(e => e.id === id);
-              if (!el || el.lockedBy !== userId) {
-                isDragging = false;
-                break;
-              }
-            }
-          }
-          break;
-        default:
-          break;
+/**
+ * Handler for all “canvas” WebSocket messages from the unified WebSocket.
+ * This includes CURSOR_UPDATES, ELEMENT_STATE, etc.
+ */
+export function handleCanvasMessage(data, myUserId) {
+  switch (data.type) {
+    case MESSAGE_TYPES.ELEMENT_STATE: {
+      elements = data.elements || [];
+      if (data.projectName) {
+        currentProjectName = data.projectName;
       }
-    } catch (err) {
-      console.error('WebSocket parse error:', err);
+      // Keep selections only if they are still locked by me or unlocked
+      selectedElementIds = selectedElementIds.filter((id) => {
+        const el = elements.find((e) => e.id === id);
+        if (!el) return false;
+        return !el.lockedBy || el.lockedBy === myUserId;
+      });
+      // If we are dragging but lost a lock => stop
+      if (isDragging) {
+        for (const id of selectedElementIds) {
+          const el = elements.find((e) => e.id === id);
+          if (!el || el.lockedBy !== myUserId) {
+            isDragging = false;
+            break;
+          }
+        }
+      }
+      break;
     }
-  };
 
-  socket.onclose = () => {
-    console.log('WebSocket closed');
-    // Clear selection if disconnected
-    updateSelection([]);
-  };
-}
-
-function updateAllRemoteCursors(newCursors) {
-  for (const [uId, pos] of Object.entries(newCursors)) {
-    cursors.set(uId, pos);
-    if (!userColors.has(uId)) {
-      userColors.set(uId, getNextColor());
+    case MESSAGE_TYPES.CURSOR_UPDATES: {
+      // Bulk update of all cursors
+      for (const [uId, pos] of Object.entries(data.cursors)) {
+        remoteCursors.set(uId, pos);
+      }
+      // remove old ones that no longer exist
+      for (const oldId of remoteCursors.keys()) {
+        if (!data.cursors[oldId]) {
+          remoteCursors.delete(oldId);
+        }
+      }
+      break;
     }
-  }
-  // remove stale
-  for (const oldId of cursors.keys()) {
-    if (!newCursors[oldId]) {
-      cursors.delete(oldId);
-      userColors.delete(oldId);
+
+    case "cursor-update": {
+      // Single user update (the older approach)
+      if (data.userId !== myUserId) {
+        remoteCursors.set(data.userId, { x: data.x, y: data.y });
+      }
+      break;
     }
+
+    case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
+      // If you want to store the name from server
+      currentProjectName = data.newName;
+      break;
+    }
+
+    default:
+      // No-op
+      break;
   }
 }
 
-/* ----------------------------------
-   Selection, Locking, Releasing
------------------------------------*/
-function updateSelection(newSelectedIds) {
-  // release removed
-  const removed = selectedElementIds.filter(id => !newSelectedIds.includes(id));
-  for (const rid of removed) {
-    releaseElement(rid);
-  }
-  // grab added
-  const added = newSelectedIds.filter(id => !selectedElementIds.includes(id));
-  for (const aid of added) {
-    grabElement(aid);
-  }
-  selectedElementIds = [...newSelectedIds];
-
-  if (isDragging && selectedElementIds.length === 0) {
-    isDragging = false;
-  }
+/**
+ * Called if the server updates a user's color or name, so we store it for highlighting.
+ */
+export function handleUserColorUpdate(userId, name, color) {
+  userInfoMap.set(userId, { color, name });
 }
 
-function grabElement(elementId) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({
-    type: MESSAGE_TYPES.ELEMENT_GRAB,
-    userId,
-    elementId
-  }));
+/**
+ * If we want to store the project name from the server
+ */
+export function setProjectNameFromServer(newName) {
+  currentProjectName = newName;
 }
 
-function releaseElement(elementId) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({
-    type: MESSAGE_TYPES.ELEMENT_RELEASE,
-    userId,
-    elementId
-  }));
-}
-
-function moveElement(elementId, x, y) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({
-    type: MESSAGE_TYPES.ELEMENT_MOVE,
-    userId,
-    elementId,
-    x,
-    y
-  }));
-}
-
-/* ----------------------------------
-   Mouse & Marquee & Drag
------------------------------------*/
+/* ------------------------------------------------------------------
+   MOUSE + MARQUEE + DRAG
+------------------------------------------------------------------ */
 function onMouseDown(e) {
-  // Middle or right => panning
+  const canvas = e.currentTarget;
   if (e.button === 1 || e.button === 2) {
+    // Middle or right => panning
     isPanning = true;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
-    canvas.classList.add('grabbing');
+    canvas.classList.add("grabbing");
     return;
   }
-
-  // Left => selection / marquee / drag
   if (e.button === 0) {
     const rect = canvas.getBoundingClientRect();
-
-    // For “canvas px”
-    const canvasDownX = (e.clientX - rect.left) * devicePixelRatio;
-    const canvasDownY = (e.clientY - rect.top) * devicePixelRatio;
-
-    // For “world coords”
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
     const wx = camX + screenX / scale;
     const wy = camY + screenY / scale;
 
+    marqueeStartCanvasX = screenX * devicePixelRatio;
+    marqueeStartCanvasY = screenY * devicePixelRatio;
+
+    // check if an element was clicked
     const clicked = findElementAt(wx, wy);
     if (clicked) {
-      // If locked by another => skip
-      if (clicked.lockedBy && clicked.lockedBy !== userId) {
+      // if locked by someone else => skip
+      if (clicked.lockedBy && clicked.lockedBy !== localUserId) {
         return;
       }
-
-      const isAlreadySelected = selectedElementIds.includes(clicked.id);
-      if (isAlreadySelected) {
-        // second click => drag
+      const alreadySelected = selectedElementIds.includes(clicked.id);
+      if (alreadySelected) {
+        // Start dragging
         isDragging = true;
         for (const id of selectedElementIds) {
-          const el = elements.find(e => e.id === id);
-          if (el && el.lockedBy === userId) {
-            lockedOffsets[id] = { dx: wx - el.x, dy: wy - el.y };
+          const el = elements.find((ele) => ele.id === id);
+          if (el && el.lockedBy === localUserId) {
+            lockedOffsets[id] = {
+              dx: wx - el.x,
+              dy: wy - el.y,
+            };
           }
         }
       } else {
-        // new selection or shift-add
+        // shift or single select
         if (!e.shiftKey) {
           updateSelection([]);
         }
@@ -3626,21 +4029,18 @@ function onMouseDown(e) {
         if (!newSet.includes(clicked.id)) {
           newSet.push(clicked.id);
         } else if (e.shiftKey) {
-          // SHIFT => toggle out
           const idx = newSet.indexOf(clicked.id);
           newSet.splice(idx, 1);
         }
         updateSelection(newSet);
-        isDragging = false; 
+        isDragging = false;
       }
-      canvas.classList.add('grabbing');
+      canvas.classList.add("grabbing");
     } else {
-      // empty => start marquee
+      // start marquee
       isMarqueeSelecting = true;
-      marqueeStartCanvasX = canvasDownX;
-      marqueeStartCanvasY = canvasDownY;
-      marqueeEndCanvasX = canvasDownX;
-      marqueeEndCanvasY = canvasDownY;
+      marqueeEndCanvasX = marqueeStartCanvasX;
+      marqueeEndCanvasY = marqueeStartCanvasY;
 
       marqueeStartWorldX = wx;
       marqueeStartWorldY = wy;
@@ -3651,13 +4051,13 @@ function onMouseDown(e) {
         updateSelection([]);
       }
       isDragging = false;
-      canvas.classList.add('grabbing');
+      canvas.classList.add("grabbing");
     }
   }
 }
 
 function onMouseMove(e) {
-  // Panning
+  const canvas = e.currentTarget;
   if (isPanning) {
     const dx = e.clientX - lastMouseX;
     const dy = e.clientY - lastMouseY;
@@ -3667,67 +4067,63 @@ function onMouseMove(e) {
     lastMouseY = e.clientY;
   }
 
-  // Drag
   if (isDragging) {
     const rect = canvas.getBoundingClientRect();
-    const screenX = e.clientX - rect.left;
-    const screenY = e.clientY - rect.top;
-    const wx = camX + screenX / scale;
-    const wy = camY + screenY / scale;
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const wx = camX + sx / scale;
+    const wy = camY + sy / scale;
 
     for (const id of selectedElementIds) {
-      const el = elements.find(e => e.id === id);
-      if (el && el.lockedBy === userId) {
+      const el = elements.find((ele) => ele.id === id);
+      if (el && el.lockedBy === localUserId) {
         const off = lockedOffsets[id];
         if (off) {
-          moveElement(id, wx - off.dx, wy - off.dy);
+          sendMoveElement(id, wx - off.dx, wy - off.dy);
         }
       }
     }
   }
 
-  // Marquee
   if (isMarqueeSelecting) {
     const rect = canvas.getBoundingClientRect();
-    // Canvas px
     marqueeEndCanvasX = (e.clientX - rect.left) * devicePixelRatio;
     marqueeEndCanvasY = (e.clientY - rect.top) * devicePixelRatio;
 
-    // World coords
-    const screenX = e.clientX - rect.left;
-    const screenY = e.clientY - rect.top;
-    marqueeEndWorldX = camX + screenX / scale;
-    marqueeEndWorldY = camY + screenY / scale;
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    marqueeEndWorldX = camX + sx / scale;
+    marqueeEndWorldY = camY + sy / scale;
   }
 
-  // Send local cursor
+  // Actually send the cursor's *world* position so other clients see it
   const rect = canvas.getBoundingClientRect();
-  const screenX = e.clientX - rect.left;
-  const screenY = e.clientY - rect.top;
-  const wx = camX + screenX / scale;
-  const wy = camY + screenY / scale;
-  sendCursorPosition(wx, wy);
+  const scrX = e.clientX - rect.left;
+  const scrY = e.clientY - rect.top;
+  const wx = camX + scrX / scale;
+  const wy = camY + scrY / scale;
+
+  // The function below is what sends the "cursor-update" message:
+  sendCursorUpdate(localUserId, wx, wy);
 }
 
 function onMouseUp(e) {
-  // End panning
+  const canvas = e.currentTarget;
   if ((e.button === 1 || e.button === 2) && isPanning) {
     isPanning = false;
-    canvas.classList.remove('grabbing');
+    canvas.classList.remove("grabbing");
     return;
   }
-
-  // End drag
   if (e.button === 0 && isDragging) {
     isDragging = false;
-    canvas.classList.remove('grabbing');
+    canvas.classList.remove("grabbing");
     return;
   }
-
-  // Finish marquee
   if (isMarqueeSelecting && e.button === 0) {
     isMarqueeSelecting = false;
+    canvas.classList.remove("grabbing");
 
+    // evaluate marquee
     const rminX = Math.min(marqueeStartWorldX, marqueeEndWorldX);
     const rmaxX = Math.max(marqueeStartWorldX, marqueeEndWorldX);
     const rminY = Math.min(marqueeStartWorldY, marqueeEndWorldY);
@@ -3745,35 +4141,92 @@ function onMouseUp(e) {
         elMaxY < rminY ||
         elMinY > rmaxY;
       if (!noOverlap) {
-        if (!el.lockedBy || el.lockedBy === userId) {
+        if (!el.lockedBy || el.lockedBy === localUserId) {
           newlySelected.push(el.id);
         }
       }
     }
-    const finalSet = [...selectedElementIds];
+    const finalSel = [...selectedElementIds];
     for (const id of newlySelected) {
-      if (!finalSet.includes(id)) {
-        finalSet.push(id);
+      if (!finalSel.includes(id)) {
+        finalSel.push(id);
       }
     }
-    updateSelection(finalSet);
-
-    canvas.classList.remove('grabbing');
+    updateSelection(finalSel);
   }
 }
 
-/* ----------------------------------
-   Zoom & Wheel
------------------------------------*/
+/* ------------------------------------------------------------------
+   SELECTION & LOCKS
+------------------------------------------------------------------ */
+function updateSelection(newSelectedIds) {
+  // release removed
+  const removed = selectedElementIds.filter((id) => !newSelectedIds.includes(id));
+  removed.forEach((rid) => sendReleaseElement(rid));
+
+  // grab added
+  const added = newSelectedIds.filter((id) => !selectedElementIds.includes(id));
+  added.forEach((aid) => sendGrabElement(aid));
+
+  selectedElementIds = newSelectedIds;
+  if (isDragging && !selectedElementIds.length) {
+    isDragging = false;
+  }
+}
+
+function sendGrabElement(elementId) {
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_GRAB,
+    userId: localUserId,
+    elementId,
+  });
+}
+
+function sendReleaseElement(elementId) {
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_RELEASE,
+    userId: localUserId,
+    elementId,
+  });
+}
+
+function sendMoveElement(elementId, x, y) {
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_MOVE,
+    userId: localUserId,
+    elementId,
+    x,
+    y,
+  });
+}
+
+function sendCursorUpdate(userId, wx, wy) {
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.CURSOR_UPDATE,
+    userId,
+    x: wx,
+    y: wy,
+  });
+}
+
+/* ------------------------------------------------------------------
+   ZOOM & FRAME
+------------------------------------------------------------------ */
 function onWheel(e) {
   e.preventDefault();
   const factor = Math.exp(-e.deltaY * wheelZoomSpeed);
-
+  const canvas = e.currentTarget;
   const rect = canvas.getBoundingClientRect();
-  const screenX = e.clientX - rect.left;
-  const screenY = e.clientY - rect.top;
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  zoomAroundPoint(scale * factor, sx, sy);
+}
 
-  zoomAroundPoint(scale * factor, screenX, screenY);
+function zoomAroundCenter(step) {
+  const canvas = document.getElementById("gameCanvas");
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
+  zoomAroundPoint(scale + step, cw / 2, ch / 2);
 }
 
 function zoomAroundPoint(newScale, anchorX, anchorY) {
@@ -3785,25 +4238,22 @@ function zoomAroundPoint(newScale, anchorX, anchorY) {
   const wy = camY + anchorY / oldScale;
   camX = wx - anchorX / scale;
   camY = wy - anchorY / scale;
-
   updateZoomUI();
 }
 
 function updateZoomUI() {
-  const el = document.getElementById('zoom-level');
+  const el = document.getElementById("zoom-level");
   if (el) {
     el.textContent = `${Math.round(scale * 100)}%`;
   }
 }
 
-/* ----------------------------------
-   Frame All
------------------------------------*/
 function frameAllElements() {
   if (!elements.length) return;
-
-  let minX = Infinity, maxX = -Infinity;
-  let minY = Infinity, maxY = -Infinity;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
   for (const el of elements) {
     minX = Math.min(minX, el.x);
     maxX = Math.max(maxX, el.x + el.w);
@@ -3814,96 +4264,111 @@ function frameAllElements() {
   const h = maxY - minY;
   if (w <= 0 || h <= 0) return;
 
+  const canvas = document.getElementById("gameCanvas");
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
   const margin = 50;
-  const scaleX = (cssWidth - margin * 2) / w;
-  const scaleY = (cssHeight - margin * 2) / h;
+  const scaleX = (cw - margin * 2) / w;
+  const scaleY = (ch - margin * 2) / h;
   const newScale = Math.max(minScale, Math.min(maxScale, Math.min(scaleX, scaleY)));
   scale = newScale;
 
   const cx = minX + w / 2;
   const cy = minY + h / 2;
-  camX = cx - (cssWidth / 2) / scale;
-  camY = cy - (cssHeight / 2) / scale;
+  camX = cx - cw / (2 * scale);
+  camY = cy - ch / (2 * scale);
 
   updateZoomUI();
 }
 
-/* ----------------------------------
-   Main Render Loop
------------------------------------*/
+/* ------------------------------------------------------------------
+   RENDER LOOP
+------------------------------------------------------------------ */
 function render() {
-  // Clear entire buffer
+  const canvas = document.getElementById("gameCanvas");
+  const ctx = canvas.getContext("2d");
+
+  // Clear
   ctx.save();
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.clearRect(0,0, canvas.width, canvas.height);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.restore();
 
-  fillBackground();
-  drawModularGrid();
+  fillBackground(ctx);
+  drawModularGrid(ctx);
 
-  // draw elements
+  // Draw elements
   ctx.save();
   ctx.translate(-camX * scale, -camY * scale);
   ctx.scale(scale, scale);
 
   for (const el of elements) {
-    ctx.fillStyle = 'red';
+    ctx.fillStyle = "#CCC";
     ctx.fillRect(el.x, el.y, el.w, el.h);
 
-    if (el.lockedBy && el.lockedBy !== userId) {
-      const lockColor = userColors.get(el.lockedBy) || '#FFA500';
-      ctx.strokeStyle = lockColor;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(el.x, el.y, el.w, el.h);
-    }
+    let outlineColor = null;
     if (selectedElementIds.includes(el.id)) {
-      ctx.strokeStyle = 'blue';
+      // If locked by me => BLUE
+      if (el.lockedBy === localUserId) {
+        outlineColor = "blue";
+      }
+      // else if locked by someone else => use their color
+      else if (el.lockedBy) {
+        outlineColor = userInfoMap.get(el.lockedBy)?.color || "#FFA500";
+      } else {
+        // not locked but selected (rare)
+        outlineColor = "blue";
+      }
+    } else if (el.lockedBy) {
+      // not selected but locked by someone else => show color
+      outlineColor = userInfoMap.get(el.lockedBy)?.color || "#FFA500";
+    }
+
+    if (outlineColor) {
+      ctx.strokeStyle = outlineColor;
       ctx.lineWidth = 2;
       ctx.strokeRect(el.x, el.y, el.w, el.h);
     }
   }
   ctx.restore();
 
-  // if marquee => draw in canvas px
+  // Marquee
   if (isMarqueeSelecting) {
-    drawMarquee();
+    drawMarquee(ctx);
   }
 
-  drawCursors();
+  // Remote cursors
+  drawRemoteCursors(ctx);
+
   requestAnimationFrame(render);
 }
 
-function fillBackground() {
+function fillBackground(ctx) {
   ctx.save();
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle = '#F0F0F0';
-  ctx.fillRect(0,0, canvas.width, canvas.height);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#F0F0F0";
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   ctx.restore();
 }
 
-/* ----------------------------------
-   Quarter-Cycling Grid
------------------------------------*/
-function drawModularGrid() {
+function drawModularGrid(ctx) {
   ctx.save();
   ctx.translate(-camX * scale, -camY * scale);
   ctx.scale(scale, scale);
 
   const { majorSpacing, fraction } = getEffectiveMajorSpacing(scale);
 
-  const leftWorld = camX;
-  const topWorld = camY;
-  const rightWorld = camX + cssWidth / scale;
-  const bottomWorld = camY + cssHeight / scale;
+  const cw = ctx.canvas.clientWidth / scale;
+  const ch = ctx.canvas.clientHeight / scale;
+  const startX = Math.floor(camX / majorSpacing) * majorSpacing;
+  const endX = Math.ceil((camX + cw) / majorSpacing) * majorSpacing;
+  const startY = Math.floor(camY / majorSpacing) * majorSpacing;
+  const endY = Math.ceil((camY + ch) / majorSpacing) * majorSpacing;
 
-  const startX = Math.floor(leftWorld / majorSpacing) * majorSpacing;
-  const endX = Math.ceil(rightWorld / majorSpacing) * majorSpacing;
-  const startY = Math.floor(topWorld / majorSpacing) * majorSpacing;
-  const endY = Math.ceil(bottomWorld / majorSpacing) * majorSpacing;
-
-  ctx.strokeStyle = 'rgb(220,220,220)';
+  ctx.strokeStyle = "rgb(220,220,220)";
   ctx.lineWidth = 1 / scale;
   ctx.beginPath();
+
   for (let x = startX; x <= endX; x += majorSpacing) {
     ctx.moveTo(x, startY);
     ctx.lineTo(x, endY);
@@ -3914,32 +4379,31 @@ function drawModularGrid() {
   }
   ctx.stroke();
 
+  // sub-grid if fraction > 0
   if (fraction > 0) {
     ctx.strokeStyle = `rgba(230,230,230,${fraction})`;
-    const subSpacing = majorSpacing / SUB_DIVISIONS;
+    const subSpacing = majorSpacing / 4;
     ctx.beginPath();
     for (let x = startX; x <= endX; x += majorSpacing) {
-      for (let i = 1; i < SUB_DIVISIONS; i++) {
-        const subX = x + i * subSpacing;
-        ctx.moveTo(subX, startY);
-        ctx.lineTo(subX, endY);
+      for (let i = 1; i < 4; i++) {
+        const xx = x + i * subSpacing;
+        ctx.moveTo(xx, startY);
+        ctx.lineTo(xx, endY);
       }
     }
     for (let y = startY; y <= endY; y += majorSpacing) {
-      for (let i = 1; i < SUB_DIVISIONS; i++) {
-        const subY = y + i * subSpacing;
-        ctx.moveTo(startX, subY);
-        ctx.lineTo(endX, subY);
+      for (let i = 1; i < 4; i++) {
+        const yy = y + i * subSpacing;
+        ctx.moveTo(startX, yy);
+        ctx.lineTo(endX, yy);
       }
     }
     ctx.stroke();
   }
-
   ctx.restore();
 }
 
 function getEffectiveMajorSpacing(s) {
-  // log base 4 => L4 = log2(s)/2
   const L4 = Math.log2(s) / 2;
   const iPart = Math.floor(L4);
   let frac = L4 - iPart;
@@ -3948,44 +4412,42 @@ function getEffectiveMajorSpacing(s) {
   return { majorSpacing, fraction: frac };
 }
 
-/* ----------------------------------
-   Marquee in Canvas Coordinates
------------------------------------*/
-function drawMarquee() {
+function drawMarquee(ctx) {
   const rx = Math.min(marqueeStartCanvasX, marqueeEndCanvasX);
   const ry = Math.min(marqueeStartCanvasY, marqueeEndCanvasY);
   const rw = Math.abs(marqueeEndCanvasX - marqueeStartCanvasX);
   const rh = Math.abs(marqueeEndCanvasY - marqueeStartCanvasY);
 
   ctx.save();
-  ctx.setTransform(1,0,0,1,0,0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.beginPath();
   ctx.rect(rx, ry, rw, rh);
-  ctx.fillStyle = 'rgba(0,0,255,0.2)';
+  ctx.fillStyle = "rgba(0,0,255,0.2)";
   ctx.fill();
-  ctx.strokeStyle = 'blue';
+  ctx.strokeStyle = "blue";
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.restore();
 }
 
-/* ----------------------------------
-   Draw remote cursors
------------------------------------*/
-function drawCursors() {
+/* ------------------------------------------------------------------
+   DRAW REMOTE CURSORS
+------------------------------------------------------------------ */
+function drawRemoteCursors(ctx) {
+  // We'll draw cursors for all users except our own
   ctx.save();
-  for (const [uId, pos] of cursors.entries()) {
-    if (uId === userId) continue;
+  for (const [uId, pos] of remoteCursors) {
+    if (uId === localUserId) continue;
     const sx = (pos.x - camX) * scale;
     const sy = (pos.y - camY) * scale;
-    const color = userColors.get(uId) || '#FFA500';
-    drawArrowCursor(sx, sy, color, uId);
+    const info = userInfoMap.get(uId);
+    const color = info?.color || "#FFA500";
+    drawArrowCursor(ctx, sx, sy, color, uId);
   }
   ctx.restore();
 }
 
-/* a smaller arrow => white fill, color outline */
-function drawArrowCursor(sx, sy, outlineColor, label) {
+function drawArrowCursor(ctx, sx, sy, outlineColor, label) {
   ctx.save();
   ctx.translate(sx, sy);
 
@@ -4000,58 +4462,598 @@ function drawArrowCursor(sx, sy, outlineColor, label) {
   ctx.lineTo(0, 0);
   ctx.closePath();
 
-  ctx.fillStyle = 'white';
+  ctx.fillStyle = "white";
   ctx.fill();
 
   ctx.strokeStyle = outlineColor;
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  ctx.font = '6px sans-serif';
-  ctx.fillStyle = '#000';
+  ctx.font = "6px sans-serif";
+  ctx.fillStyle = "#000";
   ctx.fillText(label, 10, 5);
 
   ctx.restore();
 }
 
-/* ----------------------------------
-   Utilities
------------------------------------*/
-function generateRandomUserId() {
-  return 'user_' + Math.floor(Math.random() * 100000);
-}
-
-function sendCursorPosition(wx, wy) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({
-    type: MESSAGE_TYPES.CURSOR_UPDATE,
-    userId,
-    x: wx,
-    y: wy,
-  }));
-}
-
-function findElementAt(wx, wy) {
-  for (let i = elements.length - 1; i >= 0; i--) {
-    const el = elements[i];
-    if (wx >= el.x && wx <= el.x + el.w &&
-        wy >= el.y && wy <= el.y + el.h) {
-      return el;
-    }
-  }
-  return null;
-}
-
 
 ===== ./client/js/app.js =====
 
-// js/app.js
-import { initCanvas } from "./canvas.js"; // import from canvas.js
+// ./client/js/app.js
+import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
+import {
+  initCanvas,
+  handleCanvasMessage,
+  handleUserColorUpdate,
+  setProjectNameFromServer,
+} from "./canvas.js";
 
 window.addEventListener("DOMContentLoaded", () => {
-  initCanvas();
-  // any additional setup
+  // Prevent right-click context menu so we can use right/middle drag in canvas
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  // ------------------------------------------------------------------
+  // LOCAL USER & TOKEN
+  // ------------------------------------------------------------------
+  let token = localStorage.getItem("token") || "";
+  let currentUser = localStorage.getItem("user")
+    ? JSON.parse(localStorage.getItem("user"))
+    : null;
+
+  // Decide the local user ID, stored in localStorage["activeUserId"]
+  // This ID is what we send to the server's WebSocket
+  function getLocalUserId() {
+    // If user is logged in (ex: user_4)
+    if (currentUser) {
+      return "user_" + currentUser.id;
+    }
+    // Otherwise fallback to an existing anonymous ID or create one
+    let anonId = localStorage.getItem("anonId");
+    if (!anonId) {
+      anonId = "anon_" + Math.floor(Math.random() * 999999);
+      localStorage.setItem("anonId", anonId);
+    }
+    return anonId;
+  }
+
+  let activeUserId = localStorage.getItem("activeUserId");
+  if (!activeUserId) {
+    activeUserId = getLocalUserId();
+    localStorage.setItem("activeUserId", activeUserId);
+  } else {
+    // If user logs in after having an anon ID, unify
+    if (currentUser && !activeUserId.startsWith("user_")) {
+      activeUserId = "user_" + currentUser.id;
+      localStorage.setItem("activeUserId", activeUserId);
+    }
+  }
+
+  // Quick check to see if we have a valid login token
+  function isLoggedIn() {
+    return !!token && !!currentUser;
+  }
+
+  // We'll store the currentProjectName for UI
+  let currentProjectName = "Loading...";
+  const projectId = localStorage.getItem("projectId") || 1;
+
+  // ------------------------------------------------------------------
+  // DOM ELEMENTS FOR PROJECT & USER UI
+  // ------------------------------------------------------------------
+  const projectNameEl = document.getElementById("project-name");
+  const openPMBtn = document.getElementById("open-project-manager");
+  const pmModal = document.getElementById("project-manager-modal");
+  const closePMBtn = document.getElementById("close-project-manager");
+  const loadVersionsBtn = document.getElementById("loadVersionsBtn");
+  const saveNewVersionBtn = document.getElementById("saveNewVersionBtn");
+  const versionsList = document.getElementById("versionsList");
+  const deleteProjectBtn = document.getElementById("deleteProjectBtn");
+  const messageContainer = document.getElementById("messageContainer");
+
+  const userInfoPanel = document.getElementById("user-info");
+  const userNameSpan = document.getElementById("user-name");
+  const userCircle = document.getElementById("user-circle");
+  const userCircleText = document.getElementById("user-circle-text");
+  const loginDropdown = document.getElementById("login-dropdown");
+  const loginForm = document.getElementById("loginForm");
+  const registerLink = document.getElementById("registerLink");
+  const sessionUsersList = document.getElementById("session-users-list");
+  const registerModal = document.getElementById("register-modal");
+  const registerForm = document.getElementById("registerForm");
+  const registerMessage = document.getElementById("register-message");
+  const registerCancelBtn = document.getElementById("registerCancelBtn");
+
+  // ------------------------------------------------------------------
+  // SINGLE WEBSOCKET
+  // ------------------------------------------------------------------
+  let ws = null;
+  let sessionUsers = [];
+
+  // Helper to send a message if socket is open
+  function sendWSMessage(msg) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+    }
+  }
+
+  function connectWebSocket() {
+    ws = new WebSocket("ws://localhost:3000");
+
+    ws.onopen = () => {
+      console.log("Unified WS connected");
+      // Let the server know who we are so it can track us
+      doJoinSession();
+    };
+
+    ws.onmessage = (evt) => {
+      let data;
+      try {
+        data = JSON.parse(evt.data);
+      } catch (err) {
+        console.error("WS parse error:", err);
+        return;
+      }
+
+      switch (data.type) {
+        // ---------------------------
+        // Session / user messages
+        // ---------------------------
+        case MESSAGE_TYPES.SESSION_USERS: {
+          sessionUsers = data.users || [];
+          renderSessionUsers();
+
+          // Also update the color / name info used by the canvas
+          // so we can draw locked elements, remote cursors, etc.
+          sessionUsers.forEach((u) => {
+            handleUserColorUpdate(u.userId, u.name, u.color);
+          });
+
+          // If we see ourselves, update top-right circle color
+          const me = sessionUsers.find((u) => u.userId === activeUserId);
+          if (me) {
+            userCircle.style.background = me.color;
+            userCircleText.textContent = getInitial(me.name);
+          }
+          break;
+        }
+
+        // Project name changed by some user
+        case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
+          currentProjectName = data.newName;
+          restoreNameSpan();
+          showMessage(`Project renamed to "${currentProjectName}" by another user.`);
+
+          // Let canvas know too, if you want
+          setProjectNameFromServer(currentProjectName);
+          break;
+        }
+
+        // ---------------------------
+        // Canvas / element messages
+        // ---------------------------
+        case MESSAGE_TYPES.ELEMENT_STATE:
+        case MESSAGE_TYPES.CURSOR_UPDATES:
+        case "cursor-update": // older singular
+          // Hand off to canvas.js
+          handleCanvasMessage(data, activeUserId);
+          break;
+
+        default:
+          console.log("Unknown WebSocket message type:", data.type, data);
+          break;
+      }
+    };
+
+    ws.onclose = () => {
+      console.log("Unified WS closed");
+    };
+  }
+
+  // This is how we announce ourselves
+  function doJoinSession() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const userName = currentUser ? currentUser.name : "Anonymous";
+    ws.send(
+      JSON.stringify({
+        type: MESSAGE_TYPES.JOIN_SESSION,
+        userId: activeUserId,
+        name: userName,
+      })
+    );
+  }
+
+  // We’ll export the function so canvas.js can send messages too
+  // but in this example we’ll just attach it on the window for clarity
+  window.__sendWSMessage = sendWSMessage;
+
+  // ------------------------------------------------------------------
+  // INIT
+  // ------------------------------------------------------------------
+  connectWebSocket();
+  initCanvas(activeUserId); // sets up all canvas event handlers
+  updateLocalUserUI();
+
+  // ------------------------------------------------------------------
+  // RENDER USERS
+  // ------------------------------------------------------------------
+  function renderSessionUsers() {
+    sessionUsersList.innerHTML = "";
+    sessionUsers.forEach((u) => {
+      const li = document.createElement("li");
+      const circle = document.createElement("div");
+      circle.classList.add("session-user-circle");
+      circle.style.background = u.color;
+
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = u.name;
+
+      li.appendChild(circle);
+      li.appendChild(nameSpan);
+      sessionUsersList.appendChild(li);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // LOCAL USER UI
+  // ------------------------------------------------------------------
+  userInfoPanel.addEventListener("click", (evt) => {
+    if (isLoggedIn()) {
+      if (confirm("Log out?")) {
+        doLogout();
+      }
+    } else {
+      if (loginDropdown.contains(evt.target)) return;
+      loginDropdown.classList.toggle("hidden");
+    }
+  });
+
+  document.addEventListener("click", (evt) => {
+    if (!loginDropdown.classList.contains("hidden")) {
+      if (!loginDropdown.contains(evt.target) && !userInfoPanel.contains(evt.target)) {
+        loginDropdown.classList.add("hidden");
+      }
+    }
+  });
+
+  function updateLocalUserUI() {
+    let displayName = "Anonymous";
+    if (currentUser && currentUser.name) {
+      displayName = currentUser.name;
+    }
+    userNameSpan.textContent = displayName;
+    userCircle.style.background = "#888"; // overridden by server once we see ourselves in SESSION_USERS
+    userCircleText.textContent = getInitial(displayName);
+  }
+
+  function doLogout() {
+    token = "";
+    currentUser = null;
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+
+    // revert to anonymous ID
+    let anonId = "anon_" + Math.floor(Math.random() * 999999);
+    localStorage.setItem("anonId", anonId);
+    localStorage.setItem("activeUserId", anonId);
+
+    showMessage("Logged out.");
+    updateLocalUserUI();
+    doJoinSession();
+  }
+
+  loginForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const email = document.getElementById("loginEmail").value;
+    const pass = document.getElementById("loginPassword").value;
+
+    fetch("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: pass }),
+    })
+      .then((res) => {
+        if (!res.ok) {
+          return res.json().then((obj) => {
+            throw new Error(obj.message || "Login failed");
+          });
+        }
+        return res.json();
+      })
+      .then((data) => {
+        token = data.token;
+        currentUser = data.user;
+        localStorage.setItem("token", token);
+        localStorage.setItem("user", JSON.stringify(currentUser));
+
+        // Now that we’re logged in, unify the userId
+        const newId = "user_" + currentUser.id;
+        localStorage.setItem("activeUserId", newId);
+
+        showMessage("Logged in.");
+        loginDropdown.classList.add("hidden");
+        updateLocalUserUI();
+        doJoinSession();
+      })
+      .catch((err) => {
+        console.error(err);
+        showMessage("Error logging in: " + err.message, true);
+      });
+  });
+
+  registerLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    loginDropdown.classList.add("hidden");
+    registerModal.classList.remove("hidden");
+  });
+
+  registerForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    registerMessage.textContent = "";
+
+    const name = document.getElementById("regName").value;
+    const email = document.getElementById("regEmail").value;
+    const password = document.getElementById("regPassword").value;
+    const confirmPassword = document.getElementById("regConfirm").value;
+
+    fetch("/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, email, password, confirmPassword }),
+    })
+      .then((res) => {
+        if (!res.ok) {
+          return res.json().then((obj) => {
+            throw new Error(obj.message || "Registration failed");
+          });
+        }
+        return res.json();
+      })
+      .then((data) => {
+        // auto-login
+        token = data.token;
+        currentUser = data.user;
+        localStorage.setItem("token", token);
+        localStorage.setItem("user", JSON.stringify(currentUser));
+
+        const newId = "user_" + currentUser.id;
+        localStorage.setItem("activeUserId", newId);
+
+        registerMessage.textContent = "Registration successful! Logging you in...";
+        registerMessage.style.color = "green";
+
+        setTimeout(() => {
+          registerModal.classList.add("hidden");
+          showMessage("Logged in as " + currentUser.name);
+          updateLocalUserUI();
+          doJoinSession();
+        }, 1000);
+      })
+      .catch((err) => {
+        console.error(err);
+        registerMessage.textContent = err.message;
+        registerMessage.style.color = "red";
+      });
+  });
+
+  registerCancelBtn.addEventListener("click", () => {
+    registerModal.classList.add("hidden");
+  });
+
+  function getInitial(str) {
+    if (!str) return "?";
+    return str.trim().charAt(0).toUpperCase();
+  }
+
+  // ------------------------------------------------------------------
+  // PROJECT RENAME & UI
+  // ------------------------------------------------------------------
+  projectNameEl.addEventListener("click", () => {
+    startEditingProjectName();
+  });
+
+  function startEditingProjectName() {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = projectNameEl.textContent || currentProjectName;
+    input.id = "edit-project-name";
+    projectNameEl.replaceWith(input);
+    input.focus();
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitNameChange(input.value);
+      } else if (e.key === "Escape") {
+        revertNameChange();
+      }
+    });
+    input.addEventListener("blur", () => {
+      commitNameChange(input.value);
+    });
+  }
+
+  function commitNameChange(newName) {
+    if (!newName.trim()) {
+      revertNameChange();
+      return;
+    }
+    if (!isLoggedIn()) {
+      showMessage("Please log in to rename project", true);
+      revertNameChange();
+      return;
+    }
+
+    fetch(`/projects/${projectId}`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name: newName, description: "" }),
+    })
+      .then((res) => {
+        if (!res.ok) {
+          return res.json().then((obj) => {
+            throw new Error(obj.message || "Failed to rename project");
+          });
+        }
+        return res.json();
+      })
+      .then((updatedProj) => {
+        currentProjectName = updatedProj.name;
+        // Also broadcast to all via WebSocket
+        sendWSMessage({
+          type: MESSAGE_TYPES.PROJECT_NAME_CHANGE,
+          newName: currentProjectName,
+        });
+      })
+      .catch((err) => {
+        console.error(err);
+        showMessage("Error renaming: " + err.message, true);
+      })
+      .finally(() => {
+        restoreNameSpan();
+      });
+  }
+
+  function revertNameChange() {
+    restoreNameSpan();
+  }
+
+  function restoreNameSpan() {
+    const oldInput = document.getElementById("edit-project-name");
+    if (!oldInput) return;
+    const span = document.createElement("span");
+    span.id = "project-name";
+    span.title = "Click to edit project name";
+    span.textContent = currentProjectName;
+    span.style.cursor = "pointer";
+    oldInput.replaceWith(span);
+    span.addEventListener("click", () => {
+      startEditingProjectName();
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // PROJECT MANAGER (VERSIONS, DELETE, etc.)
+  // ------------------------------------------------------------------
+  openPMBtn.addEventListener("click", () => pmModal.classList.remove("hidden"));
+  closePMBtn.addEventListener("click", () => pmModal.classList.add("hidden"));
+
+  loadVersionsBtn.addEventListener("click", () => {
+    if (!isLoggedIn()) {
+      showMessage("Log in to load versions", true);
+      return;
+    }
+    fetch(`/projects/${projectId}/versions`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to load versions");
+        return res.json();
+      })
+      .then((versions) => {
+        versionsList.innerHTML = "";
+        versions.forEach((v) => {
+          const li = document.createElement("li");
+          li.textContent = `Version #${v.version_number} (ID:${v.id})`;
+          const rollbackBtn = document.createElement("button");
+          rollbackBtn.textContent = "Rollback";
+          rollbackBtn.style.marginLeft = "10px";
+          rollbackBtn.addEventListener("click", () => rollbackVersion(v.id));
+          li.appendChild(rollbackBtn);
+          versionsList.appendChild(li);
+        });
+      })
+      .catch((err) => {
+        console.error(err);
+        showMessage(err.message, true);
+      });
+  });
+
+  function rollbackVersion(verId) {
+    fetch(`/projects/${projectId}/versions/${verId}/rollback`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to rollback");
+        return res.json();
+      })
+      .then((data) => {
+        showMessage(`Rollback success. New ver: ${data.newVersion.version_number}`);
+      })
+      .catch((err) => {
+        console.error(err);
+        showMessage(err.message, true);
+      });
+  }
+
+  saveNewVersionBtn.addEventListener("click", () => {
+    if (!isLoggedIn()) {
+      showMessage("Log in to save version", true);
+      return;
+    }
+    const payload = {
+      project_data: {
+        note: "Manual save from UI",
+        time: new Date().toISOString(),
+      },
+    };
+    fetch(`/projects/${projectId}/versions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to save version");
+        return res.json();
+      })
+      .then((newVer) => showMessage(`Created version #${newVer.version_number}`))
+      .catch((err) => {
+        console.error(err);
+        showMessage(err.message, true);
+      });
+  });
+
+  deleteProjectBtn.addEventListener("click", () => {
+    if (!isLoggedIn()) {
+      showMessage("Log in to delete project", true);
+      return;
+    }
+    if (!confirm("Are you sure you want to delete this project?")) return;
+    fetch(`/projects/${projectId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to delete project");
+        return res.json();
+      })
+      .then(() => showMessage("Project deleted."))
+      .catch((err) => {
+        console.error(err);
+        showMessage(err.message, true);
+      });
+  });
+
+  // ------------------------------------------------------------------
+  // UTILITY
+  // ------------------------------------------------------------------
+  function showMessage(msg, isError = false) {
+    messageContainer.textContent = msg;
+    messageContainer.style.color = isError ? "red" : "green";
+    setTimeout(() => {
+      if (messageContainer.textContent === msg) {
+        messageContainer.textContent = "";
+      }
+    }, 4000);
+  }
 });
+
 
 ===== ./db-init-scripts/init.sql =====
 
@@ -4079,12 +5081,26 @@ END $$;
 
 \c board_game_prototyping;
 
+-- Users table
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     email VARCHAR(255) UNIQUE NOT NULL,
     password TEXT NOT NULL,
     role VARCHAR(50) DEFAULT 'user'
 );
+
+-- Add a name column if it doesn't already exist
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 
+        FROM information_schema.columns 
+        WHERE table_name='users' 
+          AND column_name='name'
+    ) THEN
+        ALTER TABLE users ADD COLUMN name VARCHAR(255) DEFAULT 'NoName';
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS projects (
     id SERIAL PRIMARY KEY,
@@ -4098,6 +5114,17 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     sess JSON NOT NULL,
     expire TIMESTAMP(6) NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS project_versions (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version_number INTEGER NOT NULL,
+    project_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_versions_pid_vnum
+    ON project_versions (project_id, version_number);
 
 -- Grant full access to admin user
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO admin;

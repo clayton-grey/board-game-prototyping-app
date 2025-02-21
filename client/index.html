@@ -11,10 +11,105 @@
 </head>
 <body>
   <div id="app">
-    <!-- Canvas fills #app container -->
+    <!-- TOP-LEFT: Project Info -->
+    <div id="project-info">
+      <!-- No more "Untitled Project" hard-coded; let the server-sent project name show -->
+      <span id="project-name" title="Click to edit project name">Test</span>
+      <button id="open-project-manager" title="Manage Project">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          fill="currentColor"
+          viewBox="0 0 16 16"
+        >
+          <path d="M3 3h10v10H3V3zm9 9V4H4v8h8z"/>
+          <path d="M8 8.5l-4 2V6l4 2.5l4-2.5v4.5l-4-2z"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- TOP-RIGHT: Local user info -->
+    <div id="user-info">
+      <span id="user-name">Anonymous</span>
+      <div id="user-circle">
+        <span id="user-circle-text">?</span>
+      </div>
+
+      <!-- Login popover if not logged in -->
+      <div id="login-dropdown" class="hidden">
+        <form id="loginForm">
+          <div class="login-row">
+            <input type="email" id="loginEmail" placeholder="Email" required />
+          </div>
+          <div class="login-row">
+            <input type="password" id="loginPassword" placeholder="Password" required />
+          </div>
+          <div class="login-actions">
+            <a href="#" id="registerLink">Register</a>
+            <button type="submit">Login</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- List of session users (below user info) -->
+    <ul id="session-users-list"></ul>
+
+    <!-- REGISTER MODAL -->
+    <div id="register-modal" class="hidden">
+      <div class="modal-content">
+        <h2>Register Account</h2>
+        <div id="register-message" class="message"></div>
+        <form id="registerForm">
+          <label for="regName">Name</label>
+          <input type="text" id="regName" required />
+
+          <label for="regEmail">Email</label>
+          <input type="email" id="regEmail" required />
+
+          <label for="regPassword">Password</label>
+          <input type="password" id="regPassword" required />
+
+          <label for="regConfirm">Confirm Password</label>
+          <input type="password" id="regConfirm" required />
+
+          <div style="margin-top: 1em;">
+            <button type="submit">Register</button>
+            <button type="button" id="registerCancelBtn">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- PROJECT MANAGEMENT MODAL -->
+    <div id="project-manager-modal" class="hidden">
+      <div class="modal-content">
+        <h2>Project Management</h2>
+        
+        <div id="messageContainer"></div>
+
+        <div class="versions-section">
+          <h3>Versions</h3>
+          <div class="versions-controls">
+            <button id="loadVersionsBtn">Load Versions</button>
+            <button id="saveNewVersionBtn">Save New Version</button>
+          </div>
+          <ul id="versionsList"></ul>
+        </div>
+
+        <div class="danger-section">
+          <button id="deleteProjectBtn" class="danger">Delete Project</button>
+        </div>
+
+        <button id="close-project-manager">Close</button>
+      </div>
+    </div>
+
+    <!-- MAIN CANVAS -->
     <canvas id="gameCanvas"></canvas>
 
-    <!-- Floating UI Overlay -->
+    <!-- ZOOM CONTROLS -->
     <div id="zoom-controls">
       <button id="zoom-out">-</button>
       <span id="zoom-level">100%</span>
