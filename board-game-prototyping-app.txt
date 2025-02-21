@@ -46,7 +46,9 @@ board-game-prototyping-app/
 │   │   ├── auth.js             # Authentication routes
 │   │   ├── projects.js         # Project CRUD & versioning
 │   │   ├── admin.js            # Admin controls
-│   │   ├── collaboration.js    # WebSocket event handling
+│   │   └── collaboration.js    # (Optional) HTTP routes for collaboration
+│   ├── ws/
+│   │   └── collaboration.js    # WebSocket event handling
 │   └── config.js               # Environment variables
 │
 ├── client/
@@ -2613,29 +2615,30 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 
-// Import local modules
 import authRoutes from './routes/auth.js';
 import projectRoutes from './routes/projects.js';
-import { handleWebSocketConnection } from './collaboration.js';
+
+// CHANGED: We now import from server/ws/collaboration.js
+import { handleWebSocketConnection } from './ws/collaboration.js';
+
 import config from './config.js';
 
-// Create Express app and HTTP server
 const app = express();
 const server = http.createServer(app);
-
-// Create a WebSocket server
 const wss = new WebSocketServer({ server });
 
 // Middleware
 app.use(express.json());
 app.use(cors({ origin: '*' }));
 
-// Resolve __filename and __dirname for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Serve static frontend files from `/client`
 app.use(express.static(path.join(__dirname, '../client')));
+
+// This allows the browser to request files from the "shared" folder, just like "client" folder
+app.use('/shared', express.static(path.join(__dirname, '../shared')));
 
 // API Routes
 app.use('/auth', authRoutes);
@@ -2649,19 +2652,10 @@ app.get('/', (req, res) => {
 // WebSocket handling
 wss.on('connection', (ws) => handleWebSocketConnection(ws, wss));
 
-// Connect to DB first, then start the server
-(async function startServer() {
-  try {
-    const { connectDB } = await import('./database.js');
-    await connectDB();
-    server.listen(config.PORT, () => {
-      console.log(`Server running on port ${config.PORT}`);
-    });
-  } catch (err) {
-    console.error('Failed to connect to DB, exiting...', err);
-    process.exit(1);
-  }
-})();
+// Start server
+server.listen(config.PORT, () => {
+  console.log(`Server running on port ${config.PORT}`);
+});
 
 
 ===== ./server/config.js =====
@@ -2719,24 +2713,284 @@ export default sessionMiddleware;
 // and then `app.use(sessionMiddleware);` in your main server file if needed.
 
 
-===== ./server/collaboration.js =====
+===== ./server/middleware/authMiddleware.js =====
 
-// server/collaboration.js
+// server/middleware/authMiddleware.js
+import jwt from "jsonwebtoken";
+
+export const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.split(" ")[1];
+
+    if (!token) {
+        return res.status(401).json({ message: "Unauthorized: No token provided" });
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        if (err) {
+            return res.status(403).json({ message: "Forbidden: Invalid token" });
+        }
+        req.user = user; // Ensure user data is attached
+        next();
+    });
+};
+
+
+export const authorizeAdmin = (req, res, next) => {
+    // Simple admin check (replace with actual logic)
+    if (req.user && req.user.role === "admin") {
+        return next();
+    }
+    return res.status(403).json({ message: "Access denied. Admins only." });
+};
+
+
+===== ./server/routes/auth.js =====
+
+import express from 'express';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import pool from '../database.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const router = express.Router();
+
+// User registration
+router.post('/register', async (req, res) => {
+    const { email, password } = req.body;
+    try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const result = await pool.query(
+            'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email',
+            [email, hashedPassword]
+        );
+        res.status(201).json({ user: result.rows[0] });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// User login
+router.post('/login', async (req, res) => {
+    const { email, password } = req.body;
+    try {
+        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+        if (result.rows.length === 0) return res.status(401).json({ message: 'Invalid credentials' });
+
+        const user = result.rows[0];
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(401).json({ message: 'Invalid credentials' });
+
+        const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '1h' });
+        res.json({ token });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+export default router;
+
+
+===== ./server/routes/projects.js =====
+
+import express from "express";
+import pool from "../database.js";
+import { authenticateToken } from "../middleware/authMiddleware.js";
+
+const router = express.Router();
+
+// Create a new project
+router.post("/", authenticateToken, async (req, res) => {
+    const { name, description } = req.body;
+
+    if (!req.user || !req.user.id) {
+        return res.status(400).json({ message: "User ID is missing from request" });
+    }
+
+    try {
+        const result = await pool.query(
+            "INSERT INTO projects (name, description, owner_id) VALUES ($1, $2, $3) RETURNING *",
+            [name, description, req.user.id]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+});
+
+// Get all projects for a user
+router.get('/', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM projects WHERE owner_id = $1', [req.user.id]);
+        res.json(result.rows);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Update a project
+router.put('/:id', authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    const { name, description } = req.body;
+    try {
+        const result = await pool.query(
+            'UPDATE projects SET name = $1, description = $2 WHERE id = $3 AND owner_id = $4 RETURNING *',
+            [name, description, id, req.user.id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ message: 'Project not found' });
+        res.json(result.rows[0]);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Delete a project
+router.delete('/:id', authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    try {
+        const result = await pool.query('DELETE FROM projects WHERE id = $1 AND owner_id = $2 RETURNING *', [id, req.user.id]);
+        if (result.rows.length === 0) return res.status(404).json({ message: 'Project not found' });
+        res.json({ message: 'Project deleted' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+export default router;
+
+
+===== ./server/routes/admin.js =====
+
+import express from 'express';
+import pool from '../database.js';
+import { authenticateToken, authorizeAdmin } from '../middleware/authMiddleware.js';
+
+const router = express.Router();
+
+// Get all users (Admin only)
+router.get('/users', authenticateToken, authorizeAdmin, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT id, email, role FROM users');
+        res.json(result.rows);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Update user role (Admin only)
+router.put('/users/:id/role', authenticateToken, authorizeAdmin, async (req, res) => {
+    const { id } = req.params;
+    const { role } = req.body;
+    try {
+        const result = await pool.query('UPDATE users SET role = $1 WHERE id = $2 RETURNING *', [role, id]);
+        if (result.rows.length === 0) return res.status(404).json({ message: 'User not found' });
+        res.json(result.rows[0]);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Delete a user (Admin only)
+router.delete('/users/:id', authenticateToken, authorizeAdmin, async (req, res) => {
+    const { id } = req.params;
+    try {
+        const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING *', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ message: 'User not found' });
+        res.json({ message: 'User deleted' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+export default router;
+
+
+===== ./server/routes/collaboration.js =====
+
+import { WebSocketServer } from 'ws';
+
+let activeSessions = {};
+
+const setupWebSocket = (server) => {
+    const wss = new WebSocketServer({ server });
+
+    wss.on('connection', (ws) => {
+        console.log('New WebSocket connection');
+
+        ws.on('message', (message) => {
+            try {
+                const data = JSON.parse(message);
+                if (data.type === 'join-session') {
+                    if (!activeSessions[data.sessionId]) {
+                        activeSessions[data.sessionId] = new Set();
+                    }
+                    activeSessions[data.sessionId].add(ws);
+                    console.log(`User joined session ${data.sessionId}`);
+                } else if (data.type === 'canvas-update') {
+                    if (activeSessions[data.sessionId]) {
+                        activeSessions[data.sessionId].forEach(client => {
+                            if (client !== ws && client.readyState === ws.OPEN) {
+                                client.send(JSON.stringify({ type: 'canvas-update', data: data.data }));
+                            }
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error('Error handling message:', error);
+            }
+        });
+
+        ws.on('close', () => {
+            Object.keys(activeSessions).forEach(sessionId => {
+                activeSessions[sessionId].delete(ws);
+                if (activeSessions[sessionId].size === 0) {
+                    delete activeSessions[sessionId];
+                }
+            });
+            console.log('WebSocket disconnected');
+        });
+    });
+};
+
+export default setupWebSocket;
+
+
+===== ./server/ws/collaboration.js =====
+
+// ./server/ws/collaboration.js
+
 import { WebSocket } from 'ws';
+// server file at ./server/ws/collaboration.js
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 
-// We'll store user cursor positions and their corresponding sockets
+/**
+ * Example in-memory server state:
+ * For demonstration, we have two rectangles on the board.
+ * Each element has an id, x, y, w, h, and lockedBy (indicating which user is holding it).
+ */
+const serverState = {
+  elements: [
+    { id: 1, x: 100, y: 100, w: 50, h: 50, lockedBy: null },
+    { id: 2, x: 300, y: 200, w: 60, h: 80, lockedBy: null },
+  ]
+};
+
+// Keep track of connected users/cursors from the earlier example
 const activeUsers = new Map();
 
 /**
- * A small enumerated set of message types to avoid typos
- */
-export const MESSAGE_TYPES = {
-  CURSOR_UPDATE: 'cursor-update',
-  CURSOR_UPDATES: 'cursor-updates'
-};
-
-/**
- * Broadcast a message to all connected WebSocket clients.
+ * Broadcast a JSON-serializable message to all connected WebSocket clients.
  */
 function broadcast(wss, data) {
   const message = JSON.stringify(data);
@@ -2748,38 +3002,105 @@ function broadcast(wss, data) {
 }
 
 /**
+ * Send the full element state to a single socket or broadcast to everyone.
+ */
+function sendElementState(wsOrWss, isBroadcast = false) {
+  const payload = {
+    type: MESSAGE_TYPES.ELEMENT_STATE,
+    elements: serverState.elements
+  };
+
+  if (isBroadcast) {
+    broadcast(wsOrWss, payload);
+  } else {
+    wsOrWss.send(JSON.stringify(payload));
+  }
+}
+
+/**
  * Handle a new WebSocket connection and subsequent messages.
  */
 export function handleWebSocketConnection(ws, wss) {
   console.log('New WebSocket connection');
 
+  // On connect, send the current element state so the client can render immediately
+  sendElementState(ws);
+
   ws.on('message', (rawMessage) => {
+    let data;
     try {
-      const data = JSON.parse(rawMessage);
-
-      if (data.type === MESSAGE_TYPES.CURSOR_UPDATE) {
-        // Store user cursor position
-        activeUsers.set(data.userId, {
-          x: data.x,
-          y: data.y,
-          socket: ws,
-        });
-
-        /* Also store userId on ws so we can remove quickly on disconnect */
-        ws.userId = data.userId;
-
-        // Broadcast updated cursor positions to all
-        const cursorData = {
-          type: MESSAGE_TYPES.CURSOR_UPDATES,
-          cursors: Object.fromEntries(
-            [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
-          ),
-        };
-        broadcast(wss, cursorData);
-      }
-      // You can handle other event types here...
+      data = JSON.parse(rawMessage);
     } catch (error) {
       console.error('WebSocket JSON Parse Error:', error.message);
+      return;
+    }
+
+    // Store user’s ID on the socket if it’s a cursor-update
+    if (data.type === MESSAGE_TYPES.CURSOR_UPDATE) {
+      // keep old cursor logic
+      activeUsers.set(data.userId, {
+        x: data.x,
+        y: data.y,
+        socket: ws,
+      });
+      ws.userId = data.userId;
+
+      // broadcast cursors to all
+      const cursorData = {
+        type: MESSAGE_TYPES.CURSOR_UPDATES,
+        cursors: Object.fromEntries(
+          [...activeUsers].map(([userId, { x, y }]) => [userId, { x, y }])
+        ),
+      };
+      broadcast(wss, cursorData);
+      return;
+    }
+
+    // Handle element-based messages
+    switch (data.type) {
+      case MESSAGE_TYPES.ELEMENT_GRAB: {
+        // User wants to grab an element
+        const { userId, elementId } = data;
+        const elem = serverState.elements.find(e => e.id === elementId);
+        if (!elem) return; // Invalid element
+
+        // If not locked, or locked by this same user, let them grab it
+        if (elem.lockedBy === null || elem.lockedBy === userId) {
+          elem.lockedBy = userId;
+          sendElementState(wss, true); // broadcast updated state
+        }
+        break;
+      }
+
+      case MESSAGE_TYPES.ELEMENT_MOVE: {
+        // A user is dragging an already-locked element
+        const { userId, elementId, x, y } = data;
+        const elem = serverState.elements.find(e => e.id === elementId);
+        if (!elem) return; // no such element
+        if (elem.lockedBy !== userId) return; // not allowed to move
+
+        // Update position
+        elem.x = x;
+        elem.y = y;
+        sendElementState(wss, true); // broadcast updated position
+        break;
+      }
+
+      case MESSAGE_TYPES.ELEMENT_RELEASE: {
+        // User releases the element
+        const { userId, elementId } = data;
+        const elem = serverState.elements.find(e => e.id === elementId);
+        if (!elem) return;
+        if (elem.lockedBy === userId) {
+          elem.lockedBy = null; // free it
+          sendElementState(wss, true);
+        }
+        break;
+      }
+
+      default:
+        // ignore unknown message types
+        break;
     }
   });
 
@@ -2789,9 +3110,15 @@ export function handleWebSocketConnection(ws, wss) {
     // Remove the user from activeUsers if ws.userId is set
     if (ws.userId) {
       activeUsers.delete(ws.userId);
+      // If the user was holding an element, release it
+      for (const elem of serverState.elements) {
+        if (elem.lockedBy === ws.userId) {
+          elem.lockedBy = null;
+        }
+      }
     }
 
-    // Optional: broadcast that user left
+    // Broadcast cursors
     const cursorData = {
       type: MESSAGE_TYPES.CURSOR_UPDATES,
       cursors: Object.fromEntries(
@@ -2799,8 +3126,31 @@ export function handleWebSocketConnection(ws, wss) {
       ),
     };
     broadcast(wss, cursorData);
+
+    // Also broadcast new element state if any were released
+    sendElementState(wss, true);
   });
 }
+
+
+===== ./shared/wsMessageTypes.js =====
+
+// ./client/js/wsMessageTypes.js
+
+/**
+ * Centralized list of WebSocket message types to avoid typos.
+ * You can import this file in both client and server if desired.
+ */
+export const MESSAGE_TYPES = {
+  CURSOR_UPDATE: 'cursor-update',
+  CURSOR_UPDATES: 'cursor-updates',
+  
+  ELEMENT_GRAB: 'element-grab',
+  ELEMENT_MOVE: 'element-move',
+  ELEMENT_RELEASE: 'element-release',
+  
+  ELEMENT_STATE: 'element-state',
+};
 
 
 ===== ./client/index.html =====
@@ -2833,3 +3183,923 @@ export function handleWebSocketConnection(ws, wss) {
   <script type="module" src="js/app.js"></script>
 </body>
 </html>
+
+
+===== ./client/css/style.css =====
+
+/* ./client/css/style.css */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* prevents scrolling */
+}
+
+#app {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+#gameCanvas {
+  display: block;  /* removes default inline spacing */
+  width: 100%;
+  height: 100%;
+  background-color: #222; /* example background */
+
+  /* Default cursor is arrow, but we'll switch to .grabbing in JS */
+  cursor: default;
+}
+
+#gameCanvas.grabbing {
+  cursor: grabbing;       /* modern */
+  cursor: -webkit-grabbing;  /* older Chrome/Safari versions */
+}
+
+header {
+  background: #333;
+  color: white;
+  padding: 10px;
+  text-align: center;
+}
+
+main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+canvas {
+  border: 1px solid #ccc;
+  background: white;
+}
+
+footer {
+  background: #333;
+  color: white;
+  text-align: center;
+  padding: 10px;
+}
+
+#zoom-controls {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  background: rgba(0,0,0,0.7);
+  padding: 8px;
+  border-radius: 4px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  z-index: 10; /* ensure it's on top of the canvas */
+}
+
+#zoom-level {
+  min-width: 48px; /* Enough space for text like "100%" */
+  text-align: center;
+}
+
+/* Example styling if you'd prefer a <div> for the marquee:
+   (We are drawing in canvas code, so not strictly needed.)*/
+
+.selection-rectangle {
+ position: absolute;
+ border: 2px solid blue;
+ background: rgba(0,0,255,0.2);
+ pointer-events: none;
+ z-index: 9999;
+}
+
+===== ./client/js/session.js =====
+
+// Ensure user ID persists across sessions
+let userId = localStorage.getItem("userId");
+if (!userId) {
+    userId = "user-" + Math.random().toString(36).substring(7);
+    localStorage.setItem("userId", userId);
+}
+
+const socket = new WebSocket("ws://localhost:3000");
+
+socket.onopen = () => {
+    console.log("Connected to WebSocket server with userId:", userId);
+};
+
+socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === "cursor-update") {
+        updateRemoteCursor(data.userId, data.x, data.y);
+    }
+};
+
+socket.onclose = () => {
+    console.log("Disconnected from WebSocket server");
+};
+
+function sendCursorPosition(x, y) {
+    const message = JSON.stringify({
+        type: "cursor-update",
+        userId: userId, // Persisted user ID
+        x: x,
+        y: y
+    });
+
+    socket.send(message);
+}
+
+// Track user mouse movement
+document.addEventListener("mousemove", (e) => {
+    sendCursorPosition(e.clientX, e.clientY);
+});
+
+// Function to update remote cursor positions
+function updateRemoteCursor(userId, x, y) {
+    let cursor = document.getElementById(`cursor-${userId}`);
+    
+    if (!cursor) {
+        cursor = document.createElement("div");
+        cursor.id = `cursor-${userId}`;
+        cursor.classList.add("remote-cursor");
+        document.body.appendChild(cursor);
+    }
+
+    cursor.style.position = "absolute";
+    cursor.style.left = `${x}px`;
+    cursor.style.top = `${y}px`;
+    cursor.style.width = "8px";
+    cursor.style.height = "8px";
+    cursor.style.background = "red";
+    cursor.style.borderRadius = "50%";
+}
+
+
+===== ./client/js/canvas.js =====
+
+// ./client/js/canvas.js
+
+import { MESSAGE_TYPES } from '/shared/wsMessageTypes.js';
+
+// Camera & Zoom
+let camX = 0;
+let camY = 0;
+let scale = 1.0;
+const minScale = 0.01;
+const maxScale = 16.0;
+const wheelZoomSpeed = 0.0015;
+const buttonZoomStep = 0.25;
+
+// Panning
+let isPanning = false;
+let lastMouseX = 0;
+let lastMouseY = 0;
+
+// Marquee selection
+let isMarqueeSelecting = false;
+// For the rectangle in actual canvas (pixel) coordinates:
+let marqueeStartCanvasX = 0;
+let marqueeStartCanvasY = 0;
+let marqueeEndCanvasX = 0;
+let marqueeEndCanvasY = 0;
+
+// For selecting elements in world coords:
+let marqueeStartWorldX = 0;
+let marqueeStartWorldY = 0;
+let marqueeEndWorldX = 0;
+let marqueeEndWorldY = 0;
+
+// Two-step selection & drag
+let selectedElementIds = [];
+let lockedOffsets = {};
+let isDragging = false;
+
+// Elements from server
+let elements = [];
+
+// Remote cursors
+const userId = generateRandomUserId();
+let socket;
+const cursors = new Map();
+const userColors = new Map();
+
+// Color palette
+const colorPalette = [
+  '#FF0000', // Red
+  '#0000FF', // Blue
+  '#FFFF00', // Yellow
+  '#FFA500', // Orange
+  '#008000', // Green
+  '#800080', // Purple
+];
+let colorIndex = 0;
+function getNextColor() {
+  const c = colorPalette[colorIndex % colorPalette.length];
+  colorIndex++;
+  return c;
+}
+
+// Quarter-cycling grid constants
+const BASE_SPACING = 100;
+const SUB_DIVISIONS = 4;
+
+// Canvas & context
+let canvas, ctx;
+let cssWidth = 0;
+let cssHeight = 0;
+
+export function initCanvas() {
+  canvas = document.getElementById('gameCanvas');
+  ctx = canvas.getContext('2d');
+
+  function resize() {
+    cssWidth = canvas.clientWidth;
+    cssHeight = canvas.clientHeight;
+
+    // For high-DPI: bigger backing store
+    canvas.width = cssWidth * window.devicePixelRatio;
+    canvas.height = cssHeight * window.devicePixelRatio;
+
+    // So that 1 ctx-unit = 1 CSS pixel
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Mouse events
+  canvas.addEventListener('mousedown', onMouseDown);
+  canvas.addEventListener('mousemove', onMouseMove);
+  canvas.addEventListener('mouseup', onMouseUp);
+  canvas.addEventListener('mouseleave', onMouseUp);
+
+  // Wheel => zoom
+  canvas.addEventListener('wheel', onWheel, { passive: false });
+
+  // Zoom UI
+  document.getElementById('zoom-in').addEventListener('click', () => {
+    zoomAroundPoint(scale + buttonZoomStep, cssWidth / 2, cssHeight / 2);
+  });
+  document.getElementById('zoom-out').addEventListener('click', () => {
+    zoomAroundPoint(scale - buttonZoomStep, cssWidth / 2, cssHeight / 2);
+  });
+  document.getElementById('frame-all').addEventListener('click', frameAllElements);
+
+  // ESC => clear selection
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      updateSelection([]);
+    }
+  });
+
+  initWebSocket();
+  requestAnimationFrame(render);
+}
+
+/* ----------------------------------
+   WebSocket & Remote Cursors
+-----------------------------------*/
+function initWebSocket() {
+  socket = new WebSocket('ws://localhost:3000');
+  socket.onopen = () => console.log('WebSocket connected');
+
+  socket.onmessage = (evt) => {
+    try {
+      const data = JSON.parse(evt.data);
+      if (!data.type) return;
+
+      switch (data.type) {
+        case MESSAGE_TYPES.CURSOR_UPDATES:
+          updateAllRemoteCursors(data.cursors);
+          break;
+        case MESSAGE_TYPES.ELEMENT_STATE:
+          elements = data.elements;
+          // remove from local selection if locked by someone else
+          selectedElementIds = selectedElementIds.filter((id) => {
+            const el = elements.find(e => e.id === id);
+            if (!el) return false;
+            return (!el.lockedBy || el.lockedBy === userId);
+          });
+          // if dragging but lost lock => stop
+          if (isDragging) {
+            for (const id of selectedElementIds) {
+              const el = elements.find(e => e.id === id);
+              if (!el || el.lockedBy !== userId) {
+                isDragging = false;
+                break;
+              }
+            }
+          }
+          break;
+        default:
+          break;
+      }
+    } catch (err) {
+      console.error('WebSocket parse error:', err);
+    }
+  };
+
+  socket.onclose = () => {
+    console.log('WebSocket closed');
+    // Clear selection if disconnected
+    updateSelection([]);
+  };
+}
+
+function updateAllRemoteCursors(newCursors) {
+  for (const [uId, pos] of Object.entries(newCursors)) {
+    cursors.set(uId, pos);
+    if (!userColors.has(uId)) {
+      userColors.set(uId, getNextColor());
+    }
+  }
+  // remove stale
+  for (const oldId of cursors.keys()) {
+    if (!newCursors[oldId]) {
+      cursors.delete(oldId);
+      userColors.delete(oldId);
+    }
+  }
+}
+
+/* ----------------------------------
+   Selection, Locking, Releasing
+-----------------------------------*/
+function updateSelection(newSelectedIds) {
+  // release removed
+  const removed = selectedElementIds.filter(id => !newSelectedIds.includes(id));
+  for (const rid of removed) {
+    releaseElement(rid);
+  }
+  // grab added
+  const added = newSelectedIds.filter(id => !selectedElementIds.includes(id));
+  for (const aid of added) {
+    grabElement(aid);
+  }
+  selectedElementIds = [...newSelectedIds];
+
+  if (isDragging && selectedElementIds.length === 0) {
+    isDragging = false;
+  }
+}
+
+function grabElement(elementId) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type: MESSAGE_TYPES.ELEMENT_GRAB,
+    userId,
+    elementId
+  }));
+}
+
+function releaseElement(elementId) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type: MESSAGE_TYPES.ELEMENT_RELEASE,
+    userId,
+    elementId
+  }));
+}
+
+function moveElement(elementId, x, y) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type: MESSAGE_TYPES.ELEMENT_MOVE,
+    userId,
+    elementId,
+    x,
+    y
+  }));
+}
+
+/* ----------------------------------
+   Mouse & Marquee & Drag
+-----------------------------------*/
+function onMouseDown(e) {
+  // Middle or right => panning
+  if (e.button === 1 || e.button === 2) {
+    isPanning = true;
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+    canvas.classList.add('grabbing');
+    return;
+  }
+
+  // Left => selection / marquee / drag
+  if (e.button === 0) {
+    const rect = canvas.getBoundingClientRect();
+
+    // For “canvas px”
+    const canvasDownX = (e.clientX - rect.left) * devicePixelRatio;
+    const canvasDownY = (e.clientY - rect.top) * devicePixelRatio;
+
+    // For “world coords”
+    const screenX = e.clientX - rect.left;
+    const screenY = e.clientY - rect.top;
+    const wx = camX + screenX / scale;
+    const wy = camY + screenY / scale;
+
+    const clicked = findElementAt(wx, wy);
+    if (clicked) {
+      // If locked by another => skip
+      if (clicked.lockedBy && clicked.lockedBy !== userId) {
+        return;
+      }
+
+      const isAlreadySelected = selectedElementIds.includes(clicked.id);
+      if (isAlreadySelected) {
+        // second click => drag
+        isDragging = true;
+        for (const id of selectedElementIds) {
+          const el = elements.find(e => e.id === id);
+          if (el && el.lockedBy === userId) {
+            lockedOffsets[id] = { dx: wx - el.x, dy: wy - el.y };
+          }
+        }
+      } else {
+        // new selection or shift-add
+        if (!e.shiftKey) {
+          updateSelection([]);
+        }
+        const newSet = [...selectedElementIds];
+        if (!newSet.includes(clicked.id)) {
+          newSet.push(clicked.id);
+        } else if (e.shiftKey) {
+          // SHIFT => toggle out
+          const idx = newSet.indexOf(clicked.id);
+          newSet.splice(idx, 1);
+        }
+        updateSelection(newSet);
+        isDragging = false; 
+      }
+      canvas.classList.add('grabbing');
+    } else {
+      // empty => start marquee
+      isMarqueeSelecting = true;
+      marqueeStartCanvasX = canvasDownX;
+      marqueeStartCanvasY = canvasDownY;
+      marqueeEndCanvasX = canvasDownX;
+      marqueeEndCanvasY = canvasDownY;
+
+      marqueeStartWorldX = wx;
+      marqueeStartWorldY = wy;
+      marqueeEndWorldX = wx;
+      marqueeEndWorldY = wy;
+
+      if (!e.shiftKey) {
+        updateSelection([]);
+      }
+      isDragging = false;
+      canvas.classList.add('grabbing');
+    }
+  }
+}
+
+function onMouseMove(e) {
+  // Panning
+  if (isPanning) {
+    const dx = e.clientX - lastMouseX;
+    const dy = e.clientY - lastMouseY;
+    camX -= dx / scale;
+    camY -= dy / scale;
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+  }
+
+  // Drag
+  if (isDragging) {
+    const rect = canvas.getBoundingClientRect();
+    const screenX = e.clientX - rect.left;
+    const screenY = e.clientY - rect.top;
+    const wx = camX + screenX / scale;
+    const wy = camY + screenY / scale;
+
+    for (const id of selectedElementIds) {
+      const el = elements.find(e => e.id === id);
+      if (el && el.lockedBy === userId) {
+        const off = lockedOffsets[id];
+        if (off) {
+          moveElement(id, wx - off.dx, wy - off.dy);
+        }
+      }
+    }
+  }
+
+  // Marquee
+  if (isMarqueeSelecting) {
+    const rect = canvas.getBoundingClientRect();
+    // Canvas px
+    marqueeEndCanvasX = (e.clientX - rect.left) * devicePixelRatio;
+    marqueeEndCanvasY = (e.clientY - rect.top) * devicePixelRatio;
+
+    // World coords
+    const screenX = e.clientX - rect.left;
+    const screenY = e.clientY - rect.top;
+    marqueeEndWorldX = camX + screenX / scale;
+    marqueeEndWorldY = camY + screenY / scale;
+  }
+
+  // Send local cursor
+  const rect = canvas.getBoundingClientRect();
+  const screenX = e.clientX - rect.left;
+  const screenY = e.clientY - rect.top;
+  const wx = camX + screenX / scale;
+  const wy = camY + screenY / scale;
+  sendCursorPosition(wx, wy);
+}
+
+function onMouseUp(e) {
+  // End panning
+  if ((e.button === 1 || e.button === 2) && isPanning) {
+    isPanning = false;
+    canvas.classList.remove('grabbing');
+    return;
+  }
+
+  // End drag
+  if (e.button === 0 && isDragging) {
+    isDragging = false;
+    canvas.classList.remove('grabbing');
+    return;
+  }
+
+  // Finish marquee
+  if (isMarqueeSelecting && e.button === 0) {
+    isMarqueeSelecting = false;
+
+    const rminX = Math.min(marqueeStartWorldX, marqueeEndWorldX);
+    const rmaxX = Math.max(marqueeStartWorldX, marqueeEndWorldX);
+    const rminY = Math.min(marqueeStartWorldY, marqueeEndWorldY);
+    const rmaxY = Math.max(marqueeStartWorldY, marqueeEndWorldY);
+
+    const newlySelected = [];
+    for (const el of elements) {
+      const elMinX = el.x;
+      const elMaxX = el.x + el.w;
+      const elMinY = el.y;
+      const elMaxY = el.y + el.h;
+      const noOverlap =
+        elMaxX < rminX ||
+        elMinX > rmaxX ||
+        elMaxY < rminY ||
+        elMinY > rmaxY;
+      if (!noOverlap) {
+        if (!el.lockedBy || el.lockedBy === userId) {
+          newlySelected.push(el.id);
+        }
+      }
+    }
+    const finalSet = [...selectedElementIds];
+    for (const id of newlySelected) {
+      if (!finalSet.includes(id)) {
+        finalSet.push(id);
+      }
+    }
+    updateSelection(finalSet);
+
+    canvas.classList.remove('grabbing');
+  }
+}
+
+/* ----------------------------------
+   Zoom & Wheel
+-----------------------------------*/
+function onWheel(e) {
+  e.preventDefault();
+  const factor = Math.exp(-e.deltaY * wheelZoomSpeed);
+
+  const rect = canvas.getBoundingClientRect();
+  const screenX = e.clientX - rect.left;
+  const screenY = e.clientY - rect.top;
+
+  zoomAroundPoint(scale * factor, screenX, screenY);
+}
+
+function zoomAroundPoint(newScale, anchorX, anchorY) {
+  const oldScale = scale;
+  scale = Math.max(minScale, Math.min(maxScale, newScale));
+  if (scale === oldScale) return;
+
+  const wx = camX + anchorX / oldScale;
+  const wy = camY + anchorY / oldScale;
+  camX = wx - anchorX / scale;
+  camY = wy - anchorY / scale;
+
+  updateZoomUI();
+}
+
+function updateZoomUI() {
+  const el = document.getElementById('zoom-level');
+  if (el) {
+    el.textContent = `${Math.round(scale * 100)}%`;
+  }
+}
+
+/* ----------------------------------
+   Frame All
+-----------------------------------*/
+function frameAllElements() {
+  if (!elements.length) return;
+
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  for (const el of elements) {
+    minX = Math.min(minX, el.x);
+    maxX = Math.max(maxX, el.x + el.w);
+    minY = Math.min(minY, el.y);
+    maxY = Math.max(maxY, el.y + el.h);
+  }
+  const w = maxX - minX;
+  const h = maxY - minY;
+  if (w <= 0 || h <= 0) return;
+
+  const margin = 50;
+  const scaleX = (cssWidth - margin * 2) / w;
+  const scaleY = (cssHeight - margin * 2) / h;
+  const newScale = Math.max(minScale, Math.min(maxScale, Math.min(scaleX, scaleY)));
+  scale = newScale;
+
+  const cx = minX + w / 2;
+  const cy = minY + h / 2;
+  camX = cx - (cssWidth / 2) / scale;
+  camY = cy - (cssHeight / 2) / scale;
+
+  updateZoomUI();
+}
+
+/* ----------------------------------
+   Main Render Loop
+-----------------------------------*/
+function render() {
+  // Clear entire buffer
+  ctx.save();
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0, canvas.width, canvas.height);
+  ctx.restore();
+
+  fillBackground();
+  drawModularGrid();
+
+  // draw elements
+  ctx.save();
+  ctx.translate(-camX * scale, -camY * scale);
+  ctx.scale(scale, scale);
+
+  for (const el of elements) {
+    ctx.fillStyle = 'red';
+    ctx.fillRect(el.x, el.y, el.w, el.h);
+
+    if (el.lockedBy && el.lockedBy !== userId) {
+      const lockColor = userColors.get(el.lockedBy) || '#FFA500';
+      ctx.strokeStyle = lockColor;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(el.x, el.y, el.w, el.h);
+    }
+    if (selectedElementIds.includes(el.id)) {
+      ctx.strokeStyle = 'blue';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(el.x, el.y, el.w, el.h);
+    }
+  }
+  ctx.restore();
+
+  // if marquee => draw in canvas px
+  if (isMarqueeSelecting) {
+    drawMarquee();
+  }
+
+  drawCursors();
+  requestAnimationFrame(render);
+}
+
+function fillBackground() {
+  ctx.save();
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle = '#F0F0F0';
+  ctx.fillRect(0,0, canvas.width, canvas.height);
+  ctx.restore();
+}
+
+/* ----------------------------------
+   Quarter-Cycling Grid
+-----------------------------------*/
+function drawModularGrid() {
+  ctx.save();
+  ctx.translate(-camX * scale, -camY * scale);
+  ctx.scale(scale, scale);
+
+  const { majorSpacing, fraction } = getEffectiveMajorSpacing(scale);
+
+  const leftWorld = camX;
+  const topWorld = camY;
+  const rightWorld = camX + cssWidth / scale;
+  const bottomWorld = camY + cssHeight / scale;
+
+  const startX = Math.floor(leftWorld / majorSpacing) * majorSpacing;
+  const endX = Math.ceil(rightWorld / majorSpacing) * majorSpacing;
+  const startY = Math.floor(topWorld / majorSpacing) * majorSpacing;
+  const endY = Math.ceil(bottomWorld / majorSpacing) * majorSpacing;
+
+  ctx.strokeStyle = 'rgb(220,220,220)';
+  ctx.lineWidth = 1 / scale;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += majorSpacing) {
+    ctx.moveTo(x, startY);
+    ctx.lineTo(x, endY);
+  }
+  for (let y = startY; y <= endY; y += majorSpacing) {
+    ctx.moveTo(startX, y);
+    ctx.lineTo(endX, y);
+  }
+  ctx.stroke();
+
+  if (fraction > 0) {
+    ctx.strokeStyle = `rgba(230,230,230,${fraction})`;
+    const subSpacing = majorSpacing / SUB_DIVISIONS;
+    ctx.beginPath();
+    for (let x = startX; x <= endX; x += majorSpacing) {
+      for (let i = 1; i < SUB_DIVISIONS; i++) {
+        const subX = x + i * subSpacing;
+        ctx.moveTo(subX, startY);
+        ctx.lineTo(subX, endY);
+      }
+    }
+    for (let y = startY; y <= endY; y += majorSpacing) {
+      for (let i = 1; i < SUB_DIVISIONS; i++) {
+        const subY = y + i * subSpacing;
+        ctx.moveTo(startX, subY);
+        ctx.lineTo(endX, subY);
+      }
+    }
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function getEffectiveMajorSpacing(s) {
+  // log base 4 => L4 = log2(s)/2
+  const L4 = Math.log2(s) / 2;
+  const iPart = Math.floor(L4);
+  let frac = L4 - iPart;
+  if (frac < 0) frac += 1;
+  const majorSpacing = BASE_SPACING / Math.pow(4, iPart);
+  return { majorSpacing, fraction: frac };
+}
+
+/* ----------------------------------
+   Marquee in Canvas Coordinates
+-----------------------------------*/
+function drawMarquee() {
+  const rx = Math.min(marqueeStartCanvasX, marqueeEndCanvasX);
+  const ry = Math.min(marqueeStartCanvasY, marqueeEndCanvasY);
+  const rw = Math.abs(marqueeEndCanvasX - marqueeStartCanvasX);
+  const rh = Math.abs(marqueeEndCanvasY - marqueeStartCanvasY);
+
+  ctx.save();
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.beginPath();
+  ctx.rect(rx, ry, rw, rh);
+  ctx.fillStyle = 'rgba(0,0,255,0.2)';
+  ctx.fill();
+  ctx.strokeStyle = 'blue';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ----------------------------------
+   Draw remote cursors
+-----------------------------------*/
+function drawCursors() {
+  ctx.save();
+  for (const [uId, pos] of cursors.entries()) {
+    if (uId === userId) continue;
+    const sx = (pos.x - camX) * scale;
+    const sy = (pos.y - camY) * scale;
+    const color = userColors.get(uId) || '#FFA500';
+    drawArrowCursor(sx, sy, color, uId);
+  }
+  ctx.restore();
+}
+
+/* a smaller arrow => white fill, color outline */
+function drawArrowCursor(sx, sy, outlineColor, label) {
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, 14);
+  ctx.lineTo(4, 10);
+  ctx.lineTo(6, 14);
+  ctx.lineTo(8, 12);
+  ctx.lineTo(5, 7);
+  ctx.lineTo(9, 3);
+  ctx.lineTo(0, 0);
+  ctx.closePath();
+
+  ctx.fillStyle = 'white';
+  ctx.fill();
+
+  ctx.strokeStyle = outlineColor;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.font = '6px sans-serif';
+  ctx.fillStyle = '#000';
+  ctx.fillText(label, 10, 5);
+
+  ctx.restore();
+}
+
+/* ----------------------------------
+   Utilities
+-----------------------------------*/
+function generateRandomUserId() {
+  return 'user_' + Math.floor(Math.random() * 100000);
+}
+
+function sendCursorPosition(wx, wy) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type: MESSAGE_TYPES.CURSOR_UPDATE,
+    userId,
+    x: wx,
+    y: wy,
+  }));
+}
+
+function findElementAt(wx, wy) {
+  for (let i = elements.length - 1; i >= 0; i--) {
+    const el = elements[i];
+    if (wx >= el.x && wx <= el.x + el.w &&
+        wy >= el.y && wy <= el.y + el.h) {
+      return el;
+    }
+  }
+  return null;
+}
+
+
+===== ./client/js/app.js =====
+
+// js/app.js
+import { initCanvas } from "./canvas.js"; // import from canvas.js
+
+window.addEventListener("DOMContentLoaded", () => {
+  initCanvas();
+  // any additional setup
+});
+
+===== ./db-init-scripts/init.sql =====
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') THEN
+        CREATE ROLE postgres WITH SUPERUSER LOGIN PASSWORD 'postgrespassword';
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'board_game_prototyping') THEN
+        CREATE DATABASE board_game_prototyping OWNER postgres;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admin') THEN
+        CREATE ROLE admin WITH LOGIN PASSWORD 'test1234';
+        ALTER ROLE admin CREATEDB;
+    END IF;
+END $$;
+
+\c board_game_prototyping;
+
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    role VARCHAR(50) DEFAULT 'user'
+);
+
+CREATE TABLE IF NOT EXISTS projects (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    sid VARCHAR NOT NULL PRIMARY KEY,
+    sess JSON NOT NULL,
+    expire TIMESTAMP(6) NOT NULL
+);
+
+-- Grant full access to admin user
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO admin;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO admin;
+GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO admin;
