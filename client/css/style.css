@@ -1,3 +1,5 @@
+/* ./client/css/style.css */
+
 html, body {
   margin: 0;
   padding: 0;
@@ -17,32 +19,40 @@ html, body {
   width: 100%;
   height: 100%;
   background-color: #222; /* example background */
+
+  /* Default cursor is arrow, but we'll switch to .grabbing in JS */
+  cursor: default;
+}
+
+#gameCanvas.grabbing {
+  cursor: grabbing;       /* modern */
+  cursor: -webkit-grabbing;  /* older Chrome/Safari versions */
 }
 
 header {
-    background: #333;
-    color: white;
-    padding: 10px;
-    text-align: center;
+  background: #333;
+  color: white;
+  padding: 10px;
+  text-align: center;
 }
 
 main {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 canvas {
-    border: 1px solid #ccc;
-    background: white;
+  border: 1px solid #ccc;
+  background: white;
 }
 
 footer {
-    background: #333;
-    color: white;
-    text-align: center;
-    padding: 10px;
+  background: #333;
+  color: white;
+  text-align: center;
+  padding: 10px;
 }
 
 #zoom-controls {
@@ -59,8 +69,18 @@ footer {
   z-index: 10; /* ensure it's on top of the canvas */
 }
 
-
 #zoom-level {
   min-width: 48px; /* Enough space for text like "100%" */
   text-align: center;
+}
+
+/* Example styling if you'd prefer a <div> for the marquee:
+   (We are drawing in canvas code, so not strictly needed.)*/
+
+.selection-rectangle {
+ position: absolute;
+ border: 2px solid blue;
+ background: rgba(0,0,255,0.2);
+ pointer-events: none;
+ z-index: 9999;
 }

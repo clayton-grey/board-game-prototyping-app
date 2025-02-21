@@ -28,6 +28,9 @@ const __dirname = path.dirname(__filename);
 // Serve static frontend files from `/client`
 app.use(express.static(path.join(__dirname, '../client')));
 
+// This allows the browser to request files from the "shared" folder, just like "client" folder
+app.use('/shared', express.static(path.join(__dirname, '../shared')));
+
 // API Routes
 app.use('/auth', authRoutes);
 app.use('/projects', projectRoutes);
