@@ -1,574 +1,617 @@
-// ./client/js/app.js
+/**
+ * ./client/js/app.js
+ *
+ * Key changes:
+ *  - After UPGRADE_USER_ID or DOWNGRADE_USER_ID, we update the canvas's localUserId
+ *    so it sends future locks/releases with the correct user ID.
+ *  - This preserves selection/deselection (fixes the bug where you couldn't deselect).
+ *  - No changes to user list order or color on login/out, since the server is 
+ *    now preserving that in the user object (joinOrder, color).
+ */
+
 import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
 import {
   initCanvas,
   handleCanvasMessage,
   handleUserColorUpdate,
   setProjectNameFromServer,
+  updateCanvasUserId, // NEW: function to update localUserId in canvas
 } from "./canvas.js";
 
-window.addEventListener("DOMContentLoaded", () => {
-  // Prevent right-click context menu so we can use right/middle drag in canvas
-  document.addEventListener("contextmenu", (e) => e.preventDefault());
+// Read saved login/session from localStorage
+let token = localStorage.getItem("token") || "";
+let currentUser = localStorage.getItem("user")
+  ? JSON.parse(localStorage.getItem("user"))
+  : null;
 
-  // ------------------------------------------------------------------
-  // LOCAL USER & TOKEN
-  // ------------------------------------------------------------------
-  let token = localStorage.getItem("token") || "";
-  let currentUser = localStorage.getItem("user")
-    ? JSON.parse(localStorage.getItem("user"))
-    : null;
+let activeUserId = localStorage.getItem("activeUserId");
+if (!activeUserId) {
+  activeUserId = "anon_" + Math.floor(Math.random() * 999999);
+  localStorage.setItem("activeUserId", activeUserId);
+}
 
-  // Decide the local user ID, stored in localStorage["activeUserId"]
-  // This ID is what we send to the server's WebSocket
-  function getLocalUserId() {
-    // If user is logged in (ex: user_4)
-    if (currentUser) {
-      return "user_" + currentUser.id;
+const isLoggedIn = () => !!token && !!currentUser;
+const isCurrentUserAdmin = () => currentUser && currentUser.role === "admin";
+
+// We'll store the ephemeral session code in localStorage
+let ephemeralSessionCode = localStorage.getItem("sessionCode") || "defaultSession";
+let ephemeralOwnerId = null;
+let sessionUsers = [];
+
+// DOM references
+const projectNameEl = document.getElementById("project-name");
+const openPMBtn = document.getElementById("open-project-manager");
+const pmModal = document.getElementById("project-manager-modal");
+const closePMBtn = document.getElementById("close-project-manager");
+const loadVersionsBtn = document.getElementById("loadVersionsBtn");
+const saveNewVersionBtn = document.getElementById("saveNewVersionBtn");
+const deleteProjectBtn = document.getElementById("deleteProjectBtn");
+const messageContainer = document.getElementById("messageContainer");
+
+const userInfoPanel = document.getElementById("user-info");
+const userNameSpan = document.getElementById("user-name");
+const userCircle = document.getElementById("user-circle");
+const userCircleText = document.getElementById("user-circle-text");
+const loginDropdown = document.getElementById("login-dropdown");
+const loginForm = document.getElementById("loginForm");
+const registerLink = document.getElementById("registerLink");
+const sessionUsersList = document.getElementById("session-users-list");
+const registerModal = document.getElementById("register-modal");
+const registerForm = document.getElementById("registerForm");
+const registerMessage = document.getElementById("register-message");
+const registerCancelBtn = document.getElementById("registerCancelBtn");
+
+const userActionPopover = document.getElementById("user-action-popover");
+let openPopoverUserId = null;
+
+// We'll store our WebSocket once connected
+let ws = null;
+
+/** Display a short message in the top-center "messageContainer". */
+function showMessage(msg, isError = false) {
+  messageContainer.textContent = msg;
+  messageContainer.style.color = isError ? "red" : "green";
+  setTimeout(() => {
+    if (messageContainer.textContent === msg) {
+      messageContainer.textContent = "";
     }
-    // Otherwise fallback to an existing anonymous ID or create one
-    let anonId = localStorage.getItem("anonId");
-    if (!anonId) {
-      anonId = "anon_" + Math.floor(Math.random() * 999999);
-      localStorage.setItem("anonId", anonId);
+  }, 3000);
+}
+
+/** Send a JSON message over the WebSocket. */
+function sendWSMessage(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+  }
+}
+window.__sendWSMessage = sendWSMessage; // So canvas.js can call it, if needed
+
+function connectWebSocket() {
+  ws = new WebSocket("ws://localhost:3000");
+  ws.onopen = () => {
+    console.log("WebSocket connected.");
+    doJoinSession(); // Join the ephemeral session once open
+  };
+  ws.onmessage = (evt) => {
+    let data;
+    try {
+      data = JSON.parse(evt.data);
+    } catch (err) {
+      console.error("WS parse error:", err);
+      return;
     }
-    return anonId;
-  }
+    handleServerMessage(data);
+  };
+  ws.onclose = () => {
+    console.log("WebSocket closed.");
+  };
+}
 
-  let activeUserId = localStorage.getItem("activeUserId");
-  if (!activeUserId) {
-    activeUserId = getLocalUserId();
-    localStorage.setItem("activeUserId", activeUserId);
-  } else {
-    // If user logs in after having an anon ID, unify
-    if (currentUser && !activeUserId.startsWith("user_")) {
-      activeUserId = "user_" + currentUser.id;
-      localStorage.setItem("activeUserId", activeUserId);
-    }
-  }
+/** Process messages from server. */
+function handleServerMessage(data) {
+  switch (data.type) {
+    case MESSAGE_TYPES.SESSION_USERS: {
+      sessionUsers = data.users || [];
+      ephemeralOwnerId = data.ownerUserId || null;
+      renderSessionUsers();
 
-  // Quick check to see if we have a valid login token
-  function isLoggedIn() {
-    return !!token && !!currentUser;
-  }
-
-  // We'll store the currentProjectName for UI
-  let currentProjectName = "Loading...";
-  const projectId = localStorage.getItem("projectId") || 1;
-
-  // ------------------------------------------------------------------
-  // DOM ELEMENTS FOR PROJECT & USER UI
-  // ------------------------------------------------------------------
-  const projectNameEl = document.getElementById("project-name");
-  const openPMBtn = document.getElementById("open-project-manager");
-  const pmModal = document.getElementById("project-manager-modal");
-  const closePMBtn = document.getElementById("close-project-manager");
-  const loadVersionsBtn = document.getElementById("loadVersionsBtn");
-  const saveNewVersionBtn = document.getElementById("saveNewVersionBtn");
-  const versionsList = document.getElementById("versionsList");
-  const deleteProjectBtn = document.getElementById("deleteProjectBtn");
-  const messageContainer = document.getElementById("messageContainer");
-
-  const userInfoPanel = document.getElementById("user-info");
-  const userNameSpan = document.getElementById("user-name");
-  const userCircle = document.getElementById("user-circle");
-  const userCircleText = document.getElementById("user-circle-text");
-  const loginDropdown = document.getElementById("login-dropdown");
-  const loginForm = document.getElementById("loginForm");
-  const registerLink = document.getElementById("registerLink");
-  const sessionUsersList = document.getElementById("session-users-list");
-  const registerModal = document.getElementById("register-modal");
-  const registerForm = document.getElementById("registerForm");
-  const registerMessage = document.getElementById("register-message");
-  const registerCancelBtn = document.getElementById("registerCancelBtn");
-
-  // ------------------------------------------------------------------
-  // SINGLE WEBSOCKET
-  // ------------------------------------------------------------------
-  let ws = null;
-  let sessionUsers = [];
-
-  // Helper to send a message if socket is open
-  function sendWSMessage(msg) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
-    }
-  }
-
-  function connectWebSocket() {
-    ws = new WebSocket("ws://localhost:3000");
-
-    ws.onopen = () => {
-      console.log("Unified WS connected");
-      // Let the server know who we are so it can track us
-      doJoinSession();
-    };
-
-    ws.onmessage = (evt) => {
-      let data;
-      try {
-        data = JSON.parse(evt.data);
-      } catch (err) {
-        console.error("WS parse error:", err);
-        return;
+      // Update color for remote cursors
+      sessionUsers.forEach(u => {
+        handleUserColorUpdate(u.userId, u.name, u.color);
+      });
+      // Update my local user circle if found
+      const me = sessionUsers.find(u => u.userId === activeUserId);
+      if (me) {
+        userCircle.style.background = me.color;
+        userCircleText.textContent = getInitial(me.name);
       }
+      break;
+    }
 
-      switch (data.type) {
-        // ---------------------------
-        // Session / user messages
-        // ---------------------------
-        case MESSAGE_TYPES.SESSION_USERS: {
-          sessionUsers = data.users || [];
-          renderSessionUsers();
+    case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
+      const { newName } = data;
+      currentProjectName = newName;
+      restoreNameSpan();
+      showMessage(`Renamed to: ${currentProjectName}`);
+      setProjectNameFromServer(currentProjectName);
+      break;
+    }
 
-          // Also update the color / name info used by the canvas
-          // so we can draw locked elements, remote cursors, etc.
-          sessionUsers.forEach((u) => {
-            handleUserColorUpdate(u.userId, u.name, u.color);
-          });
+    // Real-time collaboration data
+    case MESSAGE_TYPES.ELEMENT_STATE:
+    case MESSAGE_TYPES.CURSOR_UPDATES:
+    case MESSAGE_TYPES.CURSOR_UPDATE:
+      handleCanvasMessage(data, activeUserId);
+      break;
 
-          // If we see ourselves, update top-right circle color
-          const me = sessionUsers.find((u) => u.userId === activeUserId);
-          if (me) {
-            userCircle.style.background = me.color;
-            userCircleText.textContent = getInitial(me.name);
-          }
-          break;
-        }
+    case MESSAGE_TYPES.KICKED:
+      alert("You have been kicked from the session.");
+      ws.close();
+      break;
 
-        // Project name changed by some user
-        case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
-          currentProjectName = data.newName;
-          restoreNameSpan();
-          showMessage(`Project renamed to "${currentProjectName}" by another user.`);
+    default:
+      console.log("Unknown message:", data.type, data);
+  }
+}
 
-          // Let canvas know too, if you want
-          setProjectNameFromServer(currentProjectName);
-          break;
-        }
+/** Attempt to join the session using the current userId and ephemeralSessionCode. */
+function doJoinSession() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-        // ---------------------------
-        // Canvas / element messages
-        // ---------------------------
-        case MESSAGE_TYPES.ELEMENT_STATE:
-        case MESSAGE_TYPES.CURSOR_UPDATES:
-        case "cursor-update": // older singular
-          // Hand off to canvas.js
-          handleCanvasMessage(data, activeUserId);
-          break;
-
-        default:
-          console.log("Unknown WebSocket message type:", data.type, data);
-          break;
-      }
-    };
-
-    ws.onclose = () => {
-      console.log("Unified WS closed");
-    };
+  const userName = currentUser ? currentUser.name : "Anonymous";
+  let userRole = "";
+  if (isCurrentUserAdmin()) {
+    userRole = "admin";
   }
 
-  // This is how we announce ourselves
-  function doJoinSession() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const userName = currentUser ? currentUser.name : "Anonymous";
-    ws.send(
-      JSON.stringify({
-        type: MESSAGE_TYPES.JOIN_SESSION,
+  sendWSMessage({
+    type: MESSAGE_TYPES.JOIN_SESSION,
+    userId: activeUserId,
+    name: userName,
+    sessionCode: ephemeralSessionCode,
+    userRole,
+  });
+}
+
+/** Quick helper to get first letter or '?'. */
+function getInitial(str) {
+  if (!str) return "?";
+  return str.trim().charAt(0).toUpperCase();
+}
+
+/** Refresh top-right user panel display. */
+function updateLocalUserUI() {
+  let displayName = "Anonymous";
+  if (currentUser?.name) {
+    displayName = currentUser.name;
+  }
+  userNameSpan.textContent = displayName;
+  userCircle.style.background = "#888";
+  userCircleText.textContent = getInitial(displayName);
+}
+
+/* ------------------------------------------------------------------
+   RENDER SESSION USERS
+------------------------------------------------------------------ */
+function renderSessionUsers() {
+  sessionUsersList.innerHTML = "";
+  sessionUsers.forEach(u => {
+    const li = document.createElement("li");
+
+    const circle = document.createElement("div");
+    circle.classList.add("session-user-circle");
+    circle.style.background = u.color;
+    li.appendChild(circle);
+
+    const labelSpan = document.createElement("span");
+    labelSpan.textContent = u.name + " " + getRoleEmoji(u);
+
+    if (canManageUser(u)) {
+      labelSpan.classList.add("user-name-clickable");
+      labelSpan.style.cursor = "pointer";
+      labelSpan.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        onUserNameClicked(u, labelSpan);
+      });
+    }
+    li.appendChild(labelSpan);
+
+    sessionUsersList.appendChild(li);
+  });
+}
+
+/** For ephemeral roles, show small emoji. */
+function getRoleEmoji(u) {
+  if (u.isAdmin) return "🪄";
+  if (u.isOwner) return "🔑";
+  if (u.isEditor) return "✏️";
+  return "";
+}
+
+/** Whether we can manage that user (kick, editor toggles). */
+function canManageUser(u) {
+  const iAmOwner = (activeUserId === ephemeralOwnerId);
+  const iAmAdmin = isCurrentUserAdmin();
+  if (!iAmOwner && !iAmAdmin) return false;
+  if (u.userId === activeUserId) return false;
+  if (u.isAdmin && !iAmAdmin) return false;
+  return true;
+}
+
+/** Clicking a user name => ephemeral role popover. */
+function onUserNameClicked(u, labelElem) {
+  if (openPopoverUserId === u.userId) {
+    hideUserActionPopover();
+    return;
+  }
+  openPopoverUserId = u.userId;
+  buildAndPositionPopover(u, labelElem);
+}
+
+function buildAndPositionPopover(u, labelElem) {
+  userActionPopover.innerHTML = "";
+  userActionPopover.classList.remove("hidden");
+
+  if (u.isEditor) {
+    const removeEd = document.createElement("div");
+    removeEd.classList.add("user-action-item");
+    removeEd.textContent = "Remove Editor";
+    removeEd.addEventListener("click", () => {
+      sendWSMessage({
+        type: MESSAGE_TYPES.REMOVE_EDITOR,
         userId: activeUserId,
-        name: userName,
-      })
-    );
-  }
-
-  // We’ll export the function so canvas.js can send messages too
-  // but in this example we’ll just attach it on the window for clarity
-  window.__sendWSMessage = sendWSMessage;
-
-  // ------------------------------------------------------------------
-  // INIT
-  // ------------------------------------------------------------------
-  connectWebSocket();
-  initCanvas(activeUserId); // sets up all canvas event handlers
-  updateLocalUserUI();
-
-  // ------------------------------------------------------------------
-  // RENDER USERS
-  // ------------------------------------------------------------------
-  function renderSessionUsers() {
-    sessionUsersList.innerHTML = "";
-    sessionUsers.forEach((u) => {
-      const li = document.createElement("li");
-      const circle = document.createElement("div");
-      circle.classList.add("session-user-circle");
-      circle.style.background = u.color;
-
-      const nameSpan = document.createElement("span");
-      nameSpan.textContent = u.name;
-
-      li.appendChild(circle);
-      li.appendChild(nameSpan);
-      sessionUsersList.appendChild(li);
+        targetUserId: u.userId,
+      });
+      hideUserActionPopover();
     });
+    userActionPopover.appendChild(removeEd);
+  } else {
+    const makeEd = document.createElement("div");
+    makeEd.classList.add("user-action-item");
+    makeEd.textContent = "Make Editor";
+    makeEd.addEventListener("click", () => {
+      sendWSMessage({
+        type: MESSAGE_TYPES.MAKE_EDITOR,
+        userId: activeUserId,
+        targetUserId: u.userId,
+      });
+      hideUserActionPopover();
+    });
+    userActionPopover.appendChild(makeEd);
   }
 
-  // ------------------------------------------------------------------
-  // LOCAL USER UI
-  // ------------------------------------------------------------------
-  userInfoPanel.addEventListener("click", (evt) => {
-    if (isLoggedIn()) {
-      if (confirm("Log out?")) {
-        doLogout();
-      }
-    } else {
-      if (loginDropdown.contains(evt.target)) return;
+  const kickItem = document.createElement("div");
+  kickItem.classList.add("user-action-item");
+  kickItem.textContent = "Kick User";
+  kickItem.addEventListener("click", () => {
+    sendWSMessage({
+      type: MESSAGE_TYPES.KICK_USER,
+      userId: activeUserId,
+      targetUserId: u.userId,
+    });
+    hideUserActionPopover();
+  });
+  userActionPopover.appendChild(kickItem);
+
+  userActionPopover.style.left = "-9999px";
+  userActionPopover.style.top = "-9999px";
+
+  requestAnimationFrame(() => {
+    const popRect = userActionPopover.getBoundingClientRect();
+    const popHeight = popRect.height;
+
+    const userListRect = sessionUsersList.getBoundingClientRect();
+    const labelRect = labelElem.getBoundingClientRect();
+    const anchorMidY = (labelRect.top + labelRect.bottom) / 2;
+    const offsetX = 10;
+
+    const finalLeft = userListRect.right + offsetX;
+    const finalTop = anchorMidY - popHeight / 2;
+
+    userActionPopover.style.left = finalLeft + "px";
+    userActionPopover.style.top = finalTop + "px";
+  });
+}
+
+function hideUserActionPopover() {
+  openPopoverUserId = null;
+  userActionPopover.classList.add("hidden");
+}
+
+// Hide popover if clicking outside
+document.addEventListener("click", (evt) => {
+  if (
+    openPopoverUserId &&
+    !evt.target.closest("#user-action-popover") &&
+    !evt.target.classList.contains("user-name-clickable")
+  ) {
+    hideUserActionPopover();
+  }
+});
+
+/* ------------------------------------------------------------------
+   LOGGING OUT => DOWNGRADE_USER_ID
+------------------------------------------------------------------ */
+function doLogout() {
+  if (!currentUser) {
+    // Already anonymous
+    return;
+  }
+  const oldUserId = "user_" + currentUser.id;
+  const newAnonId = "anon_" + Math.floor(Math.random() * 999999);
+
+  sendWSMessage({
+    type: MESSAGE_TYPES.DOWNGRADE_USER_ID,
+    oldUserId,
+    newUserId: newAnonId,
+  });
+
+  // Clear local login data
+  token = "";
+  currentUser = null;
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+
+  activeUserId = newAnonId;
+  localStorage.setItem("activeUserId", newAnonId);
+
+  // **Important**: update the canvas's local user ID so 
+  // we continue to send future element-grab/release with the new ID.
+  updateCanvasUserId(newAnonId);
+
+  showMessage("You are now anonymous.");
+  updateLocalUserUI();
+}
+
+/* ------------------------------------------------------------------
+   TOP-RIGHT USER PANEL => LOG IN / LOG OUT
+------------------------------------------------------------------ */
+userInfoPanel.addEventListener("click", (evt) => {
+  if (isLoggedIn()) {
+    if (confirm("Log out?")) {
+      doLogout();
+    }
+  } else {
+    if (!loginDropdown.contains(evt.target)) {
       loginDropdown.classList.toggle("hidden");
     }
-  });
-
-  document.addEventListener("click", (evt) => {
-    if (!loginDropdown.classList.contains("hidden")) {
-      if (!loginDropdown.contains(evt.target) && !userInfoPanel.contains(evt.target)) {
-        loginDropdown.classList.add("hidden");
-      }
-    }
-  });
-
-  function updateLocalUserUI() {
-    let displayName = "Anonymous";
-    if (currentUser && currentUser.name) {
-      displayName = currentUser.name;
-    }
-    userNameSpan.textContent = displayName;
-    userCircle.style.background = "#888"; // overridden by server once we see ourselves in SESSION_USERS
-    userCircleText.textContent = getInitial(displayName);
   }
+});
 
-  function doLogout() {
-    token = "";
-    currentUser = null;
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-
-    // revert to anonymous ID
-    let anonId = "anon_" + Math.floor(Math.random() * 999999);
-    localStorage.setItem("anonId", anonId);
-    localStorage.setItem("activeUserId", anonId);
-
-    showMessage("Logged out.");
-    updateLocalUserUI();
-    doJoinSession();
-  }
-
-  loginForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const email = document.getElementById("loginEmail").value;
-    const pass = document.getElementById("loginPassword").value;
-
-    fetch("/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password: pass }),
-    })
-      .then((res) => {
-        if (!res.ok) {
-          return res.json().then((obj) => {
-            throw new Error(obj.message || "Login failed");
-          });
-        }
-        return res.json();
-      })
-      .then((data) => {
-        token = data.token;
-        currentUser = data.user;
-        localStorage.setItem("token", token);
-        localStorage.setItem("user", JSON.stringify(currentUser));
-
-        // Now that we’re logged in, unify the userId
-        const newId = "user_" + currentUser.id;
-        localStorage.setItem("activeUserId", newId);
-
-        showMessage("Logged in.");
-        loginDropdown.classList.add("hidden");
-        updateLocalUserUI();
-        doJoinSession();
-      })
-      .catch((err) => {
-        console.error(err);
-        showMessage("Error logging in: " + err.message, true);
-      });
-  });
-
-  registerLink.addEventListener("click", (e) => {
-    e.preventDefault();
+// Hide login if clicking outside
+document.addEventListener("click", (evt) => {
+  if (
+    !loginDropdown.classList.contains("hidden") &&
+    !loginDropdown.contains(evt.target) &&
+    !userInfoPanel.contains(evt.target)
+  ) {
     loginDropdown.classList.add("hidden");
-    registerModal.classList.remove("hidden");
-  });
-
-  registerForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    registerMessage.textContent = "";
-
-    const name = document.getElementById("regName").value;
-    const email = document.getElementById("regEmail").value;
-    const password = document.getElementById("regPassword").value;
-    const confirmPassword = document.getElementById("regConfirm").value;
-
-    fetch("/auth/register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, password, confirmPassword }),
-    })
-      .then((res) => {
-        if (!res.ok) {
-          return res.json().then((obj) => {
-            throw new Error(obj.message || "Registration failed");
-          });
-        }
-        return res.json();
-      })
-      .then((data) => {
-        // auto-login
-        token = data.token;
-        currentUser = data.user;
-        localStorage.setItem("token", token);
-        localStorage.setItem("user", JSON.stringify(currentUser));
-
-        const newId = "user_" + currentUser.id;
-        localStorage.setItem("activeUserId", newId);
-
-        registerMessage.textContent = "Registration successful! Logging you in...";
-        registerMessage.style.color = "green";
-
-        setTimeout(() => {
-          registerModal.classList.add("hidden");
-          showMessage("Logged in as " + currentUser.name);
-          updateLocalUserUI();
-          doJoinSession();
-        }, 1000);
-      })
-      .catch((err) => {
-        console.error(err);
-        registerMessage.textContent = err.message;
-        registerMessage.style.color = "red";
-      });
-  });
-
-  registerCancelBtn.addEventListener("click", () => {
-    registerModal.classList.add("hidden");
-  });
-
-  function getInitial(str) {
-    if (!str) return "?";
-    return str.trim().charAt(0).toUpperCase();
   }
+});
 
-  // ------------------------------------------------------------------
-  // PROJECT RENAME & UI
-  // ------------------------------------------------------------------
-  projectNameEl.addEventListener("click", () => {
-    startEditingProjectName();
-  });
+/* ------------------------------------------------------------------
+   LOGIN FORM => UPGRADE_USER_ID
+------------------------------------------------------------------ */
+loginForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const email = document.getElementById("loginEmail").value.trim();
+  const pass = document.getElementById("loginPassword").value;
 
-  function startEditingProjectName() {
-    const input = document.createElement("input");
-    input.type = "text";
-    input.value = projectNameEl.textContent || currentProjectName;
-    input.id = "edit-project-name";
-    projectNameEl.replaceWith(input);
-    input.focus();
-
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        commitNameChange(input.value);
-      } else if (e.key === "Escape") {
-        revertNameChange();
+  fetch("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password: pass }),
+  })
+    .then((res) => {
+      if (!res.ok) {
+        return res.json().then((obj) => {
+          throw new Error(obj.message || "Login failed");
+        });
       }
-    });
-    input.addEventListener("blur", () => {
-      commitNameChange(input.value);
-    });
-  }
-
-  function commitNameChange(newName) {
-    if (!newName.trim()) {
-      revertNameChange();
-      return;
-    }
-    if (!isLoggedIn()) {
-      showMessage("Please log in to rename project", true);
-      revertNameChange();
-      return;
-    }
-
-    fetch(`/projects/${projectId}`, {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ name: newName, description: "" }),
+      return res.json(); // { message, user, token }
     })
-      .then((res) => {
-        if (!res.ok) {
-          return res.json().then((obj) => {
-            throw new Error(obj.message || "Failed to rename project");
-          });
-        }
-        return res.json();
-      })
-      .then((updatedProj) => {
-        currentProjectName = updatedProj.name;
-        // Also broadcast to all via WebSocket
+    .then((data) => {
+      token = data.token;
+      currentUser = data.user;
+      localStorage.setItem("token", token);
+      localStorage.setItem("user", JSON.stringify(currentUser));
+
+      const newUserId = "user_" + currentUser.id;
+      const oldUserId = activeUserId;
+
+      localStorage.setItem("activeUserId", newUserId);
+      activeUserId = newUserId;
+
+      // If we were anonymous, rename in place
+      if (oldUserId.startsWith("anon_")) {
         sendWSMessage({
-          type: MESSAGE_TYPES.PROJECT_NAME_CHANGE,
-          newName: currentProjectName,
+          type: MESSAGE_TYPES.UPGRADE_USER_ID,
+          oldUserId,
+          newUserId,
+          newName: currentUser.name,
+          newIsAdmin: (currentUser.role === "admin"),
         });
-      })
-      .catch((err) => {
-        console.error(err);
-        showMessage("Error renaming: " + err.message, true);
-      })
-      .finally(() => {
-        restoreNameSpan();
-      });
-  }
-
-  function revertNameChange() {
-    restoreNameSpan();
-  }
-
-  function restoreNameSpan() {
-    const oldInput = document.getElementById("edit-project-name");
-    if (!oldInput) return;
-    const span = document.createElement("span");
-    span.id = "project-name";
-    span.title = "Click to edit project name";
-    span.textContent = currentProjectName;
-    span.style.cursor = "pointer";
-    oldInput.replaceWith(span);
-    span.addEventListener("click", () => {
-      startEditingProjectName();
-    });
-  }
-
-  // ------------------------------------------------------------------
-  // PROJECT MANAGER (VERSIONS, DELETE, etc.)
-  // ------------------------------------------------------------------
-  openPMBtn.addEventListener("click", () => pmModal.classList.remove("hidden"));
-  closePMBtn.addEventListener("click", () => pmModal.classList.add("hidden"));
-
-  loadVersionsBtn.addEventListener("click", () => {
-    if (!isLoggedIn()) {
-      showMessage("Log in to load versions", true);
-      return;
-    }
-    fetch(`/projects/${projectId}/versions`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed to load versions");
-        return res.json();
-      })
-      .then((versions) => {
-        versionsList.innerHTML = "";
-        versions.forEach((v) => {
-          const li = document.createElement("li");
-          li.textContent = `Version #${v.version_number} (ID:${v.id})`;
-          const rollbackBtn = document.createElement("button");
-          rollbackBtn.textContent = "Rollback";
-          rollbackBtn.style.marginLeft = "10px";
-          rollbackBtn.addEventListener("click", () => rollbackVersion(v.id));
-          li.appendChild(rollbackBtn);
-          versionsList.appendChild(li);
-        });
-      })
-      .catch((err) => {
-        console.error(err);
-        showMessage(err.message, true);
-      });
-  });
-
-  function rollbackVersion(verId) {
-    fetch(`/projects/${projectId}/versions/${verId}/rollback`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed to rollback");
-        return res.json();
-      })
-      .then((data) => {
-        showMessage(`Rollback success. New ver: ${data.newVersion.version_number}`);
-      })
-      .catch((err) => {
-        console.error(err);
-        showMessage(err.message, true);
-      });
-  }
-
-  saveNewVersionBtn.addEventListener("click", () => {
-    if (!isLoggedIn()) {
-      showMessage("Log in to save version", true);
-      return;
-    }
-    const payload = {
-      project_data: {
-        note: "Manual save from UI",
-        time: new Date().toISOString(),
-      },
-    };
-    fetch(`/projects/${projectId}/versions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed to save version");
-        return res.json();
-      })
-      .then((newVer) => showMessage(`Created version #${newVer.version_number}`))
-      .catch((err) => {
-        console.error(err);
-        showMessage(err.message, true);
-      });
-  });
-
-  deleteProjectBtn.addEventListener("click", () => {
-    if (!isLoggedIn()) {
-      showMessage("Log in to delete project", true);
-      return;
-    }
-    if (!confirm("Are you sure you want to delete this project?")) return;
-    fetch(`/projects/${projectId}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed to delete project");
-        return res.json();
-      })
-      .then(() => showMessage("Project deleted."))
-      .catch((err) => {
-        console.error(err);
-        showMessage(err.message, true);
-      });
-  });
-
-  // ------------------------------------------------------------------
-  // UTILITY
-  // ------------------------------------------------------------------
-  function showMessage(msg, isError = false) {
-    messageContainer.textContent = msg;
-    messageContainer.style.color = isError ? "red" : "green";
-    setTimeout(() => {
-      if (messageContainer.textContent === msg) {
-        messageContainer.textContent = "";
       }
-    }, 4000);
+
+      // Also update the canvas so it sends future lock messages as newUserId
+      updateCanvasUserId(newUserId);
+
+      showMessage("Logged in as " + currentUser.name);
+      loginDropdown.classList.add("hidden");
+      updateLocalUserUI();
+    })
+    .catch((err) => {
+      showMessage(err.message, true);
+    });
+});
+
+/* ------------------------------------------------------------------
+   REGISTER => UPGRADE_USER_ID
+------------------------------------------------------------------ */
+registerLink.addEventListener("click", (e) => {
+  e.preventDefault();
+  loginDropdown.classList.add("hidden");
+  registerModal.classList.remove("hidden");
+});
+
+registerForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  registerMessage.textContent = "";
+
+  const name = document.getElementById("regName").value.trim();
+  const email = document.getElementById("regEmail").value.trim();
+  const password = document.getElementById("regPassword").value;
+  const confirmPassword = document.getElementById("regConfirm").value;
+
+  fetch("/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, email, password, confirmPassword }),
+  })
+    .then((res) => {
+      if (!res.ok) {
+        return res.json().then((obj) => {
+          throw new Error(obj.message || "Registration failed");
+        });
+      }
+      return res.json(); // { message, user, token }
+    })
+    .then((data) => {
+      token = data.token;
+      currentUser = data.user;
+      localStorage.setItem("token", token);
+      localStorage.setItem("user", JSON.stringify(currentUser));
+
+      const newId = "user_" + currentUser.id;
+      const oldId = activeUserId;
+
+      localStorage.setItem("activeUserId", newId);
+      activeUserId = newId;
+
+      if (oldId.startsWith("anon_")) {
+        sendWSMessage({
+          type: MESSAGE_TYPES.UPGRADE_USER_ID,
+          oldUserId: oldId,
+          newUserId: newId,
+          newName: currentUser.name,
+          newIsAdmin: (currentUser.role === "admin"),
+        });
+      }
+
+      updateCanvasUserId(newId);
+
+      registerMessage.textContent = "Registration successful!";
+      registerMessage.style.color = "green";
+      setTimeout(() => {
+        registerModal.classList.add("hidden");
+        showMessage("Logged in as " + currentUser.name);
+        updateLocalUserUI();
+      }, 1000);
+    })
+    .catch((err) => {
+      registerMessage.textContent = err.message;
+      registerMessage.style.color = "red";
+    });
+});
+
+registerCancelBtn.addEventListener("click", () => {
+  registerModal.classList.add("hidden");
+});
+
+/* ------------------------------------------------------------------
+   PROJECT MANAGEMENT (basic ephemeral placeholders)
+------------------------------------------------------------------ */
+openPMBtn.addEventListener("click", () => {
+  if (activeUserId !== ephemeralOwnerId && !isCurrentUserAdmin()) {
+    showMessage("Must be owner or admin to open panel.", true);
+    return;
   }
+  pmModal.classList.remove("hidden");
+});
+closePMBtn.addEventListener("click", () => pmModal.classList.add("hidden"));
+
+loadVersionsBtn.addEventListener("click", () => {
+  showMessage("Version loading not implemented in ephemeral mode.", true);
+});
+saveNewVersionBtn.addEventListener("click", () => {
+  if (!isLoggedIn()) {
+    showMessage("You must log in to save a project version.", true);
+    return;
+  }
+  showMessage("Saving ephemeral version not implemented.", true);
+});
+deleteProjectBtn.addEventListener("click", () => {
+  showMessage("Delete ephemeral project not implemented.", true);
+});
+
+/* ------------------------------------------------------------------
+   PROJECT NAME EDITING
+------------------------------------------------------------------ */
+projectNameEl.addEventListener("click", () => {
+  startEditingProjectName();
+});
+
+function startEditingProjectName() {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = projectNameEl.textContent || "Untitled Project";
+  input.id = "edit-project-name";
+  projectNameEl.replaceWith(input);
+  input.focus();
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitNameChange(input.value);
+    } else if (e.key === "Escape") {
+      revertNameChange();
+    }
+  });
+  input.addEventListener("blur", () => {
+    commitNameChange(input.value);
+  });
+}
+
+function commitNameChange(newName) {
+  if (!newName.trim()) {
+    revertNameChange();
+    return;
+  }
+  if (activeUserId !== ephemeralOwnerId && !isCurrentUserAdmin()) {
+    showMessage("Only session owner or admin can rename.", true);
+    revertNameChange();
+    return;
+  }
+  sendWSMessage({
+    type: MESSAGE_TYPES.PROJECT_NAME_CHANGE,
+    userId: activeUserId,
+    newName,
+  });
+  // The server broadcast will finalize the name
+}
+
+function revertNameChange() {
+  restoreNameSpan();
+}
+
+function restoreNameSpan() {
+  const oldInput = document.getElementById("edit-project-name");
+  if (!oldInput) return;
+  const span = document.createElement("span");
+  span.id = "project-name";
+  span.title = "Click to edit project name";
+  span.textContent = currentProjectName;
+  span.style.cursor = "pointer";
+  oldInput.replaceWith(span);
+  span.addEventListener("click", () => startEditingProjectName());
+}
+
+/* ------------------------------------------------------------------
+   FINAL INIT
+------------------------------------------------------------------ */
+window.addEventListener("DOMContentLoaded", () => {
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+  connectWebSocket();
+  initCanvas(activeUserId);   // Initialize the canvas with the current ID
+  updateLocalUserUI();
 });

@@ -24,6 +24,33 @@ async function canEditProject(req, projectId) {
 
 const router = express.Router();
 
+/**
+ * GET /projects/ensureDefault
+ *  - If the user already owns at least one project, return the first.
+ *  - Otherwise create a new "My Default Project" for them and return it.
+ */
+router.get("/ensureDefault", authenticateToken, async (req, res) => {
+  try {
+    const existing = await pool.query(
+      "SELECT * FROM projects WHERE owner_id = $1 ORDER BY id LIMIT 1",
+      [req.user.id]
+    );
+    if (existing.rows.length > 0) {
+      return res.json(existing.rows[0]);
+    }
+
+    // Otherwise create one
+    const result = await pool.query(
+      "INSERT INTO projects (name, description, owner_id) VALUES ($1, $2, $3) RETURNING *",
+      ["My Default Project", "Auto-created for user", req.user.id]
+    );
+    return res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("Error in ensureDefault:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+});
+
 // ------------------------------------------
 // Standard Project CRUD
 // ------------------------------------------
@@ -74,7 +101,6 @@ router.put("/:id", authenticateToken, async (req, res) => {
       return res.status(403).json({ message: "Not authorized." });
     }
 
-    // If no description given, default to empty so query doesn't break
     if (!description) {
       description = "";
     }
@@ -119,7 +145,7 @@ router.delete("/:id", authenticateToken, async (req, res) => {
 });
 
 // ------------------------------------------
-// NEW: Versioning Endpoints
+// Versioning Endpoints
 // ------------------------------------------
 
 router.get("/:id/versions", authenticateToken, async (req, res) => {

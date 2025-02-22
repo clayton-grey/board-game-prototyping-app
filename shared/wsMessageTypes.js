@@ -1,5 +1,4 @@
 // ./shared/wsMessageTypes.js
-
 export const MESSAGE_TYPES = {
   JOIN_SESSION: 'join-session',
   CURSOR_UPDATE: 'cursor-update',
@@ -12,4 +11,10 @@ export const MESSAGE_TYPES = {
 
   PROJECT_NAME_CHANGE: 'project-name-change',
   SESSION_USERS: 'session-users',
+  UPGRADE_USER_ID: 'upgrade-user-id',
+
+  MAKE_EDITOR: 'make-editor',
+  REMOVE_EDITOR: 'remove-editor',
+  KICK_USER: 'kick-user',
+  KICKED: 'kicked'
 };
