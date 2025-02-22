@@ -4,12 +4,12 @@
 An interactive board game prototyping environment that allows multiple users to collaborate in real time. Users can connect to a shared session and interact with a full-screen canvas containing various virtual board game elements.
 
 ## Features
-- **Real-time collaboration** via WebSockets
-- **Scrollable & Zoomable Canvas**
-- **User authentication** with JWT
-- **Admin panel** for user and project management
-- **Project versioning and session persistence**
-- **Secure database connection** using PostgreSQL
+- **Real-time collaboration** via WebSockets  
+- **Scrollable & Zoomable Canvas**  
+- **User authentication** with JWT  
+- **Admin panel** for user and project management  
+- **Project versioning and session persistence** (projects stored in PostgreSQL, sessions currently use in-memory storage with partial DB integration)  
+- **Secure database connection** using PostgreSQL  
 
 ## Installation
 
@@ -37,7 +37,7 @@ board-game-prototyping-app/
 ├── server/
 │   ├── index.js                # Main server file
 │   ├── database.js             # PostgreSQL database connection
-│   ├── sessionManager.js       # Manages session persistence
+│   ├── sessionManager.js       # Manages session persistence (currently partial, in-memory)
 │   ├── routes/
 │   │   ├── auth.js             # Authentication routes
 │   │   ├── projects.js         # Project CRUD & versioning
@@ -50,17 +50,20 @@ board-game-prototyping-app/
 ├── client/
 │   ├── index.html              # Base HTML structure
 │   ├── js/
-│   │   ├── app.js              # Main frontend logic
-│   │   ├── canvas.js           # Handles game elements
+│   │   ├── app.js              # Main frontend logic (login, user session handling, etc.)
+│   │   ├── canvas.js           # Handles game elements and canvas rendering
 │   │   ├── session.js          # WebSockets & session state
 │   ├── css/
 │   │   ├── style.css           # Styling for the UI
-├── db-init-scripts/            # NEW: Database initialization folder
-│   ├── init.sql                # SQL script to create tables│
+│
+├── db-init-scripts/            # Database initialization folder
+│   ├── init.sql                # SQL script to create tables
+│
 ├── .env                        # Environment variables
 ├── docker-compose.yml          # Docker Compose configuration
 ├── Dockerfile                  # Server Dockerfile
 ├── package.json                # Node dependencies
+├── package-lock.json           # Node lockfile
 └── README.md                   # Project documentation
 ```
 
