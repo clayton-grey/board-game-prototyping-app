@@ -9,9 +9,9 @@ const sessionMap = new Map();
 /**
  * Each session object:
  * {
- *   code, 
- *   projectName, 
- *   elements, 
+ *   code,
+ *   projectName,
+ *   elements,
  *   linkedProjectId,
  *   users: Map(userId -> userObj),
  *   ephemeralRoles: Map(dbUid -> { isEditor?: bool}),
@@ -110,7 +110,7 @@ export class SessionService {
       };
       session.users.set(userId, userObj);
 
-      // If no owners, assign the first joiner
+      // If no owners exist yet, assign the first joiner
       const anyOwner = [...session.users.values()].some(u => u.isOwner);
       if (!anyOwner) {
         userObj.isOwner = true;
@@ -121,10 +121,12 @@ export class SessionService {
       userObj.name = userName || userObj.name;
     }
 
+    // If user role is admin at the app level, reflect that here
     if (userRole === "admin") {
       userObj.isAdmin = true;
     }
 
+    // Re-apply ephemeral editor role if stored
     const dbUid = this.getDbUserId(userId);
     if (dbUid) {
       const stored = session.ephemeralRoles.get(dbUid);
@@ -137,12 +139,13 @@ export class SessionService {
 
   /**
    * Upgrade from oldUserId => newUserId, carrying ephemeral roles and locks.
+   * We purposely do NOT reassign `oldUser.color`, so the user keeps that color.
    */
   static upgradeUserId(session, oldUserId, newUserId, newName, newIsAdmin, wsSocket) {
     const oldUser = session.users.get(oldUserId);
     if (!oldUser) return null;
 
-    // Transfer any locked elements
+    // Transfer any locked elements from oldUserId to newUserId
     for (const el of session.elements) {
       if (el.lockedBy === oldUserId) {
         el.lockedBy = newUserId;
@@ -154,11 +157,13 @@ export class SessionService {
     oldUser.userId = newUserId;
     oldUser.name = newName;
     oldUser.isAdmin = !!newIsAdmin;
+    // Notice: oldUser.color is UNCHANGED
+
     if (wsSocket) {
       oldUser.socket = wsSocket;
     }
 
-    // Re-apply ephemeral editor role if it existed
+    // Re-apply ephemeral editor role if it existed under new DB user ID
     const dbUid = this.getDbUserId(newUserId);
     if (dbUid) {
       let stored = session.ephemeralRoles.get(dbUid) || {};
@@ -174,13 +179,12 @@ export class SessionService {
   }
 
   /**
-   * Downgrade from user_### => anon_###.
+   * Downgrade from user_### => anon_###. Also keep the existing color.
    */
   static downgradeUserId(session, oldUserId, newUserId, wsSocket) {
     const oldUser = session.users.get(oldUserId);
     if (!oldUser) return null;
 
-    // Transfer any locked elements
     for (const el of session.elements) {
       if (el.lockedBy === oldUserId) {
         el.lockedBy = newUserId;
@@ -205,6 +209,8 @@ export class SessionService {
     oldUser.isAdmin = false;
     oldUser.isEditor = false;
     oldUser.isOwner = false;
+    // oldUser.color is UNCHANGED
+
     if (wsSocket) {
       oldUser.socket = wsSocket;
     }
@@ -239,7 +245,7 @@ export class SessionService {
   }
 
   /**
-   * Kicks a user => forcibly remove them if kicker is admin/owner
+   * Kicks a user => forcibly remove them if kicker is admin/owner.
    */
   static kickUser(session, kickerUserId, targetUserId) {
     const reqUser = session.users.get(kickerUserId);

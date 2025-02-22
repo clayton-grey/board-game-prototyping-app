@@ -1,12 +1,5 @@
 /**
  * ./client/js/app.js
- *
- * Key changes:
- *  - After UPGRADE_USER_ID or DOWNGRADE_USER_ID, we update the canvas's localUserId
- *    so it sends future locks/releases with the correct user ID.
- *  - This preserves selection/deselection (fixes the bug where you couldn't deselect).
- *  - No changes to user list order or color on login/out, since the server is 
- *    now preserving that in the user object (joinOrder, color).
  */
 
 import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
@@ -15,7 +8,7 @@ import {
   handleCanvasMessage,
   handleUserColorUpdate,
   setProjectNameFromServer,
-  updateCanvasUserId, // NEW: function to update localUserId in canvas
+  updateCanvasUserId,
 } from "./canvas.js";
 
 // Read saved login/session from localStorage
@@ -84,7 +77,7 @@ function sendWSMessage(obj) {
     ws.send(JSON.stringify(obj));
   }
 }
-window.__sendWSMessage = sendWSMessage; // So canvas.js can call it, if needed
+window.__sendWSMessage = sendWSMessage; // So canvas.js can call it
 
 function connectWebSocket() {
   ws = new WebSocket("ws://localhost:3000");
@@ -130,10 +123,9 @@ function handleServerMessage(data) {
 
     case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
       const { newName } = data;
-      currentProjectName = newName;
+      setProjectNameFromServer(newName);
       restoreNameSpan();
-      showMessage(`Renamed to: ${currentProjectName}`);
-      setProjectNameFromServer(currentProjectName);
+      showMessage(`Renamed to: ${newName}`);
       break;
     }
 
@@ -179,14 +171,26 @@ function getInitial(str) {
   return str.trim().charAt(0).toUpperCase();
 }
 
-/** Refresh top-right user panel display. */
+/**
+ * Updated so we do NOT blindly set color = #888.
+ * Instead, we check if we are present in `sessionUsers`.
+ */
 function updateLocalUserUI() {
   let displayName = "Anonymous";
   if (currentUser?.name) {
     displayName = currentUser.name;
   }
+
   userNameSpan.textContent = displayName;
-  userCircle.style.background = "#888";
+
+  // Look up our color in the list of session users
+  let finalColor = "#888";
+  const me = sessionUsers.find(u => u.userId === activeUserId);
+  if (me && me.color) {
+    finalColor = me.color;
+  }
+
+  userCircle.style.background = finalColor;
   userCircleText.textContent = getInitial(displayName);
 }
 
@@ -228,7 +232,6 @@ function getRoleEmoji(u) {
   return "";
 }
 
-/** Whether we can manage that user (kick, editor toggles). */
 function canManageUser(u) {
   const iAmOwner = (activeUserId === ephemeralOwnerId);
   const iAmAdmin = isCurrentUserAdmin();
@@ -238,7 +241,6 @@ function canManageUser(u) {
   return true;
 }
 
-/** Clicking a user name => ephemeral role popover. */
 function onUserNameClicked(u, labelElem) {
   if (openPopoverUserId === u.userId) {
     hideUserActionPopover();
@@ -318,7 +320,6 @@ function hideUserActionPopover() {
   userActionPopover.classList.add("hidden");
 }
 
-// Hide popover if clicking outside
 document.addEventListener("click", (evt) => {
   if (
     openPopoverUserId &&
@@ -355,8 +356,7 @@ function doLogout() {
   activeUserId = newAnonId;
   localStorage.setItem("activeUserId", newAnonId);
 
-  // **Important**: update the canvas's local user ID so 
-  // we continue to send future element-grab/release with the new ID.
+  // Update the canvas's local user ID so we send future element actions with new ID
   updateCanvasUserId(newAnonId);
 
   showMessage("You are now anonymous.");
@@ -433,7 +433,7 @@ loginForm.addEventListener("submit", (e) => {
         });
       }
 
-      // Also update the canvas so it sends future lock messages as newUserId
+      // Update the canvas to send future lock messages as newUserId
       updateCanvasUserId(newUserId);
 
       showMessage("Logged in as " + currentUser.name);
@@ -600,7 +600,7 @@ function restoreNameSpan() {
   const span = document.createElement("span");
   span.id = "project-name";
   span.title = "Click to edit project name";
-  span.textContent = currentProjectName;
+  span.textContent = setProjectNameFromServer.name || "Untitled Project";
   span.style.cursor = "pointer";
   oldInput.replaceWith(span);
   span.addEventListener("click", () => startEditingProjectName());
@@ -612,6 +612,6 @@ function restoreNameSpan() {
 window.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("contextmenu", (e) => e.preventDefault());
   connectWebSocket();
-  initCanvas(activeUserId);   // Initialize the canvas with the current ID
+  initCanvas(activeUserId);
   updateLocalUserUI();
 });
