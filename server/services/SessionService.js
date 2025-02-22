@@ -1,6 +1,5 @@
 // server/services/SessionService.js
 import { WebSocket } from 'ws';
-import { colorFromUserId } from '../ws/collabUtils.js';
 
 /**
  * In-memory session storage.
@@ -10,7 +9,10 @@ const sessionMap = new Map();
 /**
  * Each session object:
  * {
- *   code, projectName, elements, linkedProjectId,
+ *   code, 
+ *   projectName, 
+ *   elements, 
+ *   linkedProjectId,
  *   users: Map(userId -> userObj),
  *   ephemeralRoles: Map(dbUid -> { isEditor?: bool}),
  *   nextJoinOrder: number
@@ -48,6 +50,47 @@ export class SessionService {
   }
 
   /**
+   * Creates a stable color from the userId, used for ephemeral user color assignment.
+   */
+  static colorFromUserId(userId) {
+    let hash = 0;
+    for (let i = 0; i < userId.length; i++) {
+      hash = userId.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const r = (hash >> 16) & 0xff;
+    const g = (hash >> 8) & 0xff;
+    const b = hash & 0xff;
+    return `rgb(${r},${g},${b})`;
+  }
+
+  /**
+   * Returns true if userId is in the session and isOwner or isAdmin.
+   */
+  static canManage(session, userId) {
+    const user = session.users.get(userId);
+    if (!user) return false;
+    return user.isOwner || user.isAdmin;
+  }
+
+  /**
+   * Sets (or unsets) a user's ephemeral "editor" role within the session.
+   */
+  static setEditorRole(session, targetUserId, isEditor) {
+    const tgtUser = session.users.get(targetUserId);
+    if (!tgtUser) return false;
+
+    tgtUser.isEditor = isEditor;
+
+    const dbUid = this.getDbUserId(targetUserId);
+    if (dbUid) {
+      const ex = session.ephemeralRoles.get(dbUid) || {};
+      ex.isEditor = isEditor;
+      session.ephemeralRoles.set(dbUid, ex);
+    }
+    return true;
+  }
+
+  /**
    * Add or update a user in the session.
    */
   static joinSession(session, userId, userName, userRole, wsSocket) {
@@ -56,7 +99,7 @@ export class SessionService {
       userObj = {
         userId,
         name: userName || "Anonymous",
-        color: colorFromUserId(userId),
+        color: this.colorFromUserId(userId),
         isOwner: false,
         isEditor: false,
         isAdmin: false,
@@ -67,12 +110,13 @@ export class SessionService {
       };
       session.users.set(userId, userObj);
 
-      // If no owners
+      // If no owners, assign the first joiner
       const anyOwner = [...session.users.values()].some(u => u.isOwner);
       if (!anyOwner) {
         userObj.isOwner = true;
       }
     } else {
+      // If rejoining
       userObj.socket = wsSocket;
       userObj.name = userName || userObj.name;
     }
@@ -98,6 +142,7 @@ export class SessionService {
     const oldUser = session.users.get(oldUserId);
     if (!oldUser) return null;
 
+    // Transfer any locked elements
     for (const el of session.elements) {
       if (el.lockedBy === oldUserId) {
         el.lockedBy = newUserId;
@@ -113,6 +158,7 @@ export class SessionService {
       oldUser.socket = wsSocket;
     }
 
+    // Re-apply ephemeral editor role if it existed
     const dbUid = this.getDbUserId(newUserId);
     if (dbUid) {
       let stored = session.ephemeralRoles.get(dbUid) || {};
@@ -134,6 +180,7 @@ export class SessionService {
     const oldUser = session.users.get(oldUserId);
     if (!oldUser) return null;
 
+    // Transfer any locked elements
     for (const el of session.elements) {
       if (el.lockedBy === oldUserId) {
         el.lockedBy = newUserId;
@@ -143,9 +190,10 @@ export class SessionService {
     const wasOwner = oldUser.isOwner;
     const wasEditor = oldUser.isEditor;
 
+    // Save ephemeral roles for that DB user ID
     const dbUid = this.getDbUserId(oldUserId);
     if (dbUid) {
-      let ex = session.ephemeralRoles.get(dbUid) || {};
+      const ex = session.ephemeralRoles.get(dbUid) || {};
       ex.isEditor = wasEditor;
       session.ephemeralRoles.set(dbUid, ex);
     }
@@ -169,7 +217,7 @@ export class SessionService {
   }
 
   /**
-   * Remove a user from the session. Release locks and reassign owner if needed.
+   * Remove a user from the session. Release locks, reassign owner if needed.
    */
   static removeUser(session, userId) {
     const user = session.users.get(userId);
@@ -191,8 +239,7 @@ export class SessionService {
   }
 
   /**
-   * Kick a user => forcibly remove them from the session, if
-   * the kicker is either owner or admin, and target is not owner/admin.
+   * Kicks a user => forcibly remove them if kicker is admin/owner
    */
   static kickUser(session, kickerUserId, targetUserId) {
     const reqUser = session.users.get(kickerUserId);
@@ -213,7 +260,6 @@ export class SessionService {
     }
     session.users.delete(targetUserId);
 
-    // If they were owner, reassign
     if (tgtUser.isOwner) {
       this.reassignOwnerIfNeeded(session);
     }
@@ -221,13 +267,18 @@ export class SessionService {
     return tgtUser; 
   }
 
+  /**
+   * If no owners remain, assign the earliest joined user as the new owner.
+   */
   static reassignOwnerIfNeeded(session) {
     const owners = [...session.users.values()].filter(u => u.isOwner);
     if (owners.length > 0) return;
 
     const arr = [...session.users.values()];
-    if (arr.length === 0) return;
-
+    if (arr.length === 0) {
+      // session is empty; do nothing
+      return;
+    }
     arr.sort((a, b) => a.joinOrder - b.joinOrder);
     arr[0].isOwner = true;
   }

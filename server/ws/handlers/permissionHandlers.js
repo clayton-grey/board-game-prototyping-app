@@ -1,5 +1,5 @@
 // server/ws/handlers/permissionHandlers.js
-import { getDbUserId, broadcastUserList, broadcastElementState, broadcastToSession } from '../collabUtils.js';
+import { broadcastUserList, broadcastElementState, broadcastToSession } from '../collabUtils.js';
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { WebSocket } from 'ws';
 import { SessionService } from '../../services/SessionService.js';
@@ -7,42 +7,34 @@ import { SessionService } from '../../services/SessionService.js';
 export function handleMakeEditor(session, data, ws) {
   if (!session) return;
   const { userId, targetUserId } = data;
-  const reqUser = session.users.get(userId);
-  const tgtUser = session.users.get(targetUserId);
-  if (!reqUser || !tgtUser) return;
 
-  if (reqUser.isOwner || reqUser.isAdmin) {
-    if (!tgtUser.isAdmin && !tgtUser.isOwner) {
-      tgtUser.isEditor = true;
-      const dbUid = getDbUserId(targetUserId);
-      if (dbUid) {
-        const ex = session.ephemeralRoles.get(dbUid) || {};
-        ex.isEditor = true;
-        session.ephemeralRoles.set(dbUid, ex);
-      }
-      broadcastUserList(session);
-    }
+  // Only an owner or admin can manage ephemeral roles
+  if (!SessionService.canManage(session, userId)) {
+    return;
+  }
+  const tgtUser = session.users.get(targetUserId);
+  if (!tgtUser) return;
+
+  // Prevent toggling an owner/admin
+  if (!tgtUser.isOwner && !tgtUser.isAdmin) {
+    SessionService.setEditorRole(session, targetUserId, true);
+    broadcastUserList(session);
   }
 }
 
 export function handleRemoveEditor(session, data, ws) {
   if (!session) return;
   const { userId, targetUserId } = data;
-  const reqUser = session.users.get(userId);
-  const tgtUser = session.users.get(targetUserId);
-  if (!reqUser || !tgtUser) return;
 
-  if (reqUser.isOwner || reqUser.isAdmin) {
-    if (tgtUser.isEditor) {
-      tgtUser.isEditor = false;
-      const dbUid = getDbUserId(targetUserId);
-      if (dbUid) {
-        const ex = session.ephemeralRoles.get(dbUid) || {};
-        ex.isEditor = false;
-        session.ephemeralRoles.set(dbUid, ex);
-      }
-      broadcastUserList(session);
-    }
+  if (!SessionService.canManage(session, userId)) {
+    return;
+  }
+  const tgtUser = session.users.get(targetUserId);
+  if (!tgtUser) return;
+
+  if (tgtUser.isEditor) {
+    SessionService.setEditorRole(session, targetUserId, false);
+    broadcastUserList(session);
   }
 }
 
@@ -53,7 +45,6 @@ export function handleKickUser(session, data, ws) {
   if (!session) return;
   const { userId, targetUserId } = data;
 
-  // We'll ask SessionService to do the logic
   const kickedUser = SessionService.kickUser(session, userId, targetUserId);
   if (!kickedUser) {
     // Means either not authorized or user is admin/owner => no action

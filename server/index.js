@@ -8,20 +8,14 @@ import { WebSocketServer } from 'ws';
 
 import authRoutes from './routes/auth.js';
 import projectRoutes from './routes/projects.js';
-
-// CHANGED: We now import from server/ws/collaboration.js
 import { handleWebSocketConnection } from './ws/collaboration.js';
-
 import config from './config.js';
-
-// (Optional) You could import { HttpError } from './utils/HttpError.js'
-// if you want to check for that specifically in the error handler.
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-// Middleware
+// Basic Setup
 app.use(express.json());
 app.use(cors({ origin: '*' }));
 
@@ -31,7 +25,7 @@ const __dirname = path.dirname(__filename);
 // Serve static frontend files from `/client`
 app.use(express.static(path.join(__dirname, '../client')));
 
-// This allows the browser to request files from the "shared" folder, just like "client" folder
+// (Optional) Provide a `/shared` folder if needed
 app.use('/shared', express.static(path.join(__dirname, '../shared')));
 
 // API Routes
@@ -46,7 +40,7 @@ app.get('/', (req, res) => {
 // WebSocket handling
 wss.on('connection', (ws) => handleWebSocketConnection(ws, wss));
 
-// GLOBAL ERROR HANDLER - must come last
+// Global error handler (must come last)
 app.use((err, req, res, next) => {
   console.error('Global Error Handler:', err.stack || err);
   const status = err.statusCode || 500;

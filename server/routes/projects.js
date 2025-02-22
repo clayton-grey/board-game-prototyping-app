@@ -8,22 +8,18 @@ import { ProjectService } from "../services/ProjectService.js";
 const router = express.Router();
 
 /**
- * Helper to see if user can edit. 
+ * GET /projects/ensureDefault
+ * Creates a default project for the current user if none exist
  */
-async function canEditProject(req, projectId) {
-  if (req.user && req.user.role === "admin") return true;
-  const ownerId = await ProjectService.getProjectOwnerId(projectId);
-  if (!ownerId) return false;
-  return ownerId === req.user.id;
-}
-
-// GET /projects/ensureDefault
 router.get("/ensureDefault", authenticateToken, asyncHandler(async (req, res) => {
   const project = await ProjectService.createDefaultProjectIfNone(req.user.id);
   return res.json(project);
 }));
 
-// POST /projects
+/**
+ * POST /projects
+ * Body: { name, description }
+ */
 router.post("/", authenticateToken, asyncHandler(async (req, res) => {
   const { name, description } = req.body;
   if (!req.user || !req.user.id) {
@@ -33,20 +29,25 @@ router.post("/", authenticateToken, asyncHandler(async (req, res) => {
   return res.status(201).json(project);
 }));
 
-// GET /projects
+/**
+ * GET /projects
+ * Return all projects owned by the user
+ */
 router.get("/", authenticateToken, asyncHandler(async (req, res) => {
   const projects = await ProjectService.getProjectsByOwner(req.user.id);
   return res.json(projects);
 }));
 
-// PUT /projects/:id
+/**
+ * PUT /projects/:id
+ */
 router.put("/:id", authenticateToken, asyncHandler(async (req, res) => {
   const { id } = req.params;
   let { name, description } = req.body;
   if (!description) description = "";
 
-  const editable = await canEditProject(req, id);
-  if (!editable) {
+  const canEdit = await ProjectService.userCanEditProject(id, req.user);
+  if (!canEdit) {
     throw new HttpError("Not authorized or project not found.", 403);
   }
 
@@ -57,11 +58,13 @@ router.put("/:id", authenticateToken, asyncHandler(async (req, res) => {
   return res.json(updated);
 }));
 
-// DELETE /projects/:id
+/**
+ * DELETE /projects/:id
+ */
 router.delete("/:id", authenticateToken, asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const editable = await canEditProject(req, id);
-  if (!editable) {
+  const canEdit = await ProjectService.userCanEditProject(id, req.user);
+  if (!canEdit) {
     throw new HttpError("Not authorized or project not found.", 403);
   }
 
@@ -72,39 +75,46 @@ router.delete("/:id", authenticateToken, asyncHandler(async (req, res) => {
   return res.json({ message: "Project deleted" });
 }));
 
-// GET /projects/:id/versions
+/**
+ * GET /projects/:id/versions
+ */
 router.get("/:id/versions", authenticateToken, asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const editable = await canEditProject(req, id);
-  if (!editable) {
+  const canEdit = await ProjectService.userCanEditProject(id, req.user);
+  if (!canEdit) {
     throw new HttpError("Not authorized or project not found.", 403);
   }
   const versions = await ProjectService.listVersions(id);
   return res.json(versions);
 }));
 
-// POST /projects/:id/versions
+/**
+ * POST /projects/:id/versions
+ * Body: { project_data }
+ */
 router.post("/:id/versions", authenticateToken, asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { project_data } = req.body || {};
 
-  const editable = await canEditProject(req, id);
-  if (!editable) {
+  const canEdit = await ProjectService.userCanEditProject(id, req.user);
+  if (!canEdit) {
     throw new HttpError("Not authorized or project not found.", 403);
   }
   const newVersion = await ProjectService.createVersion(id, project_data);
   return res.status(201).json(newVersion);
 }));
 
-// POST /projects/:id/versions/:versionId/rollback
+/**
+ * POST /projects/:id/versions/:versionId/rollback
+ */
 router.post("/:id/versions/:versionId/rollback", authenticateToken, asyncHandler(async (req, res) => {
   const { id, versionId } = req.params;
-  const editable = await canEditProject(req, id);
-  if (!editable) {
+  const canEdit = await ProjectService.userCanEditProject(id, req.user);
+  if (!canEdit) {
     throw new HttpError("Not authorized or project not found.", 403);
   }
 
-  const result = await ProjectService.rollbackVersion(id, versionId); 
+  const result = await ProjectService.rollbackVersion(id, versionId);
   return res.json(result);
 }));
 

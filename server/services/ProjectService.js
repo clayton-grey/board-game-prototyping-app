@@ -156,4 +156,15 @@ export class ProjectService {
       newVersion: rollbackInsert.rows[0],
     };
   }
+
+  /**
+   * Return true if the given user can edit the project (i.e., owns it or is admin).
+   */
+  static async userCanEditProject(projectId, user) {
+    if (!user) return false;
+    if (user.role === 'admin') return true;
+    const ownerId = await this.getProjectOwnerId(projectId);
+    if (!ownerId) return false;
+    return ownerId === user.id;
+  }
 }

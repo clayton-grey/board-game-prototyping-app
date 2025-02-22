@@ -1,10 +1,9 @@
 // server/routes/auth.js
 import express from 'express';
-import jwt from 'jsonwebtoken';
-import config from '../config.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { HttpError } from '../utils/HttpError.js';
 import { UserService } from '../services/UserService.js';
+import { AuthService } from '../services/AuthService.js';
 
 const router = express.Router();
 
@@ -22,15 +21,11 @@ router.post('/register', asyncHandler(async (req, res) => {
     throw new HttpError('Passwords do not match.', 400);
   }
 
-  // createUser() will throw HttpError if email is in use
+  // createUser() will throw HttpError if email is taken
   const user = await UserService.createUser(name, email, password);
 
-  // Create token
-  const token = jwt.sign(
-    { id: user.id, email: user.email, role: user.role, name: user.name },
-    config.JWT_SECRET,
-    { expiresIn: '1h' }
-  );
+  const payload = AuthService.userPayload(user);
+  const token = AuthService.createToken(payload, '1h'); 
 
   return res.status(201).json({
     message: 'User registered successfully',
@@ -56,12 +51,9 @@ router.post('/login', asyncHandler(async (req, res) => {
     throw new HttpError('Invalid credentials.', 401);
   }
 
-  // create JWT
-  const token = jwt.sign(
-    { id: user.id, email: user.email, role: user.role, name: user.name },
-    config.JWT_SECRET,
-    { expiresIn: '1h' }
-  );
+  // Build & sign JWT
+  const payload = AuthService.userPayload(user);
+  const token = AuthService.createToken(payload, '1h');
 
   return res.json({
     message: 'Logged in successfully',

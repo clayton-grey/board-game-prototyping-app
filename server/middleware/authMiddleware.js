@@ -1,6 +1,6 @@
 // server/middleware/authMiddleware.js
-import jwt from "jsonwebtoken";
-import config from "../config.js";
+import { AuthService } from '../services/AuthService.js';
+import config from '../config.js';
 
 export const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
@@ -10,17 +10,18 @@ export const authenticateToken = (req, res, next) => {
     return res.status(401).json({ message: "Unauthorized: No token provided" });
   }
 
-  jwt.verify(token, config.JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ message: "Forbidden: Invalid token" });
-    }
-    req.user = user; // Ensure user data is attached
+  try {
+    const user = AuthService.verifyToken(token); 
+    // If verify succeeds, user is the decoded payload
+    req.user = user;
     next();
-  });
+  } catch (err) {
+    return res.status(403).json({ message: "Forbidden: Invalid token" });
+  }
 };
 
 export const authorizeAdmin = (req, res, next) => {
-  // Simple admin check (replace with actual logic)
+  // Simple admin check
   if (req.user && req.user.role === "admin") {
     return next();
   }
