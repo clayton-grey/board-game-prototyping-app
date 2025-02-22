@@ -14,6 +14,9 @@ import { handleWebSocketConnection } from './ws/collaboration.js';
 
 import config from './config.js';
 
+// (Optional) You could import { HttpError } from './utils/HttpError.js'
+// if you want to check for that specifically in the error handler.
+
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
@@ -42,6 +45,14 @@ app.get('/', (req, res) => {
 
 // WebSocket handling
 wss.on('connection', (ws) => handleWebSocketConnection(ws, wss));
+
+// GLOBAL ERROR HANDLER - must come last
+app.use((err, req, res, next) => {
+  console.error('Global Error Handler:', err.stack || err);
+  const status = err.statusCode || 500;
+  const msg = err.message || 'Server Error';
+  res.status(status).json({ message: msg });
+});
 
 // Start server
 server.listen(config.PORT, () => {

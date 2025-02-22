@@ -1,4 +1,5 @@
 // server/sessionManager.js
+// Not heavily used in our new refactor, but here’s its final state if you still need session-based HTTP.
 import session from 'express-session';
 import pgSession from 'connect-pg-simple';
 import pool from './database.js';
@@ -22,6 +23,3 @@ const sessionMiddleware = session({
 });
 
 export default sessionMiddleware;
-
-// NOTE: Be sure to do `import sessionMiddleware from "./sessionManager.js";`
-// and then `app.use(sessionMiddleware);` in your main server file if needed.

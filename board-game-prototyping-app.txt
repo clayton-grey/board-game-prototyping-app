@@ -2370,7 +2370,6 @@ This project is licensed under the MIT License.
     "dev": "nodemon server/index.js"
   },
   "dependencies": {
-    "bcrypt": "^5.1.0",
     "bcryptjs": "^3.0.2",
     "connect-pg-simple": "^8.0.0",
     "cors": "^2.8.5",
@@ -2623,6 +2622,9 @@ import { handleWebSocketConnection } from './ws/collaboration.js';
 
 import config from './config.js';
 
+// (Optional) You could import { HttpError } from './utils/HttpError.js'
+// if you want to check for that specifically in the error handler.
+
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
@@ -2651,6 +2653,14 @@ app.get('/', (req, res) => {
 
 // WebSocket handling
 wss.on('connection', (ws) => handleWebSocketConnection(ws, wss));
+
+// GLOBAL ERROR HANDLER - must come last
+app.use((err, req, res, next) => {
+  console.error('Global Error Handler:', err.stack || err);
+  const status = err.statusCode || 500;
+  const msg = err.message || 'Server Error';
+  res.status(status).json({ message: msg });
+});
 
 // Start server
 server.listen(config.PORT, () => {
@@ -2685,6 +2695,7 @@ export default config;
 ===== ./server/sessionManager.js =====
 
 // server/sessionManager.js
+// Not heavily used in our new refactor, but here’s its final state if you still need session-based HTTP.
 import session from 'express-session';
 import pgSession from 'connect-pg-simple';
 import pool from './database.js';
@@ -2709,380 +2720,770 @@ const sessionMiddleware = session({
 
 export default sessionMiddleware;
 
-// NOTE: Be sure to do `import sessionMiddleware from "./sessionManager.js";`
-// and then `app.use(sessionMiddleware);` in your main server file if needed.
-
 
 ===== ./server/middleware/authMiddleware.js =====
 
 // server/middleware/authMiddleware.js
 import jwt from "jsonwebtoken";
+import config from "../config.js";
 
 export const authenticateToken = (req, res, next) => {
-    const authHeader = req.headers["authorization"];
-    const token = authHeader && authHeader.split(" ")[1];
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
 
-    if (!token) {
-        return res.status(401).json({ message: "Unauthorized: No token provided" });
+  if (!token) {
+    return res.status(401).json({ message: "Unauthorized: No token provided" });
+  }
+
+  jwt.verify(token, config.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: "Forbidden: Invalid token" });
     }
-
-    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-        if (err) {
-            return res.status(403).json({ message: "Forbidden: Invalid token" });
-        }
-        req.user = user; // Ensure user data is attached
-        next();
-    });
+    req.user = user; // Ensure user data is attached
+    next();
+  });
 };
-
 
 export const authorizeAdmin = (req, res, next) => {
-    // Simple admin check (replace with actual logic)
-    if (req.user && req.user.role === "admin") {
-        return next();
-    }
-    return res.status(403).json({ message: "Access denied. Admins only." });
+  // Simple admin check (replace with actual logic)
+  if (req.user && req.user.role === "admin") {
+    return next();
+  }
+  return res.status(403).json({ message: "Access denied. Admins only." });
 };
+
+
+===== ./server/utils/asyncHandler.js =====
+
+// server/utils/asyncHandler.js
+
+/**
+ * A higher-order function to wrap async route handlers, 
+ * automatically passing errors to next() for the global error handler.
+ */
+
+export function asyncHandler(fn) {
+  return function (req, res, next) {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+
+
+===== ./server/utils/HttpError.js =====
+
+// server/utils/HttpError.js
+
+export class HttpError extends Error {
+  constructor(message, statusCode = 500) {
+    super(message);
+    this.statusCode = statusCode;
+    // Maintain proper stack trace (V8 only)
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, this.constructor);
+    }
+  }
+}
 
 
 ===== ./server/routes/auth.js =====
 
+// server/routes/auth.js
 import express from 'express';
-import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import pool from '../database.js';
-import dotenv from 'dotenv';
-
-dotenv.config();
+import config from '../config.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { HttpError } from '../utils/HttpError.js';
+import { UserService } from '../services/UserService.js';
 
 const router = express.Router();
 
 /**
  * POST /auth/register
  * Body: { name, email, password, confirmPassword }
- *  - Creates a new user.
- *  - Immediately returns a JWT token so user is "logged in" upon success.
  */
-router.post('/register', async (req, res) => {
-    const { name, email, password, confirmPassword } = req.body;
+router.post('/register', asyncHandler(async (req, res) => {
+  const { name, email, password, confirmPassword } = req.body;
 
-    if (!name || !email || !password || !confirmPassword) {
-        return res.status(400).json({ message: 'All fields are required.' });
-    }
-    if (password !== confirmPassword) {
-        return res.status(400).json({ message: 'Passwords do not match.' });
-    }
+  if (!name || !email || !password || !confirmPassword) {
+    throw new HttpError('All fields are required.', 400);
+  }
+  if (password !== confirmPassword) {
+    throw new HttpError('Passwords do not match.', 400);
+  }
 
-    try {
-        // Check if user already exists
-        const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
-        if (existing.rows.length > 0) {
-            return res.status(400).json({ message: 'Email is already in use.' });
-        }
+  // createUser() will throw HttpError if email is in use
+  const user = await UserService.createUser(name, email, password);
 
-        const hashedPassword = await bcrypt.hash(password, 10);
+  // Create token
+  const token = jwt.sign(
+    { id: user.id, email: user.email, role: user.role, name: user.name },
+    config.JWT_SECRET,
+    { expiresIn: '1h' }
+  );
 
-        const result = await pool.query(
-            'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email, role',
-            [name, email, hashedPassword]
-        );
-        const user = result.rows[0];
-
-        // Create a token
-        const token = jwt.sign(
-            { id: user.id, email: user.email, role: user.role, name: user.name },
-            process.env.JWT_SECRET,
-            { expiresIn: '1h' }
-        );
-
-        return res.status(201).json({
-            message: 'User registered successfully',
-            user,
-            token,
-        });
-    } catch (error) {
-        console.error(error);
-        return res.status(500).json({ message: 'Server error' });
-    }
-});
+  return res.status(201).json({
+    message: 'User registered successfully',
+    user,
+    token,
+  });
+}));
 
 /**
  * POST /auth/login
  * Body: { email, password }
- *  - Returns { user, token } if successful
  */
-router.post('/login', async (req, res) => {
-    const { email, password } = req.body;
-    try {
-        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        if (result.rows.length === 0) {
-            return res.status(401).json({ message: 'Invalid credentials' });
-        }
+router.post('/login', asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
 
-        const user = result.rows[0];
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(401).json({ message: 'Invalid credentials' });
-        }
+  const user = await UserService.getByEmail(email);
+  if (!user) {
+    throw new HttpError('Invalid credentials.', 401);
+  }
 
-        // Create JWT
-        const token = jwt.sign(
-            { id: user.id, email: user.email, role: user.role, name: user.name },
-            process.env.JWT_SECRET,
-            { expiresIn: '1h' }
-        );
+  const isMatch = await UserService.comparePasswords(password, user.password);
+  if (!isMatch) {
+    throw new HttpError('Invalid credentials.', 401);
+  }
 
-        res.json({
-            message: 'Logged in successfully',
-            user: {
-                id: user.id,
-                name: user.name,
-                email: user.email,
-                role: user.role,
-            },
-            token,
-        });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
-    }
-});
+  // create JWT
+  const token = jwt.sign(
+    { id: user.id, email: user.email, role: user.role, name: user.name },
+    config.JWT_SECRET,
+    { expiresIn: '1h' }
+  );
+
+  return res.json({
+    message: 'Logged in successfully',
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+    },
+    token,
+  });
+}));
 
 export default router;
 
 
 ===== ./server/routes/projects.js =====
 
-// ./server/routes/projects.js
-
+// server/routes/projects.js
 import express from "express";
-import pool from "../database.js";
 import { authenticateToken } from "../middleware/authMiddleware.js";
-import config from "../config.js";
-
-/**
- * Helper to determine if the request user is the project owner
- * or an admin. We'll use this for version endpoints as well.
- */
-async function canEditProject(req, projectId) {
-  // If user is admin, allow
-  if (req.user && req.user.role === "admin") return true;
-  // Otherwise check if user is the owner
-  const result = await pool.query(
-    "SELECT owner_id FROM projects WHERE id = $1",
-    [projectId]
-  );
-  if (result.rows.length === 0) return false; // no such project
-  const ownerId = result.rows[0].owner_id;
-  return ownerId === req.user.id;
-}
+import { asyncHandler } from "../utils/asyncHandler.js";
+import { HttpError } from "../utils/HttpError.js";
+import { ProjectService } from "../services/ProjectService.js";
 
 const router = express.Router();
 
 /**
- * GET /projects/ensureDefault
- *  - If the user already owns at least one project, return the first.
- *  - Otherwise create a new "My Default Project" for them and return it.
+ * Helper to see if user can edit. 
  */
-router.get("/ensureDefault", authenticateToken, async (req, res) => {
-  try {
-    const existing = await pool.query(
-      "SELECT * FROM projects WHERE owner_id = $1 ORDER BY id LIMIT 1",
-      [req.user.id]
-    );
-    if (existing.rows.length > 0) {
-      return res.json(existing.rows[0]);
-    }
+async function canEditProject(req, projectId) {
+  if (req.user && req.user.role === "admin") return true;
+  const ownerId = await ProjectService.getProjectOwnerId(projectId);
+  if (!ownerId) return false;
+  return ownerId === req.user.id;
+}
 
-    // Otherwise create one
-    const result = await pool.query(
-      "INSERT INTO projects (name, description, owner_id) VALUES ($1, $2, $3) RETURNING *",
-      ["My Default Project", "Auto-created for user", req.user.id]
-    );
-    return res.status(201).json(result.rows[0]);
-  } catch (error) {
-    console.error("Error in ensureDefault:", error);
-    return res.status(500).json({ message: "Server error", error: error.message });
-  }
-});
+// GET /projects/ensureDefault
+router.get("/ensureDefault", authenticateToken, asyncHandler(async (req, res) => {
+  const project = await ProjectService.createDefaultProjectIfNone(req.user.id);
+  return res.json(project);
+}));
 
-// ------------------------------------------
-// Standard Project CRUD
-// ------------------------------------------
-
-// Create a new project
-router.post("/", authenticateToken, async (req, res) => {
+// POST /projects
+router.post("/", authenticateToken, asyncHandler(async (req, res) => {
   const { name, description } = req.body;
-
   if (!req.user || !req.user.id) {
-    return res.status(400).json({ message: "User ID is missing from request" });
+    throw new HttpError("User ID is missing from request", 400);
   }
+  const project = await ProjectService.createProject(req.user.id, name, description);
+  return res.status(201).json(project);
+}));
 
-  try {
-    const result = await pool.query(
-      "INSERT INTO projects (name, description, owner_id) VALUES ($1, $2, $3) RETURNING *",
-      [name, description, req.user.id]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
-  }
-});
+// GET /projects
+router.get("/", authenticateToken, asyncHandler(async (req, res) => {
+  const projects = await ProjectService.getProjectsByOwner(req.user.id);
+  return res.json(projects);
+}));
 
-// Get all projects for the authenticated user (owner-only in this example)
-router.get("/", authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(
-      "SELECT * FROM projects WHERE owner_id = $1",
-      [req.user.id]
-    );
-    res.json(result.rows);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-// Update a project (e.g. rename)
-router.put("/:id", authenticateToken, async (req, res) => {
+// PUT /projects/:id
+router.put("/:id", authenticateToken, asyncHandler(async (req, res) => {
   const { id } = req.params;
   let { name, description } = req.body;
+  if (!description) description = "";
 
-  try {
-    // must be owner or admin
-    const canEdit = await canEditProject(req, id);
-    if (!canEdit) {
-      return res.status(403).json({ message: "Not authorized." });
+  const editable = await canEditProject(req, id);
+  if (!editable) {
+    throw new HttpError("Not authorized or project not found.", 403);
+  }
+
+  const updated = await ProjectService.updateProject(id, name, description);
+  if (!updated) {
+    throw new HttpError("Project not found", 404);
+  }
+  return res.json(updated);
+}));
+
+// DELETE /projects/:id
+router.delete("/:id", authenticateToken, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const editable = await canEditProject(req, id);
+  if (!editable) {
+    throw new HttpError("Not authorized or project not found.", 403);
+  }
+
+  const deleted = await ProjectService.deleteProject(id);
+  if (!deleted) {
+    throw new HttpError("Project not found", 404);
+  }
+  return res.json({ message: "Project deleted" });
+}));
+
+// GET /projects/:id/versions
+router.get("/:id/versions", authenticateToken, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const editable = await canEditProject(req, id);
+  if (!editable) {
+    throw new HttpError("Not authorized or project not found.", 403);
+  }
+  const versions = await ProjectService.listVersions(id);
+  return res.json(versions);
+}));
+
+// POST /projects/:id/versions
+router.post("/:id/versions", authenticateToken, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { project_data } = req.body || {};
+
+  const editable = await canEditProject(req, id);
+  if (!editable) {
+    throw new HttpError("Not authorized or project not found.", 403);
+  }
+  const newVersion = await ProjectService.createVersion(id, project_data);
+  return res.status(201).json(newVersion);
+}));
+
+// POST /projects/:id/versions/:versionId/rollback
+router.post("/:id/versions/:versionId/rollback", authenticateToken, asyncHandler(async (req, res) => {
+  const { id, versionId } = req.params;
+  const editable = await canEditProject(req, id);
+  if (!editable) {
+    throw new HttpError("Not authorized or project not found.", 403);
+  }
+
+  const result = await ProjectService.rollbackVersion(id, versionId); 
+  return res.json(result);
+}));
+
+export default router;
+
+
+===== ./server/routes/admin.js =====
+
+// server/routes/admin.js
+import express from 'express';
+import { authenticateToken, authorizeAdmin } from '../middleware/authMiddleware.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { HttpError } from '../utils/HttpError.js';
+import { UserService } from '../services/UserService.js';
+
+const router = express.Router();
+
+// GET /admin/users
+router.get('/users', authenticateToken, authorizeAdmin, asyncHandler(async (req, res) => {
+  const users = await UserService.listAll();
+  return res.json(users);
+}));
+
+// PUT /admin/users/:id/role
+router.put('/users/:id/role', authenticateToken, authorizeAdmin, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body;
+
+  const updated = await UserService.updateRole(id, role);
+  if (!updated) {
+    throw new HttpError('User not found', 404);
+  }
+  return res.json(updated);
+}));
+
+// DELETE /admin/users/:id
+router.delete('/users/:id', authenticateToken, authorizeAdmin, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const deleted = await UserService.deleteUser(id);
+  if (!deleted) {
+    throw new HttpError('User not found', 404);
+  }
+  return res.json({ message: 'User deleted' });
+}));
+
+export default router;
+
+
+===== ./server/services/UserService.js =====
+
+// server/services/UserService.js
+
+import pool from '../database.js';
+import bcrypt from 'bcryptjs';
+import { HttpError } from '../utils/HttpError.js';
+
+export class UserService {
+  /**
+   * Return user row or null if not found.
+   */
+  static async getByEmail(email) {
+    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (result.rows.length === 0) return null;
+    return result.rows[0];
+  }
+
+  /**
+   * Hash the password and insert a new user row.
+   * Throw HttpError if email is already in use.
+   */
+  static async createUser(name, email, plainPassword) {
+    // Check if user already exists
+    const existing = await this.getByEmail(email);
+    if (existing) {
+      throw new HttpError('Email is already in use.', 400);
     }
 
-    if (!description) {
-      description = "";
+    const hashedPassword = await bcrypt.hash(plainPassword, 10);
+
+    const result = await pool.query(
+      'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email, role',
+      [name, email, hashedPassword]
+    );
+    return result.rows[0]; // newly created user
+  }
+
+  /**
+   * Compare plain text with hashed password.
+   */
+  static async comparePasswords(plainText, hashed) {
+    return bcrypt.compare(plainText, hashed);
+  }
+
+  /**
+   * List all users (id, email, role). For admin usage
+   */
+  static async listAll() {
+    const result = await pool.query('SELECT id, email, role FROM users');
+    return result.rows;
+  }
+
+  /**
+   * Update user role, return updated user row or null if not found.
+   */
+  static async updateRole(userId, newRole) {
+    const result = await pool.query(
+      'UPDATE users SET role = $1 WHERE id = $2 RETURNING id, email, role',
+      [newRole, userId]
+    );
+    if (result.rows.length === 0) return null;
+    return result.rows[0];
+  }
+
+  /**
+   * Delete a user, return deleted user row or null if not found.
+   */
+  static async deleteUser(userId) {
+    const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING *', [userId]);
+    if (result.rows.length === 0) return null;
+    return result.rows[0];
+  }
+}
+
+
+===== ./server/services/SessionService.js =====
+
+// server/services/SessionService.js
+import { WebSocket } from 'ws';
+import { colorFromUserId } from '../ws/collabUtils.js';
+
+/**
+ * In-memory session storage.
+ */
+const sessionMap = new Map();
+
+/**
+ * Each session object:
+ * {
+ *   code, projectName, elements, linkedProjectId,
+ *   users: Map(userId -> userObj),
+ *   ephemeralRoles: Map(dbUid -> { isEditor?: bool}),
+ *   nextJoinOrder: number
+ * }
+ */
+
+export class SessionService {
+
+  static getSession(code) {
+    return sessionMap.get(code) || null;
+  }
+
+  static getOrCreateSession(code) {
+    let session = sessionMap.get(code);
+    if (!session) {
+      session = {
+        code,
+        projectName: "New Project",
+        elements: [
+          { id: 1, x: 100, y: 100, w: 50, h: 50, lockedBy: null },
+          { id: 2, x: 300, y: 200, w: 60, h: 80, lockedBy: null },
+        ],
+        linkedProjectId: null,
+        users: new Map(),
+        ephemeralRoles: new Map(),
+        nextJoinOrder: 1,
+      };
+      sessionMap.set(code, session);
+    }
+    return session;
+  }
+
+  static removeSession(code) {
+    sessionMap.delete(code);
+  }
+
+  /**
+   * Add or update a user in the session.
+   */
+  static joinSession(session, userId, userName, userRole, wsSocket) {
+    let userObj = session.users.get(userId);
+    if (!userObj) {
+      userObj = {
+        userId,
+        name: userName || "Anonymous",
+        color: colorFromUserId(userId),
+        isOwner: false,
+        isEditor: false,
+        isAdmin: false,
+        socket: wsSocket,
+        x: 0,
+        y: 0,
+        joinOrder: session.nextJoinOrder++,
+      };
+      session.users.set(userId, userObj);
+
+      // If no owners
+      const anyOwner = [...session.users.values()].some(u => u.isOwner);
+      if (!anyOwner) {
+        userObj.isOwner = true;
+      }
+    } else {
+      userObj.socket = wsSocket;
+      userObj.name = userName || userObj.name;
     }
 
+    if (userRole === "admin") {
+      userObj.isAdmin = true;
+    }
+
+    const dbUid = this.getDbUserId(userId);
+    if (dbUid) {
+      const stored = session.ephemeralRoles.get(dbUid);
+      if (stored) {
+        userObj.isEditor = !!stored.isEditor;
+      }
+    }
+    return userObj;
+  }
+
+  /**
+   * Upgrade from oldUserId => newUserId, carrying ephemeral roles and locks.
+   */
+  static upgradeUserId(session, oldUserId, newUserId, newName, newIsAdmin, wsSocket) {
+    const oldUser = session.users.get(oldUserId);
+    if (!oldUser) return null;
+
+    for (const el of session.elements) {
+      if (el.lockedBy === oldUserId) {
+        el.lockedBy = newUserId;
+      }
+    }
+
+    session.users.delete(oldUserId);
+
+    oldUser.userId = newUserId;
+    oldUser.name = newName;
+    oldUser.isAdmin = !!newIsAdmin;
+    if (wsSocket) {
+      oldUser.socket = wsSocket;
+    }
+
+    const dbUid = this.getDbUserId(newUserId);
+    if (dbUid) {
+      let stored = session.ephemeralRoles.get(dbUid) || {};
+      if (typeof stored.isEditor === 'boolean') {
+        oldUser.isEditor = stored.isEditor;
+      }
+      stored.isEditor = oldUser.isEditor;
+      session.ephemeralRoles.set(dbUid, stored);
+    }
+
+    session.users.set(newUserId, oldUser);
+    return oldUser;
+  }
+
+  /**
+   * Downgrade from user_### => anon_###.
+   */
+  static downgradeUserId(session, oldUserId, newUserId, wsSocket) {
+    const oldUser = session.users.get(oldUserId);
+    if (!oldUser) return null;
+
+    for (const el of session.elements) {
+      if (el.lockedBy === oldUserId) {
+        el.lockedBy = newUserId;
+      }
+    }
+
+    const wasOwner = oldUser.isOwner;
+    const wasEditor = oldUser.isEditor;
+
+    const dbUid = this.getDbUserId(oldUserId);
+    if (dbUid) {
+      let ex = session.ephemeralRoles.get(dbUid) || {};
+      ex.isEditor = wasEditor;
+      session.ephemeralRoles.set(dbUid, ex);
+    }
+
+    session.users.delete(oldUserId);
+
+    oldUser.userId = newUserId;
+    oldUser.name = "Anonymous";
+    oldUser.isAdmin = false;
+    oldUser.isEditor = false;
+    oldUser.isOwner = false;
+    if (wsSocket) {
+      oldUser.socket = wsSocket;
+    }
+
+    session.users.set(newUserId, oldUser);
+    if (wasOwner) {
+      this.reassignOwnerIfNeeded(session);
+    }
+    return oldUser;
+  }
+
+  /**
+   * Remove a user from the session. Release locks and reassign owner if needed.
+   */
+  static removeUser(session, userId) {
+    const user = session.users.get(userId);
+    if (!user) return null;
+
+    for (const el of session.elements) {
+      if (el.lockedBy === userId) {
+        el.lockedBy = null;
+      }
+    }
+
+    const wasOwner = user.isOwner;
+    session.users.delete(userId);
+
+    if (wasOwner) {
+      this.reassignOwnerIfNeeded(session);
+    }
+    return user;
+  }
+
+  /**
+   * Kick a user => forcibly remove them from the session, if
+   * the kicker is either owner or admin, and target is not owner/admin.
+   */
+  static kickUser(session, kickerUserId, targetUserId) {
+    const reqUser = session.users.get(kickerUserId);
+    const tgtUser = session.users.get(targetUserId);
+    if (!reqUser || !tgtUser) return null;
+
+    // Only owner or admin can kick
+    if (!reqUser.isOwner && !reqUser.isAdmin) return null;
+
+    // Can't kick an owner or admin
+    if (tgtUser.isAdmin || tgtUser.isOwner) return null;
+
+    // Release locks
+    for (const el of session.elements) {
+      if (el.lockedBy === targetUserId) {
+        el.lockedBy = null;
+      }
+    }
+    session.users.delete(targetUserId);
+
+    // If they were owner, reassign
+    if (tgtUser.isOwner) {
+      this.reassignOwnerIfNeeded(session);
+    }
+
+    return tgtUser; 
+  }
+
+  static reassignOwnerIfNeeded(session) {
+    const owners = [...session.users.values()].filter(u => u.isOwner);
+    if (owners.length > 0) return;
+
+    const arr = [...session.users.values()];
+    if (arr.length === 0) return;
+
+    arr.sort((a, b) => a.joinOrder - b.joinOrder);
+    arr[0].isOwner = true;
+  }
+
+  /**
+   * If userId = "user_5", returns 5; else null.
+   */
+  static getDbUserId(userId) {
+    if (userId.startsWith("user_")) {
+      return parseInt(userId.split("_")[1], 10);
+    }
+    return null;
+  }
+}
+
+
+===== ./server/services/ProjectService.js =====
+
+// server/services/ProjectService.js
+import pool from '../database.js';
+import { HttpError } from '../utils/HttpError.js';
+
+export class ProjectService {
+  /**
+   * Return all projects owned by a user.
+   */
+  static async getProjectsByOwner(userId) {
+    const result = await pool.query(
+      "SELECT * FROM projects WHERE owner_id = $1",
+      [userId]
+    );
+    return result.rows;
+  }
+
+  /**
+   * Create a new project for a given owner.
+   */
+  static async createProject(ownerId, name, description) {
+    const result = await pool.query(
+      "INSERT INTO projects (name, description, owner_id) VALUES ($1, $2, $3) RETURNING *",
+      [name, description, ownerId]
+    );
+    return result.rows[0];
+  }
+
+  /**
+   * Return the project's owner ID, or null if project doesn't exist.
+   */
+  static async getProjectOwnerId(projectId) {
+    const result = await pool.query(
+      "SELECT owner_id FROM projects WHERE id = $1",
+      [projectId]
+    );
+    if (result.rows.length === 0) {
+      return null; // no such project
+    }
+    return result.rows[0].owner_id;
+  }
+
+  /**
+   * Update project name/description by ID. Returns updated row or null if not found.
+   */
+  static async updateProject(projectId, name, description) {
     const result = await pool.query(
       "UPDATE projects SET name = $1, description = $2 WHERE id = $3 RETURNING *",
-      [name, description, id]
+      [name, description, projectId]
     );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: "Project not found" });
-    }
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
+    return result.rows[0] || null;
   }
-});
 
-// Delete a project
-router.delete("/:id", authenticateToken, async (req, res) => {
-  const { id } = req.params;
-  try {
-    // must be owner or admin
-    const canEdit = await canEditProject(req, id);
-    if (!canEdit) {
-      return res.status(403).json({ message: "Not authorized." });
-    }
-
+  /**
+   * Delete a project by ID. Returns the deleted row or null if not found.
+   */
+  static async deleteProject(projectId) {
     const result = await pool.query(
       "DELETE FROM projects WHERE id = $1 RETURNING *",
-      [id]
+      [projectId]
     );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: "Project not found" });
-    }
-    // Here you'd also forcibly invalidate sessions using this project, if needed.
-    res.json({ message: "Project deleted" });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
+    return result.rows[0] || null;
   }
-});
 
-// ------------------------------------------
-// Versioning Endpoints
-// ------------------------------------------
-
-router.get("/:id/versions", authenticateToken, async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const canEdit = await canEditProject(req, id);
-    if (!canEdit) {
-      return res.status(403).json({ message: "Not authorized." });
+  /**
+   * If the user doesn’t have any project, create a default. Return the default or existing project.
+   */
+  static async createDefaultProjectIfNone(userId) {
+    const existing = await pool.query(
+      "SELECT * FROM projects WHERE owner_id = $1 ORDER BY id LIMIT 1",
+      [userId]
+    );
+    if (existing.rows.length > 0) {
+      return existing.rows[0];
     }
+    // Otherwise create a new default
+    const result = await pool.query(
+      "INSERT INTO projects (name, description, owner_id) VALUES ($1, $2, $3) RETURNING *",
+      ["My Default Project", "Auto-created for user", userId]
+    );
+    return result.rows[0];
+  }
 
+  /**
+   * Return versions for a project, sorted descending by version_number.
+   */
+  static async listVersions(projectId) {
     const result = await pool.query(
       `SELECT id, version_number, created_at
        FROM project_versions
        WHERE project_id = $1
        ORDER BY version_number DESC`,
-      [id]
+      [projectId]
     );
-
-    res.json(result.rows);
-  } catch (error) {
-    console.error("Error listing versions:", error);
-    res.status(500).json({ message: "Server error" });
+    return result.rows;
   }
-});
 
-router.post("/:id/versions", authenticateToken, async (req, res) => {
-  const { id } = req.params;
-  const { project_data } = req.body || {};
-
-  try {
-    const canEdit = await canEditProject(req, id);
-    if (!canEdit) {
-      return res.status(403).json({ message: "Not authorized." });
-    }
-
+  /**
+   * Create a new version for the project, auto-incrementing version_number.
+   */
+  static async createVersion(projectId, projectData) {
     // find max version_number
     const maxVerResult = await pool.query(
       `SELECT COALESCE(MAX(version_number), 0) AS max_ver
        FROM project_versions
        WHERE project_id = $1`,
-      [id]
+      [projectId]
     );
     const maxVer = maxVerResult.rows[0].max_ver || 0;
     const newVer = maxVer + 1;
 
-    // Insert the new version row
     const insertResult = await pool.query(
       `INSERT INTO project_versions (project_id, version_number, project_data)
        VALUES ($1, $2, $3)
        RETURNING id, version_number, created_at`,
-      [id, newVer, project_data || {}]
+      [projectId, newVer, projectData || {}]
     );
-
-    res.status(201).json(insertResult.rows[0]);
-  } catch (error) {
-    console.error("Error creating version:", error);
-    res.status(500).json({ message: "Server error" });
+    return insertResult.rows[0];
   }
-});
 
-router.post("/:id/versions/:versionId/rollback", authenticateToken, async (req, res) => {
-  const { id, versionId } = req.params;
-
-  try {
-    const canEdit = await canEditProject(req, id);
-    if (!canEdit) {
-      return res.status(403).json({ message: "Not authorized." });
-    }
-
-    // Load the old version to roll back to
+  /**
+   * Rollback to a specific version => create a new version row with the old data.
+   */
+  static async rollbackVersion(projectId, versionId) {
+    // Load the old version
     const oldVersionResult = await pool.query(
       `SELECT id, version_number, project_data
        FROM project_versions
        WHERE project_id = $1
          AND id = $2`,
-      [id, versionId]
+      [projectId, versionId]
     );
     if (oldVersionResult.rows.length === 0) {
-      return res.status(404).json({ message: "Version not found." });
+      throw new HttpError("Version not found.", 404);
     }
-
     const oldData = oldVersionResult.rows[0].project_data;
 
     // Then create a brand-new version row representing the rollback
@@ -3090,7 +3491,7 @@ router.post("/:id/versions/:versionId/rollback", authenticateToken, async (req, 
       `SELECT COALESCE(MAX(version_number), 0) AS max_ver
        FROM project_versions
        WHERE project_id = $1`,
-      [id]
+      [projectId]
     );
     const maxVer = maxVerResult.rows[0].max_ver || 0;
     const newVer = maxVer + 1;
@@ -3099,128 +3500,101 @@ router.post("/:id/versions/:versionId/rollback", authenticateToken, async (req, 
       `INSERT INTO project_versions (project_id, version_number, project_data)
        VALUES ($1, $2, $3)
        RETURNING id, version_number, created_at`,
-      [id, newVer, oldData]
+      [projectId, newVer, oldData]
     );
 
-    res.json({
+    return {
       message: "Project rolled back successfully",
       newVersion: rollbackInsert.rows[0],
-    });
-  } catch (error) {
-    console.error("Error rolling back project:", error);
-    res.status(500).json({ message: "Server error" });
+    };
   }
-});
-
-export default router;
+}
 
 
-===== ./server/routes/admin.js =====
+===== ./server/ws/messageDispatcher.js =====
 
-import express from 'express';
-import pool from '../database.js';
-import { authenticateToken, authorizeAdmin } from '../middleware/authMiddleware.js';
+// server/ws/messageDispatcher.js
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+import { handleJoinSession, handleUpgradeUserId, handleDowngradeUserId } from './handlers/sessionHandlers.js';
+import { handleCursorUpdate } from './handlers/cursorHandlers.js';
+import { handleElementGrab, handleElementMove, handleElementRelease } from './handlers/elementHandlers.js';
+import { handleMakeEditor, handleRemoveEditor, handleKickUser } from './handlers/permissionHandlers.js';
+import { handleProjectNameChange } from './handlers/projectHandlers.js';
 
-const router = express.Router();
+export function handleIncomingMessage(session, data, ws) {
+  switch (data.type) {
+    case MESSAGE_TYPES.JOIN_SESSION:
+      handleJoinSession(session, data, ws);
+      break;
+    case MESSAGE_TYPES.UPGRADE_USER_ID:
+      handleUpgradeUserId(session, data, ws);
+      break;
+    case MESSAGE_TYPES.DOWNGRADE_USER_ID:
+      handleDowngradeUserId(session, data, ws);
+      break;
 
-// Get all users (Admin only)
-router.get('/users', authenticateToken, authorizeAdmin, async (req, res) => {
-    try {
-        const result = await pool.query('SELECT id, email, role FROM users');
-        res.json(result.rows);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
-    }
-});
+    case MESSAGE_TYPES.CURSOR_UPDATE:
+      handleCursorUpdate(session, data, ws);
+      break;
 
-// Update user role (Admin only)
-router.put('/users/:id/role', authenticateToken, authorizeAdmin, async (req, res) => {
-    const { id } = req.params;
-    const { role } = req.body;
-    try {
-        const result = await pool.query('UPDATE users SET role = $1 WHERE id = $2 RETURNING *', [role, id]);
-        if (result.rows.length === 0) return res.status(404).json({ message: 'User not found' });
-        res.json(result.rows[0]);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
-    }
-});
+    case MESSAGE_TYPES.ELEMENT_GRAB:
+      handleElementGrab(session, data, ws);
+      break;
+    case MESSAGE_TYPES.ELEMENT_MOVE:
+      handleElementMove(session, data, ws);
+      break;
+    case MESSAGE_TYPES.ELEMENT_RELEASE:
+      handleElementRelease(session, data, ws);
+      break;
 
-// Delete a user (Admin only)
-router.delete('/users/:id', authenticateToken, authorizeAdmin, async (req, res) => {
-    const { id } = req.params;
-    try {
-        const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING *', [id]);
-        if (result.rows.length === 0) return res.status(404).json({ message: 'User not found' });
-        res.json({ message: 'User deleted' });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
-    }
-});
+    case MESSAGE_TYPES.MAKE_EDITOR:
+      handleMakeEditor(session, data, ws);
+      break;
+    case MESSAGE_TYPES.REMOVE_EDITOR:
+      handleRemoveEditor(session, data, ws);
+      break;
+    case MESSAGE_TYPES.KICK_USER:
+      handleKickUser(session, data, ws);
+      break;
 
-export default router;
+    // NEW: Handle project name changes in the real-time session
+    case MESSAGE_TYPES.PROJECT_NAME_CHANGE:
+      handleProjectNameChange(session, data, ws);
+      break;
+
+    default:
+      // unknown message type
+      break;
+  }
+}
 
 
-===== ./server/ws/collaboration.js =====
+===== ./server/ws/collabUtils.js =====
 
 /**
- * ./server/ws/collaboration.js
+ * ./server/ws/collabUtils.js
  *
- * Key fix for permission restore: in "UPGRADE_USER_ID", we now:
- *  1) Look up ephemeralRoles[dbUid].
- *  2) Re-apply them to oldUser (for example isEditor=true).
- *  3) Then we also store back oldUser.isEditor to ephemeralRoles[dbUid] if needed.
- *
- * Everything else remains the same as your previous file that preserves
- * user order, color, and locks through login/out.
+ * Shared utility functions used by multiple handlers.
  */
-
 import { WebSocket } from 'ws';
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 
-// A Map of sessionCode -> sessionData
-// sessionData = {
-//   code, projectName, elements, linkedProjectId,
-//   users: Map(userId -> userObj),
-//   ephemeralRoles: Map(dbUid -> { isEditor?: bool }),
-//   nextJoinOrder: number
-// }
-const sessionMap = new Map();
-
-/** If userId = "user_5", returns 5; else returns null. */
-function getDbUserId(userId) {
-  if (userId.startsWith("user_")) {
-    return parseInt(userId.split("_")[1], 10);
-  }
-  return null;
-}
-
-/** Compute color from userId only once, on initial creation. */
-function colorFromUserId(userId) {
-  let hash = 0;
-  for (let i = 0; i < userId.length; i++) {
-    hash = userId.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const r = (hash >> 16) & 0xff;
-  const g = (hash >> 8) & 0xff;
-  const b = hash & 0xff;
-  return `rgb(${r},${g},${b})`;
-}
-
-/** Broadcast JSON to all sockets in session. */
-function broadcastToSession(session, data) {
+/**
+ * Broadcast a data object (JSON) to all sockets in session.
+ */
+export function broadcastToSession(session, data) {
   const msg = JSON.stringify(data);
-  for (const u of session.users.values()) {
-    if (u.socket && u.socket.readyState === WebSocket.OPEN) {
-      u.socket.send(msg);
+  for (const user of session.users.values()) {
+    if (user.socket && user.socket.readyState === WebSocket.OPEN) {
+      user.socket.send(msg);
     }
   }
 }
 
-function broadcastElementState(session) {
+/**
+ * Broadcast the current element state (elements array + projectName) to all in the session.
+ */
+export function broadcastElementState(session) {
   broadcastToSession(session, {
     type: MESSAGE_TYPES.ELEMENT_STATE,
     elements: session.elements,
@@ -3228,21 +3602,10 @@ function broadcastElementState(session) {
   });
 }
 
-function broadcastCursors(session) {
-  const cursors = {};
-  for (const u of session.users.values()) {
-    if (u.x !== undefined && u.y !== undefined) {
-      cursors[u.userId] = { x: u.x, y: u.y };
-    }
-  }
-  broadcastToSession(session, {
-    type: MESSAGE_TYPES.CURSOR_UPDATES,
-    cursors,
-  });
-}
-
-/** Sort users by joinOrder so no reorder on login/out. */
-function broadcastUserList(session) {
+/**
+ * Broadcast the current user list, sorted by joinOrder, plus info about the current owner.
+ */
+export function broadcastUserList(session) {
   const sorted = [...session.users.values()].sort((a, b) => a.joinOrder - b.joinOrder);
   let currentOwnerId = null;
   const userList = sorted.map(u => {
@@ -3256,6 +3619,7 @@ function broadcastUserList(session) {
       isAdmin: !!u.isAdmin,
     };
   });
+
   broadcastToSession(session, {
     type: MESSAGE_TYPES.SESSION_USERS,
     users: userList,
@@ -3263,67 +3627,55 @@ function broadcastUserList(session) {
   });
 }
 
-/** Create or fetch ephemeral session. */
-function getOrCreateSession(code) {
-  let s = sessionMap.get(code);
-  if (!s) {
-    s = {
-      code,
-      projectName: "New Project",
-      elements: [
-        { id: 1, x: 100, y: 100, w: 50, h: 50, lockedBy: null },
-        { id: 2, x: 300, y: 200, w: 60, h: 80, lockedBy: null },
-      ],
-      linkedProjectId: null,
-      users: new Map(),
-      ephemeralRoles: new Map(),
-      nextJoinOrder: 1,
-    };
-    sessionMap.set(code, s);
-  }
-  return s;
-}
-
-/** If no owners, pick earliest joined user. */
-function reassignOwnerIfNeeded(session) {
+/**
+ * If no owners remain, pick the earliest joined user as owner.
+ * If session is now empty, remove it from memory (the caller might do so).
+ */
+export function reassignOwnerIfNeeded(session) {
   const owners = [...session.users.values()].filter(u => u.isOwner);
   if (owners.length > 0) return;
+
   const arr = [...session.users.values()];
   if (arr.length === 0) {
-    sessionMap.delete(session.code);
+    // It's empty, let caller remove the session from map if desired
     return;
   }
   arr.sort((a, b) => a.joinOrder - b.joinOrder);
   arr[0].isOwner = true;
 }
 
-/** Kick user => remove locks => remove user => broadcast. */
-function kickUser(session, targetUserId) {
-  const target = session.users.get(targetUserId);
-  if (!target) return false;
-
-  // Release locks
-  for (const el of session.elements) {
-    if (el.lockedBy === targetUserId) {
-      el.lockedBy = null;
-    }
+/**
+ * If userId = "user_5", returns 5; else returns null.
+ * Used to map ephemeral "user_#" IDs to a DB user ID.
+ */
+export function getDbUserId(userId) {
+  if (userId.startsWith("user_")) {
+    return parseInt(userId.split("_")[1], 10);
   }
-
-  session.users.delete(targetUserId);
-  reassignOwnerIfNeeded(session);
-  broadcastUserList(session);
-  broadcastElementState(session);
-
-  if (target.socket && target.socket.readyState === WebSocket.OPEN) {
-    const msg = JSON.stringify({ type: MESSAGE_TYPES.KICKED });
-    target.socket.send(msg, () => {
-      setTimeout(() => target.socket.close(), 50);
-    });
-  } else {
-    target.socket?.close();
-  }
-  return true;
+  return null;
 }
+
+/**
+ * Compute a color from the userId string, used to give each user a stable color.
+ */
+export function colorFromUserId(userId) {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = userId.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const r = (hash >> 16) & 0xff;
+  const g = (hash >> 8) & 0xff;
+  const b = hash & 0xff;
+  return `rgb(${r},${g},${b})`;
+}
+
+
+===== ./server/ws/collaboration.js =====
+
+// server/ws/collaboration.js
+import { WebSocket } from 'ws';
+import { handleIncomingMessage } from './messageDispatcher.js';
+import { SessionService } from '../services/SessionService.js';
 
 export function handleWebSocketConnection(ws, wss) {
   ws.on('message', (raw) => {
@@ -3331,315 +3683,13 @@ export function handleWebSocketConnection(ws, wss) {
     try {
       data = JSON.parse(raw);
     } catch {
+      // ignore parse errors
       return;
     }
 
-    switch (data.type) {
-      // --------------------------------------------------------
-      // JOIN_SESSION
-      // --------------------------------------------------------
-      case MESSAGE_TYPES.JOIN_SESSION: {
-        let { userId, name, sessionCode, userRole } = data;
-        if (!userId) return;
-        if (!sessionCode) sessionCode = "defaultSession";
-
-        const session = getOrCreateSession(sessionCode);
-        let user = session.users.get(userId);
-
-        if (!user) {
-          // Create new user object
-          user = {
-            userId,
-            name: name || "Anonymous",
-            color: colorFromUserId(userId), // only once
-            isOwner: false,
-            isEditor: false,
-            isAdmin: false,
-            socket: ws,
-            x: 0,
-            y: 0,
-            joinOrder: session.nextJoinOrder++,
-          };
-          session.users.set(userId, user);
-
-          // If no one is owner, this user becomes ephemeral owner
-          const anyOwner = [...session.users.values()].some(u => u.isOwner);
-          if (!anyOwner) {
-            user.isOwner = true;
-          }
-        } else {
-          // Already present => update socket, name
-          user.socket = ws;
-          user.name = name || user.name;
-        }
-
-        if (userRole === "admin") {
-          user.isAdmin = true;
-        }
-
-        // If user_#, restore ephemeral roles if any
-        const dbUid = getDbUserId(userId);
-        if (dbUid) {
-          const stored = session.ephemeralRoles.get(dbUid);
-          if (stored) {
-            user.isEditor = !!stored.isEditor;
-          }
-        }
-
-        ws.sessionCode = sessionCode;
-        ws.userId = userId;
-
-        broadcastUserList(session);
-        broadcastElementState(session);
-        break;
-      }
-
-      // --------------------------------------------------------
-      // CURSOR_UPDATE, ELEMENT_GRAB/MOVE/RELEASE, etc.
-      // --------------------------------------------------------
-      case MESSAGE_TYPES.CURSOR_UPDATE: {
-        const { userId, x, y } = data;
-        const code = ws.sessionCode;
-        if (!code) return;
-        const session = sessionMap.get(code);
-        if (!session) return;
-        const u = session.users.get(userId);
-        if (!u) return;
-        u.x = x;
-        u.y = y;
-        broadcastCursors(session);
-        // older single approach
-        broadcastToSession(session, {
-          type: MESSAGE_TYPES.CURSOR_UPDATE,
-          userId,
-          x,
-          y,
-        });
-        break;
-      }
-
-      case MESSAGE_TYPES.ELEMENT_GRAB: {
-        const { userId, elementId } = data;
-        const s = sessionMap.get(ws.sessionCode);
-        if (!s) return;
-        const el = s.elements.find(e => e.id === elementId);
-        if (!el) return;
-        if (!el.lockedBy || el.lockedBy === userId) {
-          el.lockedBy = userId;
-          broadcastElementState(s);
-        }
-        break;
-      }
-
-      case MESSAGE_TYPES.ELEMENT_MOVE: {
-        const { userId, elementId, x, y } = data;
-        const s = sessionMap.get(ws.sessionCode);
-        if (!s) return;
-        const el = s.elements.find(e => e.id === elementId);
-        if (!el) return;
-        if (el.lockedBy === userId) {
-          el.x = x;
-          el.y = y;
-          broadcastElementState(s);
-        }
-        break;
-      }
-
-      case MESSAGE_TYPES.ELEMENT_RELEASE: {
-        const { userId, elementId } = data;
-        const s = sessionMap.get(ws.sessionCode);
-        if (!s) return;
-        const el = s.elements.find(e => e.id === elementId);
-        if (!el) return;
-        if (el.lockedBy === userId) {
-          el.lockedBy = null;
-          broadcastElementState(s);
-        }
-        break;
-      }
-
-      case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
-        const { userId, newName } = data;
-        const s = sessionMap.get(ws.sessionCode);
-        if (!s) return;
-        const requestingUser = s.users.get(userId);
-        if (!requestingUser) return;
-        if (requestingUser.isOwner || requestingUser.isAdmin) {
-          s.projectName = newName;
-          broadcastToSession(s, {
-            type: MESSAGE_TYPES.PROJECT_NAME_CHANGE,
-            newName,
-          });
-        }
-        break;
-      }
-
-      // --------------------------------------------------------
-      // MAKE_EDITOR, REMOVE_EDITOR, KICK_USER
-      // --------------------------------------------------------
-      case MESSAGE_TYPES.MAKE_EDITOR: {
-        const { userId, targetUserId } = data;
-        const s = sessionMap.get(ws.sessionCode);
-        if (!s) return;
-        const reqUser = s.users.get(userId);
-        const tgtUser = s.users.get(targetUserId);
-        if (!reqUser || !tgtUser) return;
-        if (reqUser.isOwner || reqUser.isAdmin) {
-          if (!tgtUser.isAdmin && !tgtUser.isOwner) {
-            tgtUser.isEditor = true;
-            const dbUid = getDbUserId(targetUserId);
-            if (dbUid) {
-              const ex = s.ephemeralRoles.get(dbUid) || {};
-              ex.isEditor = true;
-              s.ephemeralRoles.set(dbUid, ex);
-            }
-            broadcastUserList(s);
-          }
-        }
-        break;
-      }
-
-      case MESSAGE_TYPES.REMOVE_EDITOR: {
-        const { userId, targetUserId } = data;
-        const s = sessionMap.get(ws.sessionCode);
-        if (!s) return;
-        const reqUser = s.users.get(userId);
-        const tgtUser = s.users.get(targetUserId);
-        if (!reqUser || !tgtUser) return;
-        if (reqUser.isOwner || reqUser.isAdmin) {
-          if (tgtUser.isEditor) {
-            tgtUser.isEditor = false;
-            const dbUid = getDbUserId(targetUserId);
-            if (dbUid) {
-              const ex = s.ephemeralRoles.get(dbUid) || {};
-              ex.isEditor = false;
-              s.ephemeralRoles.set(dbUid, ex);
-            }
-            broadcastUserList(s);
-          }
-        }
-        break;
-      }
-
-      case MESSAGE_TYPES.KICK_USER: {
-        const { userId, targetUserId } = data;
-        const s = sessionMap.get(ws.sessionCode);
-        if (!s) return;
-        const reqUser = s.users.get(userId);
-        const tgtUser = s.users.get(targetUserId);
-        if (!reqUser || !tgtUser) return;
-        if (reqUser.isOwner || reqUser.isAdmin) {
-          if (!tgtUser.isAdmin && !tgtUser.isOwner) {
-            kickUser(s, targetUserId);
-          }
-        }
-        break;
-      }
-
-      // --------------------------------------------------------
-      // UPGRADE_USER_ID (anon => user_#)
-      // --------------------------------------------------------
-      case MESSAGE_TYPES.UPGRADE_USER_ID: {
-        const { oldUserId, newUserId, newName, newIsAdmin } = data;
-        const s = sessionMap.get(ws.sessionCode);
-        if (!s) return;
-
-        const oldUser = s.users.get(oldUserId);
-        if (!oldUser) return;
-
-        // Reassign locks
-        for (const el of s.elements) {
-          if (el.lockedBy === oldUserId) {
-            el.lockedBy = newUserId;
-          }
-        }
-
-        // Remove old ID
-        s.users.delete(oldUserId);
-
-        // Update the same user object
-        oldUser.userId = newUserId;
-        oldUser.name = newName;
-        oldUser.isAdmin = !!newIsAdmin;
-        // keep oldUser.color, isOwner, isEditor, joinOrder
-
-        const dbUid = getDbUserId(newUserId);
-        if (dbUid) {
-          // 1) Retrieve ephemeral roles from memory
-          let stored = s.ephemeralRoles.get(dbUid) || {};
-
-          // 2) Re-apply them to oldUser (in case ephemeral user wasn't editor, 
-          //    but stored says they are).
-          if (typeof stored.isEditor === 'boolean') {
-            oldUser.isEditor = stored.isEditor;
-          }
-
-          // 3) Also store back user’s current ephemeral state to ephemeralRoles
-          stored.isEditor = oldUser.isEditor;
-          s.ephemeralRoles.set(dbUid, stored);
-        }
-
-        s.users.set(newUserId, oldUser);
-        ws.userId = newUserId;
-
-        broadcastUserList(s);
-        broadcastElementState(s);
-        break;
-      }
-
-      // --------------------------------------------------------
-      // DOWNGRADE_USER_ID (user_# => anon)
-      // --------------------------------------------------------
-      case MESSAGE_TYPES.DOWNGRADE_USER_ID: {
-        const { oldUserId, newUserId } = data;
-        const s = sessionMap.get(ws.sessionCode);
-        if (!s) return;
-
-        const oldUser = s.users.get(oldUserId);
-        if (!oldUser) return;
-
-        // Reassign locks
-        for (const el of s.elements) {
-          if (el.lockedBy === oldUserId) {
-            el.lockedBy = newUserId;
-          }
-        }
-
-        const wasOwner = oldUser.isOwner;
-        const wasEditor = oldUser.isEditor;
-
-        // If it was user_#, store ephemeral roles (like isEditor)
-        const dbUid = getDbUserId(oldUserId);
-        if (dbUid) {
-          let ex = s.ephemeralRoles.get(dbUid) || {};
-          ex.isEditor = wasEditor; // store before we null it
-          s.ephemeralRoles.set(dbUid, ex);
-        }
-
-        s.users.delete(oldUserId);
-
-        oldUser.userId = newUserId;
-        oldUser.name = "Anonymous";
-        oldUser.isAdmin = false;
-        oldUser.isEditor = false;
-        oldUser.isOwner = false; 
-        // keep oldUser.color, oldUser.joinOrder
-
-        s.users.set(newUserId, oldUser);
-        ws.userId = newUserId;
-
-        if (wasOwner) {
-          reassignOwnerIfNeeded(s);
-        }
-
-        broadcastUserList(s);
-        broadcastElementState(s);
-        break;
-      }
-
-      default:
-        break;
-    }
+    // fetch session if known
+    const session = ws.sessionCode ? SessionService.getSession(ws.sessionCode) : null;
+    handleIncomingMessage(session, data, ws);
   });
 
   ws.on('close', () => {
@@ -3647,33 +3697,270 @@ export function handleWebSocketConnection(ws, wss) {
     const userId = ws.userId;
     if (!code || !userId) return;
 
-    const s = sessionMap.get(code);
-    if (!s) return;
+    const session = SessionService.getSession(code);
+    if (!session) return;
 
-    const user = s.users.get(userId);
-    if (!user) return;
-
-    // Release locks
-    for (const el of s.elements) {
-      if (el.lockedBy === userId) {
-        el.lockedBy = null;
-      }
-    }
-
-    const wasOwner = user.isOwner;
-    s.users.delete(userId);
-
-    if (wasOwner) {
-      reassignOwnerIfNeeded(s);
-    }
-
-    broadcastUserList(s);
-    broadcastElementState(s);
-
-    if (s.users.size === 0) {
-      sessionMap.delete(code);
+    SessionService.removeUser(session, userId);
+    if (session.users.size === 0) {
+      SessionService.removeSession(code);
     }
   });
+}
+
+
+===== ./server/ws/handlers/elementHandlers.js =====
+
+/**
+ * ./server/ws/handlers/elementHandlers.js
+ *
+ * Handles messages: ELEMENT_GRAB, ELEMENT_MOVE, ELEMENT_RELEASE
+ */
+import { broadcastElementState } from '../collabUtils.js';
+
+export function handleElementGrab(session, data, ws) {
+  if (!session) return;
+  const { userId, elementId } = data;
+  const el = session.elements.find(e => e.id === elementId);
+  if (!el) return;
+
+  // Lock if no lock or lockedBy me
+  if (!el.lockedBy || el.lockedBy === userId) {
+    el.lockedBy = userId;
+    broadcastElementState(session);
+  }
+}
+
+export function handleElementMove(session, data, ws) {
+  if (!session) return;
+  const { userId, elementId, x, y } = data;
+  const el = session.elements.find(e => e.id === elementId);
+  if (!el) return;
+
+  // Only move if locked by me
+  if (el.lockedBy === userId) {
+    el.x = x;
+    el.y = y;
+    broadcastElementState(session);
+  }
+}
+
+export function handleElementRelease(session, data, ws) {
+  if (!session) return;
+  const { userId, elementId } = data;
+  const el = session.elements.find(e => e.id === elementId);
+  if (!el) return;
+
+  // Only release if locked by me
+  if (el.lockedBy === userId) {
+    el.lockedBy = null;
+    broadcastElementState(session);
+  }
+}
+
+
+===== ./server/ws/handlers/projectHandlers.js =====
+
+// server/ws/handlers/projectHandlers.js
+import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
+import { broadcastToSession, broadcastElementState } from '../collabUtils.js';
+
+/**
+ * handleProjectNameChange => only if the user isOwner or isAdmin.
+ */
+export function handleProjectNameChange(session, data, ws) {
+  if (!session) return;
+
+  const { userId, newName } = data;
+  if (!newName || !userId) return;
+
+  const user = session.users.get(userId);
+  if (!user) return;
+
+  // Only owner or admin can rename
+  if (user.isOwner || user.isAdmin) {
+    session.projectName = newName;
+
+    // Notify everyone that the project name changed
+    broadcastToSession(session, {
+      type: MESSAGE_TYPES.PROJECT_NAME_CHANGE,
+      newName,
+    });
+
+    // Optionally also re-broadcast the element state if desired
+    // (some clients might want that to ensure consistent data)
+    broadcastElementState(session);
+  }
+}
+
+
+===== ./server/ws/handlers/permissionHandlers.js =====
+
+// server/ws/handlers/permissionHandlers.js
+import { getDbUserId, broadcastUserList, broadcastElementState, broadcastToSession } from '../collabUtils.js';
+import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
+import { WebSocket } from 'ws';
+import { SessionService } from '../../services/SessionService.js';
+
+export function handleMakeEditor(session, data, ws) {
+  if (!session) return;
+  const { userId, targetUserId } = data;
+  const reqUser = session.users.get(userId);
+  const tgtUser = session.users.get(targetUserId);
+  if (!reqUser || !tgtUser) return;
+
+  if (reqUser.isOwner || reqUser.isAdmin) {
+    if (!tgtUser.isAdmin && !tgtUser.isOwner) {
+      tgtUser.isEditor = true;
+      const dbUid = getDbUserId(targetUserId);
+      if (dbUid) {
+        const ex = session.ephemeralRoles.get(dbUid) || {};
+        ex.isEditor = true;
+        session.ephemeralRoles.set(dbUid, ex);
+      }
+      broadcastUserList(session);
+    }
+  }
+}
+
+export function handleRemoveEditor(session, data, ws) {
+  if (!session) return;
+  const { userId, targetUserId } = data;
+  const reqUser = session.users.get(userId);
+  const tgtUser = session.users.get(targetUserId);
+  if (!reqUser || !tgtUser) return;
+
+  if (reqUser.isOwner || reqUser.isAdmin) {
+    if (tgtUser.isEditor) {
+      tgtUser.isEditor = false;
+      const dbUid = getDbUserId(targetUserId);
+      if (dbUid) {
+        const ex = session.ephemeralRoles.get(dbUid) || {};
+        ex.isEditor = false;
+        session.ephemeralRoles.set(dbUid, ex);
+      }
+      broadcastUserList(session);
+    }
+  }
+}
+
+/**
+ * KICK_USER => forcibly remove them from the session
+ */
+export function handleKickUser(session, data, ws) {
+  if (!session) return;
+  const { userId, targetUserId } = data;
+
+  // We'll ask SessionService to do the logic
+  const kickedUser = SessionService.kickUser(session, userId, targetUserId);
+  if (!kickedUser) {
+    // Means either not authorized or user is admin/owner => no action
+    return;
+  }
+
+  // Now that they're removed, broadcast user changes
+  broadcastUserList(session);
+  broadcastElementState(session);
+
+  // If the kicked user is still connected, notify them
+  if (kickedUser.socket && kickedUser.socket.readyState === WebSocket.OPEN) {
+    kickedUser.socket.send(JSON.stringify({ type: MESSAGE_TYPES.KICKED }), () => {
+      setTimeout(() => kickedUser.socket.close(), 50);
+    });
+  } else {
+    kickedUser.socket?.close();
+  }
+}
+
+
+===== ./server/ws/handlers/cursorHandlers.js =====
+
+/**
+ * ./server/ws/handlers/cursorHandlers.js
+ *
+ * Handles messages for cursor updates.
+ */
+import { broadcastToSession } from '../collabUtils.js';
+import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
+
+export function handleCursorUpdate(session, data, ws) {
+  if (!session) return;
+  const { userId, x, y } = data;
+
+  const user = session.users.get(userId);
+  if (!user) return;
+
+  user.x = x;
+  user.y = y;
+
+  // Optionally, you can broadcast either single or aggregated updates.
+  // The older code sometimes broadcasted CURSOR_UPDATES as a bulk object.
+  // We'll do single for simplicity:
+  broadcastToSession(session, {
+    type: MESSAGE_TYPES.CURSOR_UPDATE,
+    userId,
+    x,
+    y,
+  });
+}
+
+
+===== ./server/ws/handlers/sessionHandlers.js =====
+
+import { SessionService } from '../../services/SessionService.js';
+import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
+import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
+
+/**
+ * handleJoinSession
+ *   - fetch or create session
+ *   - add user to session
+ *   - attach ws fields
+ *   - broadcast
+ */
+export function handleJoinSession(session, data, ws) {
+  let { userId, name, sessionCode, userRole } = data;
+  if (!userId) return;
+
+  if (!sessionCode) {
+    sessionCode = "defaultSession";
+  }
+
+  // If no session, create or fetch
+  if (!session) {
+    session = SessionService.getOrCreateSession(sessionCode);
+  }
+
+  const userObj = SessionService.joinSession(session, userId, name, userRole, ws);
+  ws.sessionCode = session.code;
+  ws.userId = userId;
+
+  // broadcast
+  broadcastUserList(session);
+  broadcastElementState(session);
+}
+
+export function handleUpgradeUserId(session, data, ws) {
+  if (!session) return;
+  const { oldUserId, newUserId, newName, newIsAdmin } = data;
+
+  const userObj = SessionService.upgradeUserId(session, oldUserId, newUserId, newName, newIsAdmin, ws);
+  if (!userObj) return;
+
+  ws.userId = newUserId;
+  broadcastUserList(session);
+  broadcastElementState(session);
+}
+
+export function handleDowngradeUserId(session, data, ws) {
+  if (!session) return;
+  const { oldUserId, newUserId } = data;
+
+  const userObj = SessionService.downgradeUserId(session, oldUserId, newUserId, ws);
+  if (!userObj) return;
+
+  ws.userId = newUserId;
+  broadcastUserList(session);
+  broadcastElementState(session);
 }
 
 

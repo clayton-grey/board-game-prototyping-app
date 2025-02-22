@@ -1,102 +1,78 @@
+// server/routes/auth.js
 import express from 'express';
-import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import pool from '../database.js';
-import dotenv from 'dotenv';
-
-dotenv.config();
+import config from '../config.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { HttpError } from '../utils/HttpError.js';
+import { UserService } from '../services/UserService.js';
 
 const router = express.Router();
 
 /**
  * POST /auth/register
  * Body: { name, email, password, confirmPassword }
- *  - Creates a new user.
- *  - Immediately returns a JWT token so user is "logged in" upon success.
  */
-router.post('/register', async (req, res) => {
-    const { name, email, password, confirmPassword } = req.body;
+router.post('/register', asyncHandler(async (req, res) => {
+  const { name, email, password, confirmPassword } = req.body;
 
-    if (!name || !email || !password || !confirmPassword) {
-        return res.status(400).json({ message: 'All fields are required.' });
-    }
-    if (password !== confirmPassword) {
-        return res.status(400).json({ message: 'Passwords do not match.' });
-    }
+  if (!name || !email || !password || !confirmPassword) {
+    throw new HttpError('All fields are required.', 400);
+  }
+  if (password !== confirmPassword) {
+    throw new HttpError('Passwords do not match.', 400);
+  }
 
-    try {
-        // Check if user already exists
-        const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
-        if (existing.rows.length > 0) {
-            return res.status(400).json({ message: 'Email is already in use.' });
-        }
+  // createUser() will throw HttpError if email is in use
+  const user = await UserService.createUser(name, email, password);
 
-        const hashedPassword = await bcrypt.hash(password, 10);
+  // Create token
+  const token = jwt.sign(
+    { id: user.id, email: user.email, role: user.role, name: user.name },
+    config.JWT_SECRET,
+    { expiresIn: '1h' }
+  );
 
-        const result = await pool.query(
-            'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email, role',
-            [name, email, hashedPassword]
-        );
-        const user = result.rows[0];
-
-        // Create a token
-        const token = jwt.sign(
-            { id: user.id, email: user.email, role: user.role, name: user.name },
-            process.env.JWT_SECRET,
-            { expiresIn: '1h' }
-        );
-
-        return res.status(201).json({
-            message: 'User registered successfully',
-            user,
-            token,
-        });
-    } catch (error) {
-        console.error(error);
-        return res.status(500).json({ message: 'Server error' });
-    }
-});
+  return res.status(201).json({
+    message: 'User registered successfully',
+    user,
+    token,
+  });
+}));
 
 /**
  * POST /auth/login
  * Body: { email, password }
- *  - Returns { user, token } if successful
  */
-router.post('/login', async (req, res) => {
-    const { email, password } = req.body;
-    try {
-        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        if (result.rows.length === 0) {
-            return res.status(401).json({ message: 'Invalid credentials' });
-        }
+router.post('/login', asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
 
-        const user = result.rows[0];
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(401).json({ message: 'Invalid credentials' });
-        }
+  const user = await UserService.getByEmail(email);
+  if (!user) {
+    throw new HttpError('Invalid credentials.', 401);
+  }
 
-        // Create JWT
-        const token = jwt.sign(
-            { id: user.id, email: user.email, role: user.role, name: user.name },
-            process.env.JWT_SECRET,
-            { expiresIn: '1h' }
-        );
+  const isMatch = await UserService.comparePasswords(password, user.password);
+  if (!isMatch) {
+    throw new HttpError('Invalid credentials.', 401);
+  }
 
-        res.json({
-            message: 'Logged in successfully',
-            user: {
-                id: user.id,
-                name: user.name,
-                email: user.email,
-                role: user.role,
-            },
-            token,
-        });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
-    }
-});
+  // create JWT
+  const token = jwt.sign(
+    { id: user.id, email: user.email, role: user.role, name: user.name },
+    config.JWT_SECRET,
+    { expiresIn: '1h' }
+  );
+
+  return res.json({
+    message: 'Logged in successfully',
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+    },
+    token,
+  });
+}));
 
 export default router;

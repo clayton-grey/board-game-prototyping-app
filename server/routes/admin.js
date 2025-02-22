@@ -1,45 +1,38 @@
+// server/routes/admin.js
 import express from 'express';
-import pool from '../database.js';
 import { authenticateToken, authorizeAdmin } from '../middleware/authMiddleware.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { HttpError } from '../utils/HttpError.js';
+import { UserService } from '../services/UserService.js';
 
 const router = express.Router();
 
-// Get all users (Admin only)
-router.get('/users', authenticateToken, authorizeAdmin, async (req, res) => {
-    try {
-        const result = await pool.query('SELECT id, email, role FROM users');
-        res.json(result.rows);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
-    }
-});
+// GET /admin/users
+router.get('/users', authenticateToken, authorizeAdmin, asyncHandler(async (req, res) => {
+  const users = await UserService.listAll();
+  return res.json(users);
+}));
 
-// Update user role (Admin only)
-router.put('/users/:id/role', authenticateToken, authorizeAdmin, async (req, res) => {
-    const { id } = req.params;
-    const { role } = req.body;
-    try {
-        const result = await pool.query('UPDATE users SET role = $1 WHERE id = $2 RETURNING *', [role, id]);
-        if (result.rows.length === 0) return res.status(404).json({ message: 'User not found' });
-        res.json(result.rows[0]);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
-    }
-});
+// PUT /admin/users/:id/role
+router.put('/users/:id/role', authenticateToken, authorizeAdmin, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body;
 
-// Delete a user (Admin only)
-router.delete('/users/:id', authenticateToken, authorizeAdmin, async (req, res) => {
-    const { id } = req.params;
-    try {
-        const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING *', [id]);
-        if (result.rows.length === 0) return res.status(404).json({ message: 'User not found' });
-        res.json({ message: 'User deleted' });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error' });
-    }
-});
+  const updated = await UserService.updateRole(id, role);
+  if (!updated) {
+    throw new HttpError('User not found', 404);
+  }
+  return res.json(updated);
+}));
+
+// DELETE /admin/users/:id
+router.delete('/users/:id', authenticateToken, authorizeAdmin, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const deleted = await UserService.deleteUser(id);
+  if (!deleted) {
+    throw new HttpError('User not found', 404);
+  }
+  return res.json({ message: 'User deleted' });
+}));
 
 export default router;
