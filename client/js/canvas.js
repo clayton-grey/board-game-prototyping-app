@@ -1,68 +1,38 @@
-/**
- * ./client/js/canvas.js
- *
- * Key change:
- *  - We export an "updateCanvasUserId(newId)" function so that 
- *    after logging in or out, the app can tell the canvas to use the new user ID 
- *    for future element grabbing/moving/releasing. 
- *
- * That fixes "can't deselect" after login.
- */
-
+// ./client/js/canvas.js
 import { MESSAGE_TYPES } from "/shared/wsMessageTypes.js";
 
-export const userInfoMap = new Map(); // userId -> { color, name }
-const remoteCursors = new Map();
-
+// We track selection locally, so we know which items we have locked.
+let selectedElementIds = [];
 let localUserId = null;
-let elements = [];
-let currentProjectName = "New Project";
 
-// Camera / Zoom
-let camX = 0;
-let camY = 0;
-let scale = 1.0;
-const minScale = 0.01;
-const maxScale = 16.0;
-const wheelZoomSpeed = 0.0015;
-const buttonZoomStep = 0.25;
+export const userInfoMap = new Map(); // userId -> { color, name }
+export const remoteCursors = new Map(); // Exposed so app.js can remove stale cursors
+
+// Canvas transform/camera
+let camX = 0, camY = 0, scale = 1.0;
+const minScale = 0.01, maxScale = 16.0;
+const wheelZoomSpeed = 0.0015, buttonZoomStep = 0.25;
 
 // Panning
 let isPanning = false;
-let lastMouseX = 0;
-let lastMouseY = 0;
+let lastMouseX = 0, lastMouseY = 0;
 
-// Selection & dragging
-let selectedElementIds = [];
-let lockedOffsets = {};
+// Dragging
 let isDragging = false;
+const lockedOffsets = {};
 
-// Marquee selection
+// Marquee
 let isMarqueeSelecting = false;
-let marqueeStartCanvasX = 0;
-let marqueeStartCanvasY = 0;
-let marqueeEndCanvasX = 0;
-let marqueeEndCanvasY = 0;
-let marqueeStartWorldX = 0;
-let marqueeStartWorldY = 0;
-let marqueeEndWorldX = 0;
-let marqueeEndWorldY = 0;
+let marqueeStartCanvasX = 0, marqueeStartCanvasY = 0;
+let marqueeEndCanvasX = 0, marqueeEndCanvasY = 0;
+let marqueeStartWorldX = 0, marqueeStartWorldY = 0;
+let marqueeEndWorldX = 0, marqueeEndWorldY = 0;
 
-// Base grid spacing
-const BASE_SPACING = 100;
+// Elements come from server's ELEMENT_STATE
+let elements = [];
+let currentProjectName = "New Project";
 
-/**
- * Exported so app.js can tell the canvas code 
- * "Hey, we changed from oldUserId => newUserId" after login/out.
- */
-export function updateCanvasUserId(newId) {
-  localUserId = newId;
-}
-
-/**
- * Called once on page load. We store userId in a local var 
- * that we can update later with updateCanvasUserId().
- */
+/** Called once on page load from app.js */
 export function initCanvas(initialUserId) {
   localUserId = initialUserId;
 
@@ -85,29 +55,34 @@ export function initCanvas(initialUserId) {
   canvas.addEventListener("mouseup", onMouseUp);
   canvas.addEventListener("mouseleave", onMouseUp);
 
-  // Wheel zoom
+  // Wheel
   canvas.addEventListener("wheel", onWheel, { passive: false });
 
   // Zoom UI
-  document.getElementById("zoom-in").addEventListener("click", () => {
-    zoomAroundCenter(buttonZoomStep);
-  });
-  document.getElementById("zoom-out").addEventListener("click", () => {
-    zoomAroundCenter(-buttonZoomStep);
-  });
+  document.getElementById("zoom-in").addEventListener("click", () => zoomAroundCenter(buttonZoomStep));
+  document.getElementById("zoom-out").addEventListener("click", () => zoomAroundCenter(-buttonZoomStep));
   document.getElementById("frame-all").addEventListener("click", frameAllElements);
 
   // ESC => clear selection
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      updateSelection([]);
+      deselectAll();
     }
   });
 
   requestAnimationFrame(render);
 }
 
-/** Handle messages that update elements or cursors. */
+/**
+ * Export so app.js can handle user re-login or logout.
+ */
+export function updateCanvasUserId(newId) {
+  localUserId = newId;
+}
+
+/**
+ * Called when the server sends a new element/cursor update.
+ */
 export function handleCanvasMessage(data, myUserId) {
   switch (data.type) {
     case MESSAGE_TYPES.ELEMENT_STATE: {
@@ -116,24 +91,24 @@ export function handleCanvasMessage(data, myUserId) {
         currentProjectName = data.projectName;
       }
       // Keep selection only if still locked by me or unlocked
+      // (But typically the server sets lockedBy=someUser.)
       selectedElementIds = selectedElementIds.filter((id) => {
         const el = elements.find((e) => e.id === id);
         if (!el) return false;
-        return !el.lockedBy || el.lockedBy === myUserId;
-      });
-      // If we were dragging but lost lock, stop
-      for (const id of selectedElementIds) {
-        const el = elements.find(e => e.id === id);
-        if (!el || el.lockedBy !== myUserId) {
-          isDragging = false;
-          break;
+        // If locked by another user, we can no longer keep it selected
+        if (el.lockedBy && el.lockedBy !== myUserId) {
+          return false;
         }
-      }
+        return true;
+      });
       break;
     }
-
-    case MESSAGE_TYPES.CURSOR_UPDATES: {
-      // Bulk update
+    case MESSAGE_TYPES.CURSOR_UPDATE:
+      if (data.userId !== myUserId) {
+        remoteCursors.set(data.userId, { x: data.x, y: data.y });
+      }
+      break;
+    case MESSAGE_TYPES.CURSOR_UPDATES:
       for (const [uId, pos] of Object.entries(data.cursors)) {
         remoteCursors.set(uId, pos);
       }
@@ -144,43 +119,41 @@ export function handleCanvasMessage(data, myUserId) {
         }
       }
       break;
-    }
-
-    case "cursor-update": {
-      // single
-      if (data.userId !== myUserId) {
-        remoteCursors.set(data.userId, { x: data.x, y: data.y });
-      }
-      break;
-    }
-
-    case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
-      currentProjectName = data.newName;
-      break;
-    }
-
     default:
       break;
   }
 }
 
-/** Called if the server updates a user's color or name. */
+/**
+ * If the server updates a user's color or name, store it for remote cursor color.
+ */
 export function handleUserColorUpdate(userId, name, color) {
   userInfoMap.set(userId, { color, name });
 }
 
-/** Called if we get an updated project name from the server. */
+/** If the server updates the project name, store it. */
 export function setProjectNameFromServer(newName) {
   currentProjectName = newName;
 }
 
+/**
+ * Removes any remote cursors for userIds that are no longer in the session.
+ */
+export function removeCursorsForMissingUsers(currentUserIds) {
+  for (const [uId] of remoteCursors) {
+    if (!currentUserIds.includes(uId)) {
+      remoteCursors.delete(uId);
+    }
+  }
+}
+
 /* ------------------------------------------------------------------
-   MOUSE EVENTS
+   MOUSE / SELECTION
 ------------------------------------------------------------------ */
 function onMouseDown(e) {
   const canvas = e.currentTarget;
   if (e.button === 1 || e.button === 2) {
-    // Middle or right => panning
+    // Right or middle => panning
     isPanning = true;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
@@ -203,48 +176,44 @@ function onMouseDown(e) {
     marqueeEndWorldX = wx;
     marqueeEndWorldY = wy;
 
-    // check if an element was clicked
-    const clicked = findElementAt(wx, wy);
+    // Check if an element was clicked from top to bottom
+    const clicked = findTopmostElementAt(wx, wy);
     if (clicked) {
-      // if locked by someone else => skip
-      if (clicked.lockedBy && clicked.lockedBy !== localUserId) {
-        return;
-      }
-      const alreadySelected = selectedElementIds.includes(clicked.id);
-      if (alreadySelected) {
-        // Start dragging
-        isDragging = true;
-        for (const id of selectedElementIds) {
-          const el = elements.find(ele => ele.id === id);
-          if (el && el.lockedBy === localUserId) {
-            lockedOffsets[id] = {
-              dx: wx - el.x,
-              dy: wy - el.y,
-            };
+      // If SHIFT => add/remove from selection
+      if (e.shiftKey) {
+        // If already selected, remove it
+        if (selectedElementIds.includes(clicked.id)) {
+          sendDeselectElement([clicked.id]);
+          selectedElementIds = selectedElementIds.filter(id => id !== clicked.id);
+          isDragging = false;
+        } else {
+          const newSel = [...selectedElementIds, clicked.id];
+          updateSelection(newSel);
+          isDragging = true;
+          for (const id of newSel) {
+            const el = elements.find(ele => ele.id === id);
+            if (el?.lockedBy === localUserId) {
+              lockedOffsets[id] = { dx: wx - el.x, dy: wy - el.y };
+            }
           }
         }
-        canvas.classList.add("grabbing");
       } else {
-        // shift or single select
-        if (!e.shiftKey) {
-          updateSelection([]);
+        // Single select
+        sendDeselectElement(selectedElementIds.filter(id => id !== clicked.id));
+        selectedElementIds = [];
+        updateSelection([clicked.id]);
+        isDragging = true;
+        const el = elements.find(ele => ele.id === clicked.id);
+        if (el && el.lockedBy === localUserId) {
+          lockedOffsets[clicked.id] = { dx: wx - el.x, dy: wy - el.y };
         }
-        const newSet = [...selectedElementIds];
-        if (!newSet.includes(clicked.id)) {
-          newSet.push(clicked.id);
-        } else if (e.shiftKey) {
-          const idx = newSet.indexOf(clicked.id);
-          newSet.splice(idx, 1);
-        }
-        updateSelection(newSet);
-        isDragging = false;
-        canvas.classList.add("grabbing");
       }
+      canvas.classList.add("grabbing");
     } else {
-      // start marquee
+      // No item => start marquee
       isMarqueeSelecting = true;
       if (!e.shiftKey) {
-        updateSelection([]);
+        deselectAll();
       }
       isDragging = false;
       canvas.classList.add("grabbing");
@@ -262,8 +231,7 @@ function onMouseMove(e) {
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
   }
-
-  if (isDragging) {
+  else if (isDragging && selectedElementIds.length > 0) {
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
@@ -275,13 +243,14 @@ function onMouseMove(e) {
       if (el && el.lockedBy === localUserId) {
         const off = lockedOffsets[id];
         if (off) {
-          sendMoveElement(id, wx - off.dx, wy - off.dy);
+          const nx = wx - off.dx;
+          const ny = wy - off.dy;
+          sendMoveElement(id, nx, ny);
         }
       }
     }
   }
-
-  if (isMarqueeSelecting) {
+  else if (isMarqueeSelecting) {
     const rect = canvas.getBoundingClientRect();
     marqueeEndCanvasX = (e.clientX - rect.left) * devicePixelRatio;
     marqueeEndCanvasY = (e.clientY - rect.top) * devicePixelRatio;
@@ -317,7 +286,6 @@ function onMouseUp(e) {
     isMarqueeSelecting = false;
     canvas.classList.remove("grabbing");
 
-    // evaluate marquee
     const rminX = Math.min(marqueeStartWorldX, marqueeEndWorldX);
     const rmaxX = Math.max(marqueeStartWorldX, marqueeEndWorldX);
     const rminY = Math.min(marqueeStartWorldY, marqueeEndWorldY);
@@ -325,35 +293,22 @@ function onMouseUp(e) {
 
     const newlySelected = [];
     for (const el of elements) {
-      if (boxesOverlap(rminX, rminY, rmaxX, rmaxY, el.x, el.y, el.x + el.w, el.y + el.h)) {
+      const ex2 = el.x + el.w, ey2 = el.y + el.h;
+      if (boxesOverlap(rminX, rminY, rmaxX, rmaxY, el.x, el.y, ex2, ey2)) {
         if (!el.lockedBy || el.lockedBy === localUserId) {
           newlySelected.push(el.id);
         }
       }
     }
-    const finalSel = [...selectedElementIds];
+    if (!e.shiftKey) {
+      deselectAll();
+    }
     for (const id of newlySelected) {
-      if (!finalSel.includes(id)) {
-        finalSel.push(id);
+      if (!selectedElementIds.includes(id)) {
+        selectedElementIds.push(id);
+        sendGrabElement(id);
       }
     }
-    updateSelection(finalSel);
-  }
-}
-
-/** Deselect any removed elements, grab newly selected. */
-function updateSelection(newSelectedIds) {
-  // Release removed
-  const removed = selectedElementIds.filter(id => !newSelectedIds.includes(id));
-  removed.forEach(rid => sendReleaseElement(rid));
-
-  // Grab added
-  const added = newSelectedIds.filter(id => !selectedElementIds.includes(id));
-  added.forEach(aid => sendGrabElement(aid));
-
-  selectedElementIds = newSelectedIds;
-  if (isDragging && !selectedElementIds.length) {
-    isDragging = false;
   }
 }
 
@@ -361,8 +316,7 @@ function boxesOverlap(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) {
   return !(ax2 < bx1 || ax1 > bx2 || ay2 < by1 || ay1 > by2);
 }
 
-/** Return the topmost element at (wx, wy). */
-function findElementAt(wx, wy) {
+function findTopmostElementAt(wx, wy) {
   for (let i = elements.length - 1; i >= 0; i--) {
     const el = elements[i];
     if (wx >= el.x && wx <= el.x + el.w && wy >= el.y && wy <= el.y + el.h) {
@@ -372,17 +326,33 @@ function findElementAt(wx, wy) {
   return null;
 }
 
-/** Send ephemeral messages */
+/* ------------------------------------------------------------------
+   UTILS: Selection, Locking, Sending
+------------------------------------------------------------------ */
+function updateSelection(newSelectedIds) {
+  // For each newly added ID => sendGrabElement
+  const added = newSelectedIds.filter(id => !selectedElementIds.includes(id));
+  for (const id of added) {
+    sendGrabElement(id);
+  }
+  // For each removed => sendDeselect
+  const removed = selectedElementIds.filter(id => !newSelectedIds.includes(id));
+  if (removed.length > 0) {
+    sendDeselectElement(removed);
+  }
+  selectedElementIds = newSelectedIds;
+}
+
+function deselectAll() {
+  if (selectedElementIds.length > 0) {
+    sendDeselectElement(selectedElementIds);
+    selectedElementIds = [];
+  }
+}
+
 function sendGrabElement(elementId) {
   window.__sendWSMessage({
     type: MESSAGE_TYPES.ELEMENT_GRAB,
-    userId: localUserId,
-    elementId,
-  });
-}
-function sendReleaseElement(elementId) {
-  window.__sendWSMessage({
-    type: MESSAGE_TYPES.ELEMENT_RELEASE,
     userId: localUserId,
     elementId,
   });
@@ -396,6 +366,31 @@ function sendMoveElement(elementId, x, y) {
     y,
   });
 }
+
+/**
+ * "Release" finalizes the move in the undo stack but does NOT unlock.
+ * This is typically triggered when finishing a drag, but continuing selection.
+ */
+function sendReleaseElement(elementId) {
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_RELEASE,
+    userId: localUserId,
+    elementId,
+  });
+}
+
+/**
+ * "Deselect" => forcibly unlocks these items so others can select them.
+ * We'll finalize any pending move and free the lock server-side.
+ */
+function sendDeselectElement(elementIds) {
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_DESELECT,
+    userId: localUserId,
+    elementIds,
+  });
+}
+
 function sendCursorUpdate(uId, wx, wy) {
   window.__sendWSMessage({
     type: MESSAGE_TYPES.CURSOR_UPDATE,
@@ -420,8 +415,7 @@ function onWheel(e) {
 
 function zoomAroundCenter(step) {
   const canvas = document.getElementById("gameCanvas");
-  const cw = canvas.clientWidth;
-  const ch = canvas.clientHeight;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
   zoomAroundPoint(scale + step, cw / 2, ch / 2);
 }
 
@@ -447,21 +441,18 @@ function frameAllElements() {
     minY = Math.min(minY, el.y);
     maxY = Math.max(maxY, el.y + el.h);
   }
-  const w = maxX - minX;
-  const h = maxY - minY;
+  const w = maxX - minX, h = maxY - minY;
   if (w <= 0 || h <= 0) return;
 
   const canvas = document.getElementById("gameCanvas");
-  const cw = canvas.clientWidth;
-  const ch = canvas.clientHeight;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
   const margin = 50;
   const scaleX = (cw - margin * 2) / w;
   const scaleY = (ch - margin * 2) / h;
   const newScale = Math.max(minScale, Math.min(maxScale, Math.min(scaleX, scaleY)));
   scale = newScale;
 
-  const cx = minX + w / 2;
-  const cy = minY + h / 2;
+  const cx = minX + w / 2, cy = minY + h / 2;
   camX = cx - cw / (2 * scale);
   camY = cy - ch / (2 * scale);
 
@@ -476,7 +467,7 @@ function updateZoomUI() {
 }
 
 /* ------------------------------------------------------------------
-   RENDER LOOP
+   RENDER
 ------------------------------------------------------------------ */
 function render() {
   const canvas = document.getElementById("gameCanvas");
@@ -489,7 +480,7 @@ function render() {
   ctx.restore();
 
   fillBackground(ctx);
-  drawModularGrid(ctx);
+  drawGrid(ctx);
 
   // Draw elements
   ctx.save();
@@ -500,21 +491,14 @@ function render() {
     ctx.fillStyle = "#CCC";
     ctx.fillRect(el.x, el.y, el.w, el.h);
 
+    // Outline color if locked or selected
     let outlineColor = null;
     if (selectedElementIds.includes(el.id)) {
-      // locked by me => blue
-      if (el.lockedBy === localUserId) {
-        outlineColor = "blue";
-      } else if (el.lockedBy) {
-        // locked by someone else => their color
-        const info = userInfoMap.get(el.lockedBy);
-        outlineColor = info?.color || "#FFA500";
-      } else {
-        // not locked but selected => blue
-        outlineColor = "blue";
-      }
-    } else if (el.lockedBy) {
-      // locked by someone else => color
+      // locked by me => outline = blue
+      outlineColor = "blue";
+    }
+    else if (el.lockedBy) {
+      // locked by someone else => their color
       const info = userInfoMap.get(el.lockedBy);
       outlineColor = info?.color || "#FFA500";
     }
@@ -525,13 +509,13 @@ function render() {
       ctx.strokeRect(el.x, el.y, el.w, el.h);
     }
   }
+
   ctx.restore();
 
   // Marquee
   if (isMarqueeSelecting) {
     drawMarquee(ctx);
   }
-
   // Remote cursors
   drawRemoteCursors(ctx);
 
@@ -546,63 +530,36 @@ function fillBackground(ctx) {
   ctx.restore();
 }
 
-function drawModularGrid(ctx) {
+function drawGrid(ctx) {
   ctx.save();
   ctx.translate(-camX * scale, -camY * scale);
   ctx.scale(scale, scale);
 
-  const { majorSpacing, fraction } = getEffectiveMajorSpacing(scale);
   const cw = ctx.canvas.clientWidth / scale;
   const ch = ctx.canvas.clientHeight / scale;
-  const startX = Math.floor(camX / majorSpacing) * majorSpacing;
-  const endX = Math.ceil((camX + cw) / majorSpacing) * majorSpacing;
-  const startY = Math.floor(camY / majorSpacing) * majorSpacing;
-  const endY = Math.ceil((camY + ch) / majorSpacing) * majorSpacing;
+
+  // Simple large grid lines
+  const step = 100;
+  const startX = Math.floor(camX / step) * step;
+  const endX = Math.ceil((camX + cw) / step) * step;
+  const startY = Math.floor(camY / step) * step;
+  const endY = Math.ceil((camY + ch) / step) * step;
 
   ctx.strokeStyle = "rgb(220,220,220)";
   ctx.lineWidth = 1 / scale;
   ctx.beginPath();
 
-  for (let x = startX; x <= endX; x += majorSpacing) {
+  for (let x = startX; x <= endX; x += step) {
     ctx.moveTo(x, startY);
     ctx.lineTo(x, endY);
   }
-  for (let y = startY; y <= endY; y += majorSpacing) {
+  for (let y = startY; y <= endY; y += step) {
     ctx.moveTo(startX, y);
     ctx.lineTo(endX, y);
   }
+
   ctx.stroke();
-
-  if (fraction > 0) {
-    ctx.strokeStyle = `rgba(230,230,230,${fraction})`;
-    const subSpacing = majorSpacing / 4;
-    ctx.beginPath();
-    for (let x = startX; x <= endX; x += majorSpacing) {
-      for (let i = 1; i < 4; i++) {
-        const xx = x + i * subSpacing;
-        ctx.moveTo(xx, startY);
-        ctx.lineTo(xx, endY);
-      }
-    }
-    for (let y = startY; y <= endY; y += majorSpacing) {
-      for (let i = 1; i < 4; i++) {
-        const yy = y + i * subSpacing;
-        ctx.moveTo(startX, yy);
-        ctx.lineTo(endX, yy);
-      }
-    }
-    ctx.stroke();
-  }
   ctx.restore();
-}
-
-function getEffectiveMajorSpacing(s) {
-  const L4 = Math.log2(s) / 2;
-  const iPart = Math.floor(L4);
-  let frac = L4 - iPart;
-  if (frac < 0) frac += 1;
-  const majorSpacing = BASE_SPACING / Math.pow(4, iPart);
-  return { majorSpacing, fraction: frac };
 }
 
 function drawMarquee(ctx) {
@@ -626,12 +583,12 @@ function drawMarquee(ctx) {
 function drawRemoteCursors(ctx) {
   ctx.save();
   for (const [uId, pos] of remoteCursors) {
-    if (uId === localUserId) continue; // don't draw my own
+    if (uId === localUserId) continue; 
     const sx = (pos.x - camX) * scale;
     const sy = (pos.y - camY) * scale;
     const info = userInfoMap.get(uId);
-    const color = info?.color || "#FFA500";
-    drawArrowCursor(ctx, sx, sy, color, uId);
+    const outlineColor = info?.color || "#FFA500";
+    drawArrowCursor(ctx, sx, sy, outlineColor, uId);
   }
   ctx.restore();
 }

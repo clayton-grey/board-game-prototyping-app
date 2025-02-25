@@ -8,12 +8,12 @@
 An interactive board game prototyping environment that allows multiple users to collaborate in real time. Users can connect to a shared session and interact with a full-screen canvas containing various virtual board game elements.
 
 ## Features
-- **Real-time collaboration** via WebSockets
-- **Scrollable & Zoomable Canvas**
-- **User authentication** with JWT
-- **Admin panel** for user and project management
-- **Project versioning and session persistence**
-- **Secure database connection** using PostgreSQL
+- **Real-time collaboration** via WebSockets  
+- **Scrollable & Zoomable Canvas**  
+- **User authentication** with JWT  
+- **Admin panel** for user and project management  
+- **Project versioning and session persistence** (projects stored in PostgreSQL, sessions currently use in-memory storage with partial DB integration)  
+- **Secure database connection** using PostgreSQL  
 
 ## Installation
 
@@ -41,7 +41,7 @@ board-game-prototyping-app/
 ├── server/
 │   ├── index.js                # Main server file
 │   ├── database.js             # PostgreSQL database connection
-│   ├── sessionManager.js       # Manages session persistence
+│   ├── sessionManager.js       # Manages session persistence (currently partial, in-memory)
 │   ├── routes/
 │   │   ├── auth.js             # Authentication routes
 │   │   ├── projects.js         # Project CRUD & versioning
@@ -54,17 +54,20 @@ board-game-prototyping-app/
 ├── client/
 │   ├── index.html              # Base HTML structure
 │   ├── js/
-│   │   ├── app.js              # Main frontend logic
-│   │   ├── canvas.js           # Handles game elements
+│   │   ├── app.js              # Main frontend logic (login, user session handling, etc.)
+│   │   ├── canvas.js           # Handles game elements and canvas rendering
 │   │   ├── session.js          # WebSockets & session state
 │   ├── css/
 │   │   ├── style.css           # Styling for the UI
-├── db-init-scripts/            # NEW: Database initialization folder
-│   ├── init.sql                # SQL script to create tables│
+│
+├── db-init-scripts/            # Database initialization folder
+│   ├── init.sql                # SQL script to create tables
+│
 ├── .env                        # Environment variables
 ├── docker-compose.yml          # Docker Compose configuration
 ├── Dockerfile                  # Server Dockerfile
 ├── package.json                # Node dependencies
+├── package-lock.json           # Node lockfile
 └── README.md                   # Project documentation
 ```
 
@@ -1710,7 +1713,6 @@ volumes:
 
 ===== ./board_game_prototyping.md =====
 
-
 # Interactive Board Game Prototyping Environment Specification
 
 ## Purpose
@@ -1722,107 +1724,132 @@ This project aims to create an interactive board game prototyping environment th
 ## Core Features
 
 ### Security
-
 - All text input fields must have security precautions to prevent injection attacks.
 - User authentication and data storage must adhere to industry-standard security practices.
+- **Implementation Note**:  
+  In the current code, JWT authentication is used (via `AuthService`) for secure routes, and user passwords are salted & hashed with `bcryptjs`.  
 
 ### Canvas & User Interaction
 
 - **Scrollable & Zoomable Canvas**:
   - The canvas has a fixed center point and supports zooming.
-  - Minimum and maximum zoom levels should be configurable.
-  - Clicking and dragging the canvas should move the viewport.
-  - Zooming should center on the mouse cursor unless initiated from the UI, which centers on the current visual center.
+  - Minimum and maximum zoom levels are configurable in code.
+  - Clicking and dragging the canvas moves the viewport (panning).
+  - Zooming centers on the mouse cursor unless initiated from UI buttons, which center on the visual midpoint.
+  - **Implementation Note**:  
+    This behavior exists in `client/js/canvas.js`, with real-time rendering updates and user-based transformations.
 
 - **Live Collaboration**:
-  - Users in the same session should see a labeled and color-coded icon representing each connected user.
-  - The cursor positions of connected users should update in real time.
-  - Any movement or modification of elements should propagate instantly to all users.
-  - Selection of elements should be unique, meaning each user can only select one element at a time.
+  - Multiple users in the same session each have a labeled, color-coded icon.
+  - Cursor positions of connected users update in real time.
+  - Movement or modification of elements propagates to all users.
+  - Selections are unique—each user can select or “lock” an element. Locked elements cannot be moved by others.
+  - **Implementation Note**:  
+    This is handled via WebSockets (`ws/` folder). Each user is assigned a color, and the server broadcasts cursor & element changes.
 
 - **Floating UI Elements**:
   - UI elements do not scale with canvas zoom.
-  - A floating zoom control UI (bottom-right corner with configurable padding) should include:
-    - A zoom percentage display (clickable for manual input).
+  - A floating zoom control UI (bottom-right corner) includes:
+    - Zoom percentage display (clickable for manual input, not fully implemented yet in the final UI).
     - Zoom in/out buttons (+/-) in 25% increments.
-    - A button to frame all selected elements with a configurable padding.
+    - A “frame all” button to fit selected elements into view with padding.
+  - **Implementation Note**:  
+    Implemented in `index.html` and `canvas.js`, with styles in `style.css`.
 
 - **Tooltips & Tutorials**:
-  - The system should support tooltips and tutorials for better usability.
+  - The system should support contextual tooltips or minimal tutorials for usability.
+  - **Implementation Note**:  
+    Tooltips are not yet fully implemented—some placeholders exist in the UI, but a robust help/tutorial system is still planned.
 
 ### User Management
 
 - **User Accounts**:
   - Users can register with an email and password.
-  - Passwords must be securely stored.
-  - User preferences (e.g., hotkey settings) should be saved.
-  - Users can customize hotkeys.
+  - Passwords must be securely stored (currently done via `bcryptjs`).
+  - User preferences (like hotkeys) are planned for future storage.
+  - Users can customize hotkeys (planned).
+  - **Implementation Note**:  
+    Login/registration routes exist (`auth.js`), with roles stored in the `users` table.
 
 - **Admin Features**:
-  - An admin panel should allow user management (updating user information and permissions).
-  - The admin panel should provide analytics including:
-    - Active session counts over time.
-    - Total sessions created.
-    - Per-user session and project statistics.
-  - The admin panel should support exporting and importing projects.
-  - Importing a project should make it the active version of a project by name.
-  - Admin users should have the ability to roll back a project to previous saved versions.
-  - If an admin rolls back a project to a previous version that is no longer available, users should be pushed to a new session and notified via a message. If the project is updated to a new version, users will receive a pop-up notification but can continue their session until they reload.
-  - Admin users should be able to delete projects.
-  - Deleting a project should prevent users from opening any session that uses it. Users attempting to access a session associated with a deleted project should be presented with a popover notification and redirected to a new session using the most recent project version.
-  - When a session becomes invalid due to project deletion, all related session data, including expired image assets, should be removed as part of the project update and deletion processes.
-  - Admins should have the ability to manually force the end of older sessions if necessary.
+  - An admin panel allows user management (updating roles or deleting users).
+  - The admin panel will provide analytics (session counts, user/project stats).
+  - Exporting and importing projects is planned.
+  - **Project Rollback** and versioning:
+    - Admins can roll back a project to previous saved versions.
+    - If a rolled-back version is unavailable, users are pushed to a new session or receive a notification.
+  - Deleting a project removes it from the database and should invalidate sessions that depend on it.
+  - Admins can manually force-end older sessions if necessary.
+  - **Implementation Note**:
+    - Basic admin user management is in `admin.js`.
+    - Project rollback logic exists in `ProjectService.rollbackVersion()`, though forcibly pushing users to new sessions is not fully automated yet.
+    - Analytics and project import/export remain to be completed.
 
 ### Project & Session Management
 
 - **Session Activity Tracking**:
   - Each session should have an activity queue to enable multi-step undo/redo.
-  - Undo/redo controls should be available as floating UI elements.
+  - Undo/redo controls as floating UI elements.
   - All project changes to elements should be undoable.
-  - The undo queue should store 40 steps per session.
-  - Undo steps are session-specific and must track all user actions in order.
-  - If a user disconnects and reconnects, their undo/redo history should be restored if possible.
+  - The undo queue should store 40 steps, tracking user actions in order.
+  - If a user disconnects, their undo/redo history should be restored if possible.
+  - **Implementation Note**:  
+    Undo/redo is **not yet** implemented. The current code tracks real-time moves but does not store a local or server-based undo stack.
 
 - **Session Persistence & Project Versioning**:
-  - Sessions should persist and have a unique, human-readable code (e.g., "SilverPeregrinFolly").
-  - Sessions should be explicitly tied to a project version.
-  - If a session is using an older version of a project, a popover should notify users that they are working with an outdated version, providing an option to update or continue with the existing version.
-  - Sessions can be reset back to the last saved project state with a confirmation step.
-  - Only changes from the original project version should be tracked until they are saved.
-  - Session data should be efficiently managed, tracking only moved, flipped, or modified elements to minimize storage needs.
-  - If a session expires due to inactivity, it should persist until manually ended by an admin if necessary.
+  - Sessions should persist, each having a unique, human-readable code (e.g., “SilverPeregrinFolly”).
+  - Sessions tie explicitly to a project version.
+  - If an older project version is used, a popover should warn users.
+  - Sessions can be reset to the last saved state.
+  - Only changes from the original version should be tracked until saved.
+  - Session data must be minimal, only storing essential deltas.
+  - Expired sessions remain until manually ended if needed.
+  - **Implementation Note**:  
+    - Project versioning is implemented in the `project_versions` table, with rollback and version-number increments.  
+    - Sessions are partially in-memory (`SessionService.js`) and do not yet fully integrate with the database for automatic expiration or partial deltas.  
+    - A basic ephemeral session code approach is used; a more robust naming scheme is still planned.
 
 - **Project Ownership & Permissions**:
   - Users can create, edit, and delete projects.
-  - A project owner can assign permissions to other users.
+  - A project owner can assign permissions to others.
   - Only the owner or admin can delete a project.
   - Only authorized users can save changes.
+  - **Implementation Note**:  
+    - Owner is tracked via `projects.owner_id`.  
+    - A basic user permission check is in `ProjectService.userCanEditProject()`.  
 
 - **Project Loading & Saving**:
-  - The site should support opening an existing project or creating a new one.
-  - A default project can be configured.
-  - A project has a **"saved"** state, with changes tracked in the session.
-  - The project should have a version number that auto-increments on save.
-  - A full copy of each previous version should be stored for restoration.
-  - The admin interface should support exporting and importing projects, including all image assets.
-  - Image assets should persist with the oldest available project version unless explicitly deleted.
+  - The site should allow opening existing projects or creating new ones.
+  - A default project is automatically created for new users if none exists.
+  - A project has a “saved” state, with changes tracked in sessions.
+  - Version number auto-increments on save, and older versions remain for restoration.
+  - The admin interface should export/import projects and assets.
+  - Image assets persist with the oldest needed version.
+  - **Implementation Note**:
+    - Project creation, listing, and version saving exist in `projects.js` and `ProjectService.js`.
+    - Import/export and advanced asset management are forthcoming.
 
 ### Image & Asset Storage
 
-- Images should be stored at full resolution but optimized for efficient retrieval.
-- When an image is removed from a project, it should persist only as long as it exists in at least one active version.
-- The system should avoid redundant storage by linking assets to the oldest necessary version of a project.
+- Images should be stored at full resolution but optimized for retrieval.
+- Removing an image from a project should preserve it in older versions only.
+- The system should avoid redundant storage by linking to the oldest needed version.
+- **Implementation Note**:
+  - Actual image upload/storage is **not** yet implemented. The database is prepared for asset references, but further development is required.
 
 ---
 
 ## Real-Time Synchronization
 
 - **Technology Considerations**:
-  - The platform should use a market-preferred real-time technology (e.g., WebSockets) but can explore options based on trade-offs.
-  - The latency for interactions like moving elements and cursor location should be minimized.
-  - Some interactions can resolve client-side after receiving server confirmation.
-  - The session host (player who starts the session) should act as the source of truth in case of conflicts.
-  - PostgreSQL should be used for persistent storage.
+  - The platform uses WebSockets for real-time updates (see `ws/` folder).
+  - Latency is minimized by sending immediate local changes and broadcasting them.
+  - Some interactions can proceed client-side before server confirmation.
+  - The session’s “owner” typically acts as a tie-breaker if conflicts arise.
+  - PostgreSQL is used for storing project data, with session states in memory.
+  - **Implementation Note**:
+    - Real-time message flows are in `messageDispatcher.js` and handlers under `ws/handlers/`.
+    - Conflict resolution beyond simple locking is left for future improvements.
 
 
 ===== ./server/database.js =====
@@ -2076,18 +2103,18 @@ export default router;
 
 ===== ./server/routes/projects.js =====
 
-// server/routes/projects.js
+// ./server/routes/projects.js
 import express from "express";
 import { authenticateToken } from "../middleware/authMiddleware.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { HttpError } from "../utils/HttpError.js";
 import { ProjectService } from "../services/ProjectService.js";
+import { SessionService } from "../services/SessionService.js";
 
 const router = express.Router();
 
 /**
  * GET /projects/ensureDefault
- * Creates a default project for the current user if none exist
  */
 router.get("/ensureDefault", authenticateToken, asyncHandler(async (req, res) => {
   const project = await ProjectService.createDefaultProjectIfNone(req.user.id);
@@ -2096,7 +2123,6 @@ router.get("/ensureDefault", authenticateToken, asyncHandler(async (req, res) =>
 
 /**
  * POST /projects
- * Body: { name, description }
  */
 router.post("/", authenticateToken, asyncHandler(async (req, res) => {
   const { name, description } = req.body;
@@ -2109,7 +2135,6 @@ router.post("/", authenticateToken, asyncHandler(async (req, res) => {
 
 /**
  * GET /projects
- * Return all projects owned by the user
  */
 router.get("/", authenticateToken, asyncHandler(async (req, res) => {
   const projects = await ProjectService.getProjectsByOwner(req.user.id);
@@ -2168,7 +2193,6 @@ router.get("/:id/versions", authenticateToken, asyncHandler(async (req, res) => 
 
 /**
  * POST /projects/:id/versions
- * Body: { project_data }
  */
 router.post("/:id/versions", authenticateToken, asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -2179,6 +2203,14 @@ router.post("/:id/versions", authenticateToken, asyncHandler(async (req, res) =>
     throw new HttpError("Not authorized or project not found.", 403);
   }
   const newVersion = await ProjectService.createVersion(id, project_data);
+
+  // Invalidate the undo/redo stacks for the session(s) that reference this project
+  // Example if your session code is "project_<id>"
+  const session = SessionService.getSession(`project_${id}`);
+  if (session) {
+    SessionService.clearUndoRedo(session);
+  }
+
   return res.status(201).json(newVersion);
 }));
 
@@ -2193,6 +2225,13 @@ router.post("/:id/versions/:versionId/rollback", authenticateToken, asyncHandler
   }
 
   const result = await ProjectService.rollbackVersion(id, versionId);
+
+  // Also clear the undo/redo for that project's session
+  const session = SessionService.getSession(`project_${id}`);
+  if (session) {
+    SessionService.clearUndoRedo(session);
+  }
+
   return res.json(result);
 }));
 
@@ -2330,18 +2369,24 @@ const sessionMap = new Map();
 /**
  * Each session object:
  * {
- *   code, 
- *   projectName, 
- *   elements, 
+ *   code,
+ *   projectName,
+ *   elements,
  *   linkedProjectId,
  *   users: Map(userId -> userObj),
  *   ephemeralRoles: Map(dbUid -> { isEditor?: bool}),
- *   nextJoinOrder: number
+ *   nextJoinOrder: number,
+ *
+ *   // Undo/Redo
+ *   undoStack: [],  // each action is {type, diffs: [...]}
+ *   redoStack: [],
+ *
+ *   // Keep track of original positions when user grabs an element
+ *   pendingMoves: Map(elementId -> { userId, oldX, oldY })
  * }
  */
 
 export class SessionService {
-
   static getSession(code) {
     return sessionMap.get(code) || null;
   }
@@ -2360,6 +2405,11 @@ export class SessionService {
         users: new Map(),
         ephemeralRoles: new Map(),
         nextJoinOrder: 1,
+
+        // New fields for undo/redo
+        undoStack: [],
+        redoStack: [],
+        pendingMoves: new Map(),
       };
       sessionMap.set(code, session);
     }
@@ -2431,7 +2481,7 @@ export class SessionService {
       };
       session.users.set(userId, userObj);
 
-      // If no owners, assign the first joiner
+      // If no owners exist yet, assign the first joiner
       const anyOwner = [...session.users.values()].some(u => u.isOwner);
       if (!anyOwner) {
         userObj.isOwner = true;
@@ -2442,10 +2492,12 @@ export class SessionService {
       userObj.name = userName || userObj.name;
     }
 
+    // If user role is admin at the app level, reflect that here
     if (userRole === "admin") {
       userObj.isAdmin = true;
     }
 
+    // Re-apply ephemeral editor role if stored
     const dbUid = this.getDbUserId(userId);
     if (dbUid) {
       const stored = session.ephemeralRoles.get(dbUid);
@@ -2475,11 +2527,12 @@ export class SessionService {
     oldUser.userId = newUserId;
     oldUser.name = newName;
     oldUser.isAdmin = !!newIsAdmin;
+
     if (wsSocket) {
       oldUser.socket = wsSocket;
     }
 
-    // Re-apply ephemeral editor role if it existed
+    // Re-apply ephemeral editor role if it existed under new DB user ID
     const dbUid = this.getDbUserId(newUserId);
     if (dbUid) {
       let stored = session.ephemeralRoles.get(dbUid) || {};
@@ -2495,13 +2548,12 @@ export class SessionService {
   }
 
   /**
-   * Downgrade from user_### => anon_###.
+   * Downgrade from user_### => anon_###. Also keep the existing color.
    */
   static downgradeUserId(session, oldUserId, newUserId, wsSocket) {
     const oldUser = session.users.get(oldUserId);
     if (!oldUser) return null;
 
-    // Transfer any locked elements
     for (const el of session.elements) {
       if (el.lockedBy === oldUserId) {
         el.lockedBy = newUserId;
@@ -2526,6 +2578,7 @@ export class SessionService {
     oldUser.isAdmin = false;
     oldUser.isEditor = false;
     oldUser.isOwner = false;
+
     if (wsSocket) {
       oldUser.socket = wsSocket;
     }
@@ -2560,7 +2613,7 @@ export class SessionService {
   }
 
   /**
-   * Kicks a user => forcibly remove them if kicker is admin/owner
+   * Kicks a user => forcibly remove them if kicker is admin/owner.
    */
   static kickUser(session, kickerUserId, targetUserId) {
     const reqUser = session.users.get(kickerUserId);
@@ -2612,6 +2665,14 @@ export class SessionService {
       return parseInt(userId.split("_")[1], 10);
     }
     return null;
+  }
+
+  /**
+   * Clears the undo/redo stacks (e.g., after a new project version save).
+   */
+  static clearUndoRedo(session) {
+    session.undoStack = [];
+    session.redoStack = [];
   }
 }
 
@@ -2833,16 +2894,23 @@ export class ProjectService {
 
 ===== ./server/ws/messageDispatcher.js =====
 
-// server/ws/messageDispatcher.js
+// ./server/ws/messageDispatcher.js
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 import { handleJoinSession, handleUpgradeUserId, handleDowngradeUserId } from './handlers/sessionHandlers.js';
 import { handleCursorUpdate } from './handlers/cursorHandlers.js';
-import { handleElementGrab, handleElementMove, handleElementRelease } from './handlers/elementHandlers.js';
+import {
+  handleElementGrab,
+  handleElementMove,
+  handleElementRelease,
+  handleElementDeselect,
+} from './handlers/elementHandlers.js';
 import { handleMakeEditor, handleRemoveEditor, handleKickUser } from './handlers/permissionHandlers.js';
 import { handleProjectNameChange } from './handlers/projectHandlers.js';
+import { handleUndo, handleRedo } from './handlers/undoRedoHandlers.js';
 
 export function handleIncomingMessage(session, data, ws) {
   switch (data.type) {
+    // Session join/upgrade/downgrade
     case MESSAGE_TYPES.JOIN_SESSION:
       handleJoinSession(session, data, ws);
       break;
@@ -2853,6 +2921,7 @@ export function handleIncomingMessage(session, data, ws) {
       handleDowngradeUserId(session, data, ws);
       break;
 
+    // Cursor & element manipulation
     case MESSAGE_TYPES.CURSOR_UPDATE:
       handleCursorUpdate(session, data, ws);
       break;
@@ -2866,7 +2935,11 @@ export function handleIncomingMessage(session, data, ws) {
     case MESSAGE_TYPES.ELEMENT_RELEASE:
       handleElementRelease(session, data, ws);
       break;
+    case MESSAGE_TYPES.ELEMENT_DESELECT:
+      handleElementDeselect(session, data, ws);
+      break;
 
+    // Permissions
     case MESSAGE_TYPES.MAKE_EDITOR:
       handleMakeEditor(session, data, ws);
       break;
@@ -2877,13 +2950,20 @@ export function handleIncomingMessage(session, data, ws) {
       handleKickUser(session, data, ws);
       break;
 
-    // NEW: Handle project name changes in the real-time session
+    // Project name changes
     case MESSAGE_TYPES.PROJECT_NAME_CHANGE:
       handleProjectNameChange(session, data, ws);
       break;
 
+    // Undo/redo
+    case MESSAGE_TYPES.UNDO:
+      handleUndo(session, data, ws);
+      break;
+    case MESSAGE_TYPES.REDO:
+      handleRedo(session, data, ws);
+      break;
+
     default:
-      // unknown message type
       break;
   }
 }
@@ -2954,7 +3034,11 @@ export function broadcastUserList(session) {
 import { WebSocket } from 'ws';
 import { handleIncomingMessage } from './messageDispatcher.js';
 import { SessionService } from '../services/SessionService.js';
+import { broadcastUserList, broadcastElementState } from './collabUtils.js';
 
+/**
+ * Each new WebSocket connection => store references, handle messages, handle close.
+ */
 export function handleWebSocketConnection(ws, wss) {
   ws.on('message', (raw) => {
     let data;
@@ -2978,7 +3062,15 @@ export function handleWebSocketConnection(ws, wss) {
     const session = SessionService.getSession(code);
     if (!session) return;
 
+    // Remove user => frees locks, etc.
     SessionService.removeUser(session, userId);
+
+    // Now broadcast updated user list & element state so
+    // other clients see the freed locks & updated session users
+    broadcastUserList(session);
+    broadcastElementState(session);
+
+    // If no users remain, remove the session from memory
     if (session.users.size === 0) {
       SessionService.removeSession(code);
     }
@@ -2988,33 +3080,51 @@ export function handleWebSocketConnection(ws, wss) {
 
 ===== ./server/ws/handlers/elementHandlers.js =====
 
-/**
- * ./server/ws/handlers/elementHandlers.js
- *
- * Handles messages: ELEMENT_GRAB, ELEMENT_MOVE, ELEMENT_RELEASE
- */
+// ./server/ws/handlers/elementHandlers.js
 import { broadcastElementState } from '../collabUtils.js';
 
+/**
+ * 1) handleElementGrab:
+ *   - If the element is unlocked or locked by the same user, lock it.
+ *   - If not in pendingMoves, store oldX,oldY for undo.
+ */
 export function handleElementGrab(session, data, ws) {
   if (!session) return;
   const { userId, elementId } = data;
+
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  // Lock if no lock or lockedBy me
-  if (!el.lockedBy || el.lockedBy === userId) {
-    el.lockedBy = userId;
-    broadcastElementState(session);
+  // If locked by someone else, do nothing
+  if (el.lockedBy && el.lockedBy !== userId) {
+    return;
   }
+  // Otherwise, lock it to me
+  el.lockedBy = userId;
+
+  // If we do not have a pending record, store old position
+  if (!session.pendingMoves.has(elementId)) {
+    session.pendingMoves.set(elementId, {
+      userId,
+      oldX: el.x,
+      oldY: el.y,
+    });
+  }
+
+  broadcastElementState(session);
 }
 
+/**
+ * 2) handleElementMove:
+ *   - If locked by me, update position in real time.
+ */
 export function handleElementMove(session, data, ws) {
   if (!session) return;
   const { userId, elementId, x, y } = data;
+
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  // Only move if locked by me
   if (el.lockedBy === userId) {
     el.x = x;
     el.y = y;
@@ -3022,16 +3132,262 @@ export function handleElementMove(session, data, ws) {
   }
 }
 
+/**
+ * 3) handleElementRelease:
+ *   - Finalizes the move in the undo stack so user can immediately Undo.
+ *   - We do NOT unlock => user keeps the lock until they explicitly deselect.
+ */
 export function handleElementRelease(session, data, ws) {
   if (!session) return;
   const { userId, elementId } = data;
+
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  // Only release if locked by me
   if (el.lockedBy === userId) {
-    el.lockedBy = null;
+    finalizePendingMove(session, elementId, userId);
+    // Notice: we do NOT do "el.lockedBy = null" => user remains lock holder
     broadcastElementState(session);
+  }
+}
+
+/**
+ * 4) handleElementDeselect:
+ *   - The user is removing one or more elements from their selection,
+ *     so we free the lock for each.
+ *   - If they had a partial/pending move, we finalize it first so it doesn't get lost.
+ */
+export function handleElementDeselect(session, data, ws) {
+  if (!session) return;
+  const { userId, elementIds } = data; 
+  // elementIds is an array of items the user is deselecting.
+
+  if (!Array.isArray(elementIds)) return;
+
+  elementIds.forEach((elementId) => {
+    const el = session.elements.find(e => e.id === elementId);
+    if (!el) return;
+
+    // If locked by me, finalize & unlock
+    if (el.lockedBy === userId) {
+      finalizePendingMove(session, elementId, userId);
+      el.lockedBy = null; 
+    }
+  });
+
+  broadcastElementState(session);
+}
+
+/**
+ * finalizePendingMove => if there's a record in pendingMoves for (elementId,userId),
+ * we create a "move" action in undoStack and remove pendingMoves entry.
+ */
+function finalizePendingMove(session, elementId, userId) {
+  const pending = session.pendingMoves.get(elementId);
+  if (!pending || pending.userId !== userId) {
+    return;
+  }
+
+  const el = session.elements.find(e => e.id === elementId);
+  session.pendingMoves.delete(elementId);
+  if (!el) return;
+
+  const oldX = pending.oldX;
+  const oldY = pending.oldY;
+  const newX = el.x;
+  const newY = el.y;
+  if (oldX === newX && oldY === newY) {
+    return; // no actual movement
+  }
+
+  // Clear redo stack because we have a new action
+  session.redoStack = [];
+
+  const action = {
+    type: 'move',
+    diffs: [
+      {
+        elementId,
+        from: { x: oldX, y: oldY },
+        to: { x: newX, y: newY },
+      },
+    ],
+  };
+  session.undoStack.push(action);
+  if (session.undoStack.length > 50) {
+    session.undoStack.shift();
+  }
+}
+
+
+===== ./server/ws/handlers/undoRedoHandlers.js =====
+
+// ./server/ws/handlers/undoRedoHandlers.js
+import { WebSocket } from 'ws';
+import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
+import { broadcastElementState } from '../collabUtils.js';
+
+/**
+ * handleUndo:
+ *   - 1) finalize any pending moves for this user
+ *   - 2) revert the top item in undoStack if concurrency checks pass
+ */
+export function handleUndo(session, data, ws) {
+  if (!session) return;
+  const { userId } = data;
+
+  finalizeAllPendingMovesForUser(session, userId);
+
+  if (session.undoStack.length === 0) {
+    return; // no action to undo
+  }
+
+  const action = session.undoStack[session.undoStack.length - 1];
+  if (!canApplyAction(session, action, userId)) {
+    ws.send(JSON.stringify({
+      type: MESSAGE_TYPES.UNDO_REDO_FAILED,
+      reason: 'Element locked by another user or concurrency issue.',
+    }));
+    return;
+  }
+
+  // Remove from undo
+  session.undoStack.pop();
+  revertAction(session, action);
+
+  // Add to redo
+  session.redoStack.push(action);
+
+  broadcastElementState(session);
+}
+
+/**
+ * handleRedo:
+ *   - 1) finalize leftover moves for user
+ *   - 2) re-apply top item in redoStack if concurrency checks pass
+ */
+export function handleRedo(session, data, ws) {
+  if (!session) return;
+  const { userId } = data;
+
+  finalizeAllPendingMovesForUser(session, userId);
+
+  if (session.redoStack.length === 0) {
+    return; // nothing to redo
+  }
+
+  const action = session.redoStack[session.redoStack.length - 1];
+  if (!canApplyAction(session, action, userId)) {
+    ws.send(JSON.stringify({
+      type: MESSAGE_TYPES.UNDO_REDO_FAILED,
+      reason: 'Element locked by another user or concurrency issue.',
+    }));
+    return;
+  }
+
+  session.redoStack.pop();
+  applyAction(session, action);
+
+  session.undoStack.push(action);
+
+  broadcastElementState(session);
+}
+
+/**
+ * finalizeAllPendingMovesForUser:
+ *   - for any pendingMoves that belong to userId, we finalize them
+ *     as undoStack actions
+ */
+function finalizeAllPendingMovesForUser(session, userId) {
+  const toFinalize = [];
+  for (const [elementId, pending] of session.pendingMoves.entries()) {
+    if (pending.userId === userId) {
+      toFinalize.push(elementId);
+    }
+  }
+
+  for (const elementId of toFinalize) {
+    const el = session.elements.find(e => e.id === elementId);
+    if (!el) {
+      session.pendingMoves.delete(elementId);
+      continue;
+    }
+    const pending = session.pendingMoves.get(elementId);
+    if (!pending) continue;
+
+    const oldX = pending.oldX;
+    const oldY = pending.oldY;
+    const newX = el.x;
+    const newY = el.y;
+    session.pendingMoves.delete(elementId);
+
+    if (oldX === newX && oldY === newY) {
+      continue; // no actual move
+    }
+
+    // Clear redo since we have a new action
+    session.redoStack = [];
+
+    const action = {
+      type: 'move',
+      diffs: [
+        {
+          elementId,
+          from: { x: oldX, y: oldY },
+          to: { x: newX, y: newY },
+        }
+      ],
+    };
+    session.undoStack.push(action);
+    if (session.undoStack.length > 50) {
+      session.undoStack.shift();
+    }
+  }
+}
+
+/**
+ * canApplyAction: 
+ *   - If an element is locked by another user, we reject the undo/redo
+ *   - If locked by the same user or unlocked => allow
+ */
+function canApplyAction(session, action, userId) {
+  if (action.type === 'move') {
+    for (const diff of action.diffs) {
+      const el = session.elements.find(e => e.id === diff.elementId);
+      if (!el) continue;
+
+      if (el.lockedBy && el.lockedBy !== userId) {
+        return false; // locked by someone else => fail
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * applyAction => set x,y to 'to'
+ * revertAction => set x,y to 'from'
+ * We do NOT unlock or alter lockedBy.
+ */
+function applyAction(session, action) {
+  if (action.type === 'move') {
+    for (const diff of action.diffs) {
+      const el = session.elements.find(e => e.id === diff.elementId);
+      if (!el) continue;
+      el.x = diff.to.x;
+      el.y = diff.to.y;
+    }
+  }
+}
+
+function revertAction(session, action) {
+  if (action.type === 'move') {
+    for (const diff of action.diffs) {
+      const el = session.elements.find(e => e.id === diff.elementId);
+      if (!el) continue;
+      el.x = diff.from.x;
+      el.y = diff.from.y;
+    }
   }
 }
 
@@ -3236,6 +3592,7 @@ export function handleDowngradeUserId(session, data, ws) {
 ===== ./shared/wsMessageTypes.js =====
 
 // ./shared/wsMessageTypes.js
+
 export const MESSAGE_TYPES = {
   JOIN_SESSION: 'join-session',
   CURSOR_UPDATE: 'cursor-update',
@@ -3246,6 +3603,9 @@ export const MESSAGE_TYPES = {
   ELEMENT_RELEASE: 'element-release',
   ELEMENT_STATE: 'element-state',
 
+  // New for multi-select "unlocking" or removing items from selection
+  ELEMENT_DESELECT: 'element-deselect',
+
   PROJECT_NAME_CHANGE: 'project-name-change',
   SESSION_USERS: 'session-users',
   UPGRADE_USER_ID: 'upgrade-user-id',
@@ -3253,7 +3613,11 @@ export const MESSAGE_TYPES = {
   MAKE_EDITOR: 'make-editor',
   REMOVE_EDITOR: 'remove-editor',
   KICK_USER: 'kick-user',
-  KICKED: 'kicked'
+  KICKED: 'kicked',
+
+  UNDO: 'undo',
+  REDO: 'redo',
+  UNDO_REDO_FAILED: 'undo-redo-failed',
 };
 
 
@@ -3369,17 +3733,27 @@ export const MESSAGE_TYPES = {
     <!-- MAIN CANVAS -->
     <canvas id="gameCanvas"></canvas>
 
-    <!-- ZOOM CONTROLS -->
+    <!-- ZOOM CONTROLS (bottom-right) -->
     <div id="zoom-controls">
       <button id="zoom-out">-</button>
       <span id="zoom-level">100%</span>
       <button id="zoom-in">+</button>
       <button id="frame-all">Frame</button>
     </div>
-  </div>
 
-  <!-- A single global popover for user actions, absolutely positioned -->
-  <div id="user-action-popover" class="hidden"></div>
+    <!-- UNDO/REDO CONTROLS (bottom-left) -->
+    <div id="undo-redo-controls">
+      <button id="undo-btn" title="Undo (Ctrl+Z)">
+        &#8630;
+      </button>
+      <button id="redo-btn" title="Redo (Ctrl+Y or Ctrl+Shift+Z)">
+        &#8631;
+      </button>
+    </div>
+
+    <!-- A single global popover for user actions, absolutely positioned -->
+    <div id="user-action-popover" class="hidden"></div>
+  </div>
 
   <script type="module" src="js/app.js"></script>
 </body>
@@ -3433,6 +3807,32 @@ html, body {
 #zoom-level {
   min-width: 48px;
   text-align: center;
+}
+
+/* Undo/Redo Controls (bottom-left) => side by side */
+#undo-redo-controls {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  padding: 8px;
+  border-radius: 4px;
+  display: flex; 
+  flex-direction: row; /* side by side */
+  gap: 0.5rem;
+  z-index: 10;
+}
+#undo-redo-controls button {
+  background: none;
+  border: 1px solid #fff;
+  color: #fff;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+#undo-redo-controls button:hover {
+  background: rgba(255,255,255,0.2);
 }
 
 /* Project Info (top-left) */
@@ -3524,8 +3924,6 @@ html, body {
   border-right: 6px solid rgba(0,0,0,0.9);
 }
 
-
-/* each action is text-based, highlight on hover */
 .user-action-item {
   font-size: 0.85em;
   padding: 2px 0;
@@ -3706,71 +4104,41 @@ button.danger {
 
 ===== ./client/js/canvas.js =====
 
-/**
- * ./client/js/canvas.js
- *
- * Key change:
- *  - We export an "updateCanvasUserId(newId)" function so that 
- *    after logging in or out, the app can tell the canvas to use the new user ID 
- *    for future element grabbing/moving/releasing. 
- *
- * That fixes "can't deselect" after login.
- */
-
+// ./client/js/canvas.js
 import { MESSAGE_TYPES } from "/shared/wsMessageTypes.js";
 
-export const userInfoMap = new Map(); // userId -> { color, name }
-const remoteCursors = new Map();
-
+// We track selection locally, so we know which items we have locked.
+let selectedElementIds = [];
 let localUserId = null;
-let elements = [];
-let currentProjectName = "New Project";
 
-// Camera / Zoom
-let camX = 0;
-let camY = 0;
-let scale = 1.0;
-const minScale = 0.01;
-const maxScale = 16.0;
-const wheelZoomSpeed = 0.0015;
-const buttonZoomStep = 0.25;
+export const userInfoMap = new Map(); // userId -> { color, name }
+export const remoteCursors = new Map(); // Exposed so app.js can remove stale cursors
+
+// Canvas transform/camera
+let camX = 0, camY = 0, scale = 1.0;
+const minScale = 0.01, maxScale = 16.0;
+const wheelZoomSpeed = 0.0015, buttonZoomStep = 0.25;
 
 // Panning
 let isPanning = false;
-let lastMouseX = 0;
-let lastMouseY = 0;
+let lastMouseX = 0, lastMouseY = 0;
 
-// Selection & dragging
-let selectedElementIds = [];
-let lockedOffsets = {};
+// Dragging
 let isDragging = false;
+const lockedOffsets = {};
 
-// Marquee selection
+// Marquee
 let isMarqueeSelecting = false;
-let marqueeStartCanvasX = 0;
-let marqueeStartCanvasY = 0;
-let marqueeEndCanvasX = 0;
-let marqueeEndCanvasY = 0;
-let marqueeStartWorldX = 0;
-let marqueeStartWorldY = 0;
-let marqueeEndWorldX = 0;
-let marqueeEndWorldY = 0;
+let marqueeStartCanvasX = 0, marqueeStartCanvasY = 0;
+let marqueeEndCanvasX = 0, marqueeEndCanvasY = 0;
+let marqueeStartWorldX = 0, marqueeStartWorldY = 0;
+let marqueeEndWorldX = 0, marqueeEndWorldY = 0;
 
-// Base grid spacing
-const BASE_SPACING = 100;
+// Elements come from server's ELEMENT_STATE
+let elements = [];
+let currentProjectName = "New Project";
 
-/**
- * Exported so app.js can tell the canvas code 
- * "Hey, we changed from oldUserId => newUserId" after login/out.
- */
-export function updateCanvasUserId(newId) {
-  localUserId = newId;
-}
-
-/**
- * Called once on page load. We store userId in a local var 
- * that we can update later with updateCanvasUserId().
- */
+/** Called once on page load from app.js */
 export function initCanvas(initialUserId) {
   localUserId = initialUserId;
 
@@ -3793,29 +4161,34 @@ export function initCanvas(initialUserId) {
   canvas.addEventListener("mouseup", onMouseUp);
   canvas.addEventListener("mouseleave", onMouseUp);
 
-  // Wheel zoom
+  // Wheel
   canvas.addEventListener("wheel", onWheel, { passive: false });
 
   // Zoom UI
-  document.getElementById("zoom-in").addEventListener("click", () => {
-    zoomAroundCenter(buttonZoomStep);
-  });
-  document.getElementById("zoom-out").addEventListener("click", () => {
-    zoomAroundCenter(-buttonZoomStep);
-  });
+  document.getElementById("zoom-in").addEventListener("click", () => zoomAroundCenter(buttonZoomStep));
+  document.getElementById("zoom-out").addEventListener("click", () => zoomAroundCenter(-buttonZoomStep));
   document.getElementById("frame-all").addEventListener("click", frameAllElements);
 
   // ESC => clear selection
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      updateSelection([]);
+      deselectAll();
     }
   });
 
   requestAnimationFrame(render);
 }
 
-/** Handle messages that update elements or cursors. */
+/**
+ * Export so app.js can handle user re-login or logout.
+ */
+export function updateCanvasUserId(newId) {
+  localUserId = newId;
+}
+
+/**
+ * Called when the server sends a new element/cursor update.
+ */
 export function handleCanvasMessage(data, myUserId) {
   switch (data.type) {
     case MESSAGE_TYPES.ELEMENT_STATE: {
@@ -3824,24 +4197,24 @@ export function handleCanvasMessage(data, myUserId) {
         currentProjectName = data.projectName;
       }
       // Keep selection only if still locked by me or unlocked
+      // (But typically the server sets lockedBy=someUser.)
       selectedElementIds = selectedElementIds.filter((id) => {
         const el = elements.find((e) => e.id === id);
         if (!el) return false;
-        return !el.lockedBy || el.lockedBy === myUserId;
-      });
-      // If we were dragging but lost lock, stop
-      for (const id of selectedElementIds) {
-        const el = elements.find(e => e.id === id);
-        if (!el || el.lockedBy !== myUserId) {
-          isDragging = false;
-          break;
+        // If locked by another user, we can no longer keep it selected
+        if (el.lockedBy && el.lockedBy !== myUserId) {
+          return false;
         }
-      }
+        return true;
+      });
       break;
     }
-
-    case MESSAGE_TYPES.CURSOR_UPDATES: {
-      // Bulk update
+    case MESSAGE_TYPES.CURSOR_UPDATE:
+      if (data.userId !== myUserId) {
+        remoteCursors.set(data.userId, { x: data.x, y: data.y });
+      }
+      break;
+    case MESSAGE_TYPES.CURSOR_UPDATES:
       for (const [uId, pos] of Object.entries(data.cursors)) {
         remoteCursors.set(uId, pos);
       }
@@ -3852,43 +4225,41 @@ export function handleCanvasMessage(data, myUserId) {
         }
       }
       break;
-    }
-
-    case "cursor-update": {
-      // single
-      if (data.userId !== myUserId) {
-        remoteCursors.set(data.userId, { x: data.x, y: data.y });
-      }
-      break;
-    }
-
-    case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
-      currentProjectName = data.newName;
-      break;
-    }
-
     default:
       break;
   }
 }
 
-/** Called if the server updates a user's color or name. */
+/**
+ * If the server updates a user's color or name, store it for remote cursor color.
+ */
 export function handleUserColorUpdate(userId, name, color) {
   userInfoMap.set(userId, { color, name });
 }
 
-/** Called if we get an updated project name from the server. */
+/** If the server updates the project name, store it. */
 export function setProjectNameFromServer(newName) {
   currentProjectName = newName;
 }
 
+/**
+ * Removes any remote cursors for userIds that are no longer in the session.
+ */
+export function removeCursorsForMissingUsers(currentUserIds) {
+  for (const [uId] of remoteCursors) {
+    if (!currentUserIds.includes(uId)) {
+      remoteCursors.delete(uId);
+    }
+  }
+}
+
 /* ------------------------------------------------------------------
-   MOUSE EVENTS
+   MOUSE / SELECTION
 ------------------------------------------------------------------ */
 function onMouseDown(e) {
   const canvas = e.currentTarget;
   if (e.button === 1 || e.button === 2) {
-    // Middle or right => panning
+    // Right or middle => panning
     isPanning = true;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
@@ -3911,48 +4282,44 @@ function onMouseDown(e) {
     marqueeEndWorldX = wx;
     marqueeEndWorldY = wy;
 
-    // check if an element was clicked
-    const clicked = findElementAt(wx, wy);
+    // Check if an element was clicked from top to bottom
+    const clicked = findTopmostElementAt(wx, wy);
     if (clicked) {
-      // if locked by someone else => skip
-      if (clicked.lockedBy && clicked.lockedBy !== localUserId) {
-        return;
-      }
-      const alreadySelected = selectedElementIds.includes(clicked.id);
-      if (alreadySelected) {
-        // Start dragging
-        isDragging = true;
-        for (const id of selectedElementIds) {
-          const el = elements.find(ele => ele.id === id);
-          if (el && el.lockedBy === localUserId) {
-            lockedOffsets[id] = {
-              dx: wx - el.x,
-              dy: wy - el.y,
-            };
+      // If SHIFT => add/remove from selection
+      if (e.shiftKey) {
+        // If already selected, remove it
+        if (selectedElementIds.includes(clicked.id)) {
+          sendDeselectElement([clicked.id]);
+          selectedElementIds = selectedElementIds.filter(id => id !== clicked.id);
+          isDragging = false;
+        } else {
+          const newSel = [...selectedElementIds, clicked.id];
+          updateSelection(newSel);
+          isDragging = true;
+          for (const id of newSel) {
+            const el = elements.find(ele => ele.id === id);
+            if (el?.lockedBy === localUserId) {
+              lockedOffsets[id] = { dx: wx - el.x, dy: wy - el.y };
+            }
           }
         }
-        canvas.classList.add("grabbing");
       } else {
-        // shift or single select
-        if (!e.shiftKey) {
-          updateSelection([]);
+        // Single select
+        sendDeselectElement(selectedElementIds.filter(id => id !== clicked.id));
+        selectedElementIds = [];
+        updateSelection([clicked.id]);
+        isDragging = true;
+        const el = elements.find(ele => ele.id === clicked.id);
+        if (el && el.lockedBy === localUserId) {
+          lockedOffsets[clicked.id] = { dx: wx - el.x, dy: wy - el.y };
         }
-        const newSet = [...selectedElementIds];
-        if (!newSet.includes(clicked.id)) {
-          newSet.push(clicked.id);
-        } else if (e.shiftKey) {
-          const idx = newSet.indexOf(clicked.id);
-          newSet.splice(idx, 1);
-        }
-        updateSelection(newSet);
-        isDragging = false;
-        canvas.classList.add("grabbing");
       }
+      canvas.classList.add("grabbing");
     } else {
-      // start marquee
+      // No item => start marquee
       isMarqueeSelecting = true;
       if (!e.shiftKey) {
-        updateSelection([]);
+        deselectAll();
       }
       isDragging = false;
       canvas.classList.add("grabbing");
@@ -3970,8 +4337,7 @@ function onMouseMove(e) {
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
   }
-
-  if (isDragging) {
+  else if (isDragging && selectedElementIds.length > 0) {
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
@@ -3983,13 +4349,14 @@ function onMouseMove(e) {
       if (el && el.lockedBy === localUserId) {
         const off = lockedOffsets[id];
         if (off) {
-          sendMoveElement(id, wx - off.dx, wy - off.dy);
+          const nx = wx - off.dx;
+          const ny = wy - off.dy;
+          sendMoveElement(id, nx, ny);
         }
       }
     }
   }
-
-  if (isMarqueeSelecting) {
+  else if (isMarqueeSelecting) {
     const rect = canvas.getBoundingClientRect();
     marqueeEndCanvasX = (e.clientX - rect.left) * devicePixelRatio;
     marqueeEndCanvasY = (e.clientY - rect.top) * devicePixelRatio;
@@ -4025,7 +4392,6 @@ function onMouseUp(e) {
     isMarqueeSelecting = false;
     canvas.classList.remove("grabbing");
 
-    // evaluate marquee
     const rminX = Math.min(marqueeStartWorldX, marqueeEndWorldX);
     const rmaxX = Math.max(marqueeStartWorldX, marqueeEndWorldX);
     const rminY = Math.min(marqueeStartWorldY, marqueeEndWorldY);
@@ -4033,35 +4399,22 @@ function onMouseUp(e) {
 
     const newlySelected = [];
     for (const el of elements) {
-      if (boxesOverlap(rminX, rminY, rmaxX, rmaxY, el.x, el.y, el.x + el.w, el.y + el.h)) {
+      const ex2 = el.x + el.w, ey2 = el.y + el.h;
+      if (boxesOverlap(rminX, rminY, rmaxX, rmaxY, el.x, el.y, ex2, ey2)) {
         if (!el.lockedBy || el.lockedBy === localUserId) {
           newlySelected.push(el.id);
         }
       }
     }
-    const finalSel = [...selectedElementIds];
+    if (!e.shiftKey) {
+      deselectAll();
+    }
     for (const id of newlySelected) {
-      if (!finalSel.includes(id)) {
-        finalSel.push(id);
+      if (!selectedElementIds.includes(id)) {
+        selectedElementIds.push(id);
+        sendGrabElement(id);
       }
     }
-    updateSelection(finalSel);
-  }
-}
-
-/** Deselect any removed elements, grab newly selected. */
-function updateSelection(newSelectedIds) {
-  // Release removed
-  const removed = selectedElementIds.filter(id => !newSelectedIds.includes(id));
-  removed.forEach(rid => sendReleaseElement(rid));
-
-  // Grab added
-  const added = newSelectedIds.filter(id => !selectedElementIds.includes(id));
-  added.forEach(aid => sendGrabElement(aid));
-
-  selectedElementIds = newSelectedIds;
-  if (isDragging && !selectedElementIds.length) {
-    isDragging = false;
   }
 }
 
@@ -4069,8 +4422,7 @@ function boxesOverlap(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) {
   return !(ax2 < bx1 || ax1 > bx2 || ay2 < by1 || ay1 > by2);
 }
 
-/** Return the topmost element at (wx, wy). */
-function findElementAt(wx, wy) {
+function findTopmostElementAt(wx, wy) {
   for (let i = elements.length - 1; i >= 0; i--) {
     const el = elements[i];
     if (wx >= el.x && wx <= el.x + el.w && wy >= el.y && wy <= el.y + el.h) {
@@ -4080,17 +4432,33 @@ function findElementAt(wx, wy) {
   return null;
 }
 
-/** Send ephemeral messages */
+/* ------------------------------------------------------------------
+   UTILS: Selection, Locking, Sending
+------------------------------------------------------------------ */
+function updateSelection(newSelectedIds) {
+  // For each newly added ID => sendGrabElement
+  const added = newSelectedIds.filter(id => !selectedElementIds.includes(id));
+  for (const id of added) {
+    sendGrabElement(id);
+  }
+  // For each removed => sendDeselect
+  const removed = selectedElementIds.filter(id => !newSelectedIds.includes(id));
+  if (removed.length > 0) {
+    sendDeselectElement(removed);
+  }
+  selectedElementIds = newSelectedIds;
+}
+
+function deselectAll() {
+  if (selectedElementIds.length > 0) {
+    sendDeselectElement(selectedElementIds);
+    selectedElementIds = [];
+  }
+}
+
 function sendGrabElement(elementId) {
   window.__sendWSMessage({
     type: MESSAGE_TYPES.ELEMENT_GRAB,
-    userId: localUserId,
-    elementId,
-  });
-}
-function sendReleaseElement(elementId) {
-  window.__sendWSMessage({
-    type: MESSAGE_TYPES.ELEMENT_RELEASE,
     userId: localUserId,
     elementId,
   });
@@ -4104,6 +4472,31 @@ function sendMoveElement(elementId, x, y) {
     y,
   });
 }
+
+/**
+ * "Release" finalizes the move in the undo stack but does NOT unlock.
+ * This is typically triggered when finishing a drag, but continuing selection.
+ */
+function sendReleaseElement(elementId) {
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_RELEASE,
+    userId: localUserId,
+    elementId,
+  });
+}
+
+/**
+ * "Deselect" => forcibly unlocks these items so others can select them.
+ * We'll finalize any pending move and free the lock server-side.
+ */
+function sendDeselectElement(elementIds) {
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_DESELECT,
+    userId: localUserId,
+    elementIds,
+  });
+}
+
 function sendCursorUpdate(uId, wx, wy) {
   window.__sendWSMessage({
     type: MESSAGE_TYPES.CURSOR_UPDATE,
@@ -4128,8 +4521,7 @@ function onWheel(e) {
 
 function zoomAroundCenter(step) {
   const canvas = document.getElementById("gameCanvas");
-  const cw = canvas.clientWidth;
-  const ch = canvas.clientHeight;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
   zoomAroundPoint(scale + step, cw / 2, ch / 2);
 }
 
@@ -4155,21 +4547,18 @@ function frameAllElements() {
     minY = Math.min(minY, el.y);
     maxY = Math.max(maxY, el.y + el.h);
   }
-  const w = maxX - minX;
-  const h = maxY - minY;
+  const w = maxX - minX, h = maxY - minY;
   if (w <= 0 || h <= 0) return;
 
   const canvas = document.getElementById("gameCanvas");
-  const cw = canvas.clientWidth;
-  const ch = canvas.clientHeight;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
   const margin = 50;
   const scaleX = (cw - margin * 2) / w;
   const scaleY = (ch - margin * 2) / h;
   const newScale = Math.max(minScale, Math.min(maxScale, Math.min(scaleX, scaleY)));
   scale = newScale;
 
-  const cx = minX + w / 2;
-  const cy = minY + h / 2;
+  const cx = minX + w / 2, cy = minY + h / 2;
   camX = cx - cw / (2 * scale);
   camY = cy - ch / (2 * scale);
 
@@ -4184,7 +4573,7 @@ function updateZoomUI() {
 }
 
 /* ------------------------------------------------------------------
-   RENDER LOOP
+   RENDER
 ------------------------------------------------------------------ */
 function render() {
   const canvas = document.getElementById("gameCanvas");
@@ -4197,7 +4586,7 @@ function render() {
   ctx.restore();
 
   fillBackground(ctx);
-  drawModularGrid(ctx);
+  drawGrid(ctx);
 
   // Draw elements
   ctx.save();
@@ -4208,21 +4597,14 @@ function render() {
     ctx.fillStyle = "#CCC";
     ctx.fillRect(el.x, el.y, el.w, el.h);
 
+    // Outline color if locked or selected
     let outlineColor = null;
     if (selectedElementIds.includes(el.id)) {
-      // locked by me => blue
-      if (el.lockedBy === localUserId) {
-        outlineColor = "blue";
-      } else if (el.lockedBy) {
-        // locked by someone else => their color
-        const info = userInfoMap.get(el.lockedBy);
-        outlineColor = info?.color || "#FFA500";
-      } else {
-        // not locked but selected => blue
-        outlineColor = "blue";
-      }
-    } else if (el.lockedBy) {
-      // locked by someone else => color
+      // locked by me => outline = blue
+      outlineColor = "blue";
+    }
+    else if (el.lockedBy) {
+      // locked by someone else => their color
       const info = userInfoMap.get(el.lockedBy);
       outlineColor = info?.color || "#FFA500";
     }
@@ -4233,13 +4615,13 @@ function render() {
       ctx.strokeRect(el.x, el.y, el.w, el.h);
     }
   }
+
   ctx.restore();
 
   // Marquee
   if (isMarqueeSelecting) {
     drawMarquee(ctx);
   }
-
   // Remote cursors
   drawRemoteCursors(ctx);
 
@@ -4254,63 +4636,36 @@ function fillBackground(ctx) {
   ctx.restore();
 }
 
-function drawModularGrid(ctx) {
+function drawGrid(ctx) {
   ctx.save();
   ctx.translate(-camX * scale, -camY * scale);
   ctx.scale(scale, scale);
 
-  const { majorSpacing, fraction } = getEffectiveMajorSpacing(scale);
   const cw = ctx.canvas.clientWidth / scale;
   const ch = ctx.canvas.clientHeight / scale;
-  const startX = Math.floor(camX / majorSpacing) * majorSpacing;
-  const endX = Math.ceil((camX + cw) / majorSpacing) * majorSpacing;
-  const startY = Math.floor(camY / majorSpacing) * majorSpacing;
-  const endY = Math.ceil((camY + ch) / majorSpacing) * majorSpacing;
+
+  // Simple large grid lines
+  const step = 100;
+  const startX = Math.floor(camX / step) * step;
+  const endX = Math.ceil((camX + cw) / step) * step;
+  const startY = Math.floor(camY / step) * step;
+  const endY = Math.ceil((camY + ch) / step) * step;
 
   ctx.strokeStyle = "rgb(220,220,220)";
   ctx.lineWidth = 1 / scale;
   ctx.beginPath();
 
-  for (let x = startX; x <= endX; x += majorSpacing) {
+  for (let x = startX; x <= endX; x += step) {
     ctx.moveTo(x, startY);
     ctx.lineTo(x, endY);
   }
-  for (let y = startY; y <= endY; y += majorSpacing) {
+  for (let y = startY; y <= endY; y += step) {
     ctx.moveTo(startX, y);
     ctx.lineTo(endX, y);
   }
+
   ctx.stroke();
-
-  if (fraction > 0) {
-    ctx.strokeStyle = `rgba(230,230,230,${fraction})`;
-    const subSpacing = majorSpacing / 4;
-    ctx.beginPath();
-    for (let x = startX; x <= endX; x += majorSpacing) {
-      for (let i = 1; i < 4; i++) {
-        const xx = x + i * subSpacing;
-        ctx.moveTo(xx, startY);
-        ctx.lineTo(xx, endY);
-      }
-    }
-    for (let y = startY; y <= endY; y += majorSpacing) {
-      for (let i = 1; i < 4; i++) {
-        const yy = y + i * subSpacing;
-        ctx.moveTo(startX, yy);
-        ctx.lineTo(endX, yy);
-      }
-    }
-    ctx.stroke();
-  }
   ctx.restore();
-}
-
-function getEffectiveMajorSpacing(s) {
-  const L4 = Math.log2(s) / 2;
-  const iPart = Math.floor(L4);
-  let frac = L4 - iPart;
-  if (frac < 0) frac += 1;
-  const majorSpacing = BASE_SPACING / Math.pow(4, iPart);
-  return { majorSpacing, fraction: frac };
 }
 
 function drawMarquee(ctx) {
@@ -4334,12 +4689,12 @@ function drawMarquee(ctx) {
 function drawRemoteCursors(ctx) {
   ctx.save();
   for (const [uId, pos] of remoteCursors) {
-    if (uId === localUserId) continue; // don't draw my own
+    if (uId === localUserId) continue; 
     const sx = (pos.x - camX) * scale;
     const sy = (pos.y - camY) * scale;
     const info = userInfoMap.get(uId);
-    const color = info?.color || "#FFA500";
-    drawArrowCursor(ctx, sx, sy, color, uId);
+    const outlineColor = info?.color || "#FFA500";
+    drawArrowCursor(ctx, sx, sy, outlineColor, uId);
   }
   ctx.restore();
 }
@@ -4376,16 +4731,7 @@ function drawArrowCursor(ctx, sx, sy, outlineColor, label) {
 
 ===== ./client/js/app.js =====
 
-/**
- * ./client/js/app.js
- *
- * Key changes:
- *  - After UPGRADE_USER_ID or DOWNGRADE_USER_ID, we update the canvas's localUserId
- *    so it sends future locks/releases with the correct user ID.
- *  - This preserves selection/deselection (fixes the bug where you couldn't deselect).
- *  - No changes to user list order or color on login/out, since the server is 
- *    now preserving that in the user object (joinOrder, color).
- */
+// ./client/js/app.js
 
 import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
 import {
@@ -4393,7 +4739,8 @@ import {
   handleCanvasMessage,
   handleUserColorUpdate,
   setProjectNameFromServer,
-  updateCanvasUserId, // NEW: function to update localUserId in canvas
+  updateCanvasUserId,
+  removeCursorsForMissingUsers, // NEW
 } from "./canvas.js";
 
 // Read saved login/session from localStorage
@@ -4411,7 +4758,6 @@ if (!activeUserId) {
 const isLoggedIn = () => !!token && !!currentUser;
 const isCurrentUserAdmin = () => currentUser && currentUser.role === "admin";
 
-// We'll store the ephemeral session code in localStorage
 let ephemeralSessionCode = localStorage.getItem("sessionCode") || "defaultSession";
 let ephemeralOwnerId = null;
 let sessionUsers = [];
@@ -4440,12 +4786,13 @@ const registerMessage = document.getElementById("register-message");
 const registerCancelBtn = document.getElementById("registerCancelBtn");
 
 const userActionPopover = document.getElementById("user-action-popover");
-let openPopoverUserId = null;
 
-// We'll store our WebSocket once connected
+// Undo/REDO
+const undoBtn = document.getElementById("undo-btn");
+const redoBtn = document.getElementById("redo-btn");
+
 let ws = null;
 
-/** Display a short message in the top-center "messageContainer". */
 function showMessage(msg, isError = false) {
   messageContainer.textContent = msg;
   messageContainer.style.color = isError ? "red" : "green";
@@ -4456,19 +4803,18 @@ function showMessage(msg, isError = false) {
   }, 3000);
 }
 
-/** Send a JSON message over the WebSocket. */
 function sendWSMessage(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
   }
 }
-window.__sendWSMessage = sendWSMessage; // So canvas.js can call it, if needed
+window.__sendWSMessage = sendWSMessage;
 
 function connectWebSocket() {
   ws = new WebSocket("ws://localhost:3000");
   ws.onopen = () => {
     console.log("WebSocket connected.");
-    doJoinSession(); // Join the ephemeral session once open
+    doJoinSession();
   };
   ws.onmessage = (evt) => {
     let data;
@@ -4485,7 +4831,6 @@ function connectWebSocket() {
   };
 }
 
-/** Process messages from server. */
 function handleServerMessage(data) {
   switch (data.type) {
     case MESSAGE_TYPES.SESSION_USERS: {
@@ -4493,11 +4838,16 @@ function handleServerMessage(data) {
       ephemeralOwnerId = data.ownerUserId || null;
       renderSessionUsers();
 
-      // Update color for remote cursors
+      // Update cursor user info
       sessionUsers.forEach(u => {
         handleUserColorUpdate(u.userId, u.name, u.color);
       });
-      // Update my local user circle if found
+
+      // Now remove any stale cursors for users who disappeared
+      const userIds = sessionUsers.map(u => u.userId);
+      removeCursorsForMissingUsers(userIds);
+
+      // Update local user circle if found
       const me = sessionUsers.find(u => u.userId === activeUserId);
       if (me) {
         userCircle.style.background = me.color;
@@ -4508,14 +4858,12 @@ function handleServerMessage(data) {
 
     case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
       const { newName } = data;
-      currentProjectName = newName;
+      setProjectNameFromServer(newName);
       restoreNameSpan();
-      showMessage(`Renamed to: ${currentProjectName}`);
-      setProjectNameFromServer(currentProjectName);
+      showMessage(`Renamed to: ${newName}`);
       break;
     }
 
-    // Real-time collaboration data
     case MESSAGE_TYPES.ELEMENT_STATE:
     case MESSAGE_TYPES.CURSOR_UPDATES:
     case MESSAGE_TYPES.CURSOR_UPDATE:
@@ -4527,15 +4875,17 @@ function handleServerMessage(data) {
       ws.close();
       break;
 
+    case MESSAGE_TYPES.UNDO_REDO_FAILED:
+      showMessage(data.reason || "Undo/Redo failed", true);
+      break;
+
     default:
       console.log("Unknown message:", data.type, data);
   }
 }
 
-/** Attempt to join the session using the current userId and ephemeralSessionCode. */
 function doJoinSession() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
   const userName = currentUser ? currentUser.name : "Anonymous";
   let userRole = "";
   if (isCurrentUserAdmin()) {
@@ -4551,26 +4901,27 @@ function doJoinSession() {
   });
 }
 
-/** Quick helper to get first letter or '?'. */
 function getInitial(str) {
   if (!str) return "?";
   return str.trim().charAt(0).toUpperCase();
 }
 
-/** Refresh top-right user panel display. */
 function updateLocalUserUI() {
   let displayName = "Anonymous";
   if (currentUser?.name) {
     displayName = currentUser.name;
   }
   userNameSpan.textContent = displayName;
-  userCircle.style.background = "#888";
+
+  let finalColor = "#888";
+  const me = sessionUsers.find(u => u.userId === activeUserId);
+  if (me && me.color) {
+    finalColor = me.color;
+  }
+  userCircle.style.background = finalColor;
   userCircleText.textContent = getInitial(displayName);
 }
 
-/* ------------------------------------------------------------------
-   RENDER SESSION USERS
------------------------------------------------------------------- */
 function renderSessionUsers() {
   sessionUsersList.innerHTML = "";
   sessionUsers.forEach(u => {
@@ -4598,7 +4949,6 @@ function renderSessionUsers() {
   });
 }
 
-/** For ephemeral roles, show small emoji. */
 function getRoleEmoji(u) {
   if (u.isAdmin) return "🪄";
   if (u.isOwner) return "🔑";
@@ -4606,7 +4956,6 @@ function getRoleEmoji(u) {
   return "";
 }
 
-/** Whether we can manage that user (kick, editor toggles). */
 function canManageUser(u) {
   const iAmOwner = (activeUserId === ephemeralOwnerId);
   const iAmAdmin = isCurrentUserAdmin();
@@ -4616,7 +4965,7 @@ function canManageUser(u) {
   return true;
 }
 
-/** Clicking a user name => ephemeral role popover. */
+let openPopoverUserId = null;
 function onUserNameClicked(u, labelElem) {
   if (openPopoverUserId === u.userId) {
     hideUserActionPopover();
@@ -4696,7 +5045,6 @@ function hideUserActionPopover() {
   userActionPopover.classList.add("hidden");
 }
 
-// Hide popover if clicking outside
 document.addEventListener("click", (evt) => {
   if (
     openPopoverUserId &&
@@ -4708,11 +5056,10 @@ document.addEventListener("click", (evt) => {
 });
 
 /* ------------------------------------------------------------------
-   LOGGING OUT => DOWNGRADE_USER_ID
+   LOG OUT => downgrade
 ------------------------------------------------------------------ */
 function doLogout() {
   if (!currentUser) {
-    // Already anonymous
     return;
   }
   const oldUserId = "user_" + currentUser.id;
@@ -4724,7 +5071,6 @@ function doLogout() {
     newUserId: newAnonId,
   });
 
-  // Clear local login data
   token = "";
   currentUser = null;
   localStorage.removeItem("token");
@@ -4733,16 +5079,13 @@ function doLogout() {
   activeUserId = newAnonId;
   localStorage.setItem("activeUserId", newAnonId);
 
-  // **Important**: update the canvas's local user ID so 
-  // we continue to send future element-grab/release with the new ID.
   updateCanvasUserId(newAnonId);
-
   showMessage("You are now anonymous.");
   updateLocalUserUI();
 }
 
 /* ------------------------------------------------------------------
-   TOP-RIGHT USER PANEL => LOG IN / LOG OUT
+   USER PANEL => log in/log out
 ------------------------------------------------------------------ */
 userInfoPanel.addEventListener("click", (evt) => {
   if (isLoggedIn()) {
@@ -4756,7 +5099,6 @@ userInfoPanel.addEventListener("click", (evt) => {
   }
 });
 
-// Hide login if clicking outside
 document.addEventListener("click", (evt) => {
   if (
     !loginDropdown.classList.contains("hidden") &&
@@ -4768,7 +5110,7 @@ document.addEventListener("click", (evt) => {
 });
 
 /* ------------------------------------------------------------------
-   LOGIN FORM => UPGRADE_USER_ID
+   LOGIN => upgrade
 ------------------------------------------------------------------ */
 loginForm.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -4786,7 +5128,7 @@ loginForm.addEventListener("submit", (e) => {
           throw new Error(obj.message || "Login failed");
         });
       }
-      return res.json(); // { message, user, token }
+      return res.json();
     })
     .then((data) => {
       token = data.token;
@@ -4796,11 +5138,9 @@ loginForm.addEventListener("submit", (e) => {
 
       const newUserId = "user_" + currentUser.id;
       const oldUserId = activeUserId;
-
       localStorage.setItem("activeUserId", newUserId);
       activeUserId = newUserId;
 
-      // If we were anonymous, rename in place
       if (oldUserId.startsWith("anon_")) {
         sendWSMessage({
           type: MESSAGE_TYPES.UPGRADE_USER_ID,
@@ -4810,10 +5150,7 @@ loginForm.addEventListener("submit", (e) => {
           newIsAdmin: (currentUser.role === "admin"),
         });
       }
-
-      // Also update the canvas so it sends future lock messages as newUserId
       updateCanvasUserId(newUserId);
-
       showMessage("Logged in as " + currentUser.name);
       loginDropdown.classList.add("hidden");
       updateLocalUserUI();
@@ -4824,7 +5161,7 @@ loginForm.addEventListener("submit", (e) => {
 });
 
 /* ------------------------------------------------------------------
-   REGISTER => UPGRADE_USER_ID
+   REGISTER => upgrade
 ------------------------------------------------------------------ */
 registerLink.addEventListener("click", (e) => {
   e.preventDefault();
@@ -4852,7 +5189,7 @@ registerForm.addEventListener("submit", (e) => {
           throw new Error(obj.message || "Registration failed");
         });
       }
-      return res.json(); // { message, user, token }
+      return res.json();
     })
     .then((data) => {
       token = data.token;
@@ -4862,7 +5199,6 @@ registerForm.addEventListener("submit", (e) => {
 
       const newId = "user_" + currentUser.id;
       const oldId = activeUserId;
-
       localStorage.setItem("activeUserId", newId);
       activeUserId = newId;
 
@@ -4875,7 +5211,6 @@ registerForm.addEventListener("submit", (e) => {
           newIsAdmin: (currentUser.role === "admin"),
         });
       }
-
       updateCanvasUserId(newId);
 
       registerMessage.textContent = "Registration successful!";
@@ -4897,7 +5232,7 @@ registerCancelBtn.addEventListener("click", () => {
 });
 
 /* ------------------------------------------------------------------
-   PROJECT MANAGEMENT (basic ephemeral placeholders)
+   PROJECT MANAGEMENT
 ------------------------------------------------------------------ */
 openPMBtn.addEventListener("click", () => {
   if (activeUserId !== ephemeralOwnerId && !isCurrentUserAdmin()) {
@@ -4923,7 +5258,7 @@ deleteProjectBtn.addEventListener("click", () => {
 });
 
 /* ------------------------------------------------------------------
-   PROJECT NAME EDITING
+   PROJECT NAME EDIT
 ------------------------------------------------------------------ */
 projectNameEl.addEventListener("click", () => {
   startEditingProjectName();
@@ -4965,7 +5300,6 @@ function commitNameChange(newName) {
     userId: activeUserId,
     newName,
   });
-  // The server broadcast will finalize the name
 }
 
 function revertNameChange() {
@@ -4978,7 +5312,7 @@ function restoreNameSpan() {
   const span = document.createElement("span");
   span.id = "project-name";
   span.title = "Click to edit project name";
-  span.textContent = currentProjectName;
+  span.textContent = setProjectNameFromServer.name || "Untitled Project";
   span.style.cursor = "pointer";
   oldInput.replaceWith(span);
   span.addEventListener("click", () => startEditingProjectName());
@@ -4990,8 +5324,29 @@ function restoreNameSpan() {
 window.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("contextmenu", (e) => e.preventDefault());
   connectWebSocket();
-  initCanvas(activeUserId);   // Initialize the canvas with the current ID
+  initCanvas(activeUserId);
   updateLocalUserUI();
+});
+
+/* ------------------------------------------------------------------
+   UNDO/REDO UI + Keyboard
+------------------------------------------------------------------ */
+undoBtn?.addEventListener("click", () => {
+  sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
+});
+redoBtn?.addEventListener("click", () => {
+  sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
+});
+
+// Keyboard shortcuts: Ctrl+Z => undo, Ctrl+Shift+Z or Ctrl+Y => redo
+window.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && !e.shiftKey && e.key === "z") {
+    e.preventDefault();
+    sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
+  } else if ((e.ctrlKey && e.shiftKey && e.key === "z") || (e.ctrlKey && e.key === "y")) {
+    e.preventDefault();
+    sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
+  }
 });
 
 

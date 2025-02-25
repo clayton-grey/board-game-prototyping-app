@@ -1,13 +1,20 @@
-// server/ws/messageDispatcher.js
+// ./server/ws/messageDispatcher.js
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 import { handleJoinSession, handleUpgradeUserId, handleDowngradeUserId } from './handlers/sessionHandlers.js';
 import { handleCursorUpdate } from './handlers/cursorHandlers.js';
-import { handleElementGrab, handleElementMove, handleElementRelease } from './handlers/elementHandlers.js';
+import {
+  handleElementGrab,
+  handleElementMove,
+  handleElementRelease,
+  handleElementDeselect,
+} from './handlers/elementHandlers.js';
 import { handleMakeEditor, handleRemoveEditor, handleKickUser } from './handlers/permissionHandlers.js';
 import { handleProjectNameChange } from './handlers/projectHandlers.js';
+import { handleUndo, handleRedo } from './handlers/undoRedoHandlers.js';
 
 export function handleIncomingMessage(session, data, ws) {
   switch (data.type) {
+    // Session join/upgrade/downgrade
     case MESSAGE_TYPES.JOIN_SESSION:
       handleJoinSession(session, data, ws);
       break;
@@ -18,6 +25,7 @@ export function handleIncomingMessage(session, data, ws) {
       handleDowngradeUserId(session, data, ws);
       break;
 
+    // Cursor & element manipulation
     case MESSAGE_TYPES.CURSOR_UPDATE:
       handleCursorUpdate(session, data, ws);
       break;
@@ -31,7 +39,11 @@ export function handleIncomingMessage(session, data, ws) {
     case MESSAGE_TYPES.ELEMENT_RELEASE:
       handleElementRelease(session, data, ws);
       break;
+    case MESSAGE_TYPES.ELEMENT_DESELECT:
+      handleElementDeselect(session, data, ws);
+      break;
 
+    // Permissions
     case MESSAGE_TYPES.MAKE_EDITOR:
       handleMakeEditor(session, data, ws);
       break;
@@ -42,13 +54,20 @@ export function handleIncomingMessage(session, data, ws) {
       handleKickUser(session, data, ws);
       break;
 
-    // NEW: Handle project name changes in the real-time session
+    // Project name changes
     case MESSAGE_TYPES.PROJECT_NAME_CHANGE:
       handleProjectNameChange(session, data, ws);
       break;
 
+    // Undo/redo
+    case MESSAGE_TYPES.UNDO:
+      handleUndo(session, data, ws);
+      break;
+    case MESSAGE_TYPES.REDO:
+      handleRedo(session, data, ws);
+      break;
+
     default:
-      // unknown message type
       break;
   }
 }

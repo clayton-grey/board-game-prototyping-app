@@ -15,12 +15,18 @@ const sessionMap = new Map();
  *   linkedProjectId,
  *   users: Map(userId -> userObj),
  *   ephemeralRoles: Map(dbUid -> { isEditor?: bool}),
- *   nextJoinOrder: number
+ *   nextJoinOrder: number,
+ *
+ *   // Undo/Redo
+ *   undoStack: [],  // each action is {type, diffs: [...]}
+ *   redoStack: [],
+ *
+ *   // Keep track of original positions when user grabs an element
+ *   pendingMoves: Map(elementId -> { userId, oldX, oldY })
  * }
  */
 
 export class SessionService {
-
   static getSession(code) {
     return sessionMap.get(code) || null;
   }
@@ -39,6 +45,11 @@ export class SessionService {
         users: new Map(),
         ephemeralRoles: new Map(),
         nextJoinOrder: 1,
+
+        // New fields for undo/redo
+        undoStack: [],
+        redoStack: [],
+        pendingMoves: new Map(),
       };
       sessionMap.set(code, session);
     }
@@ -139,13 +150,12 @@ export class SessionService {
 
   /**
    * Upgrade from oldUserId => newUserId, carrying ephemeral roles and locks.
-   * We purposely do NOT reassign `oldUser.color`, so the user keeps that color.
    */
   static upgradeUserId(session, oldUserId, newUserId, newName, newIsAdmin, wsSocket) {
     const oldUser = session.users.get(oldUserId);
     if (!oldUser) return null;
 
-    // Transfer any locked elements from oldUserId to newUserId
+    // Transfer any locked elements
     for (const el of session.elements) {
       if (el.lockedBy === oldUserId) {
         el.lockedBy = newUserId;
@@ -157,7 +167,6 @@ export class SessionService {
     oldUser.userId = newUserId;
     oldUser.name = newName;
     oldUser.isAdmin = !!newIsAdmin;
-    // Notice: oldUser.color is UNCHANGED
 
     if (wsSocket) {
       oldUser.socket = wsSocket;
@@ -209,7 +218,6 @@ export class SessionService {
     oldUser.isAdmin = false;
     oldUser.isEditor = false;
     oldUser.isOwner = false;
-    // oldUser.color is UNCHANGED
 
     if (wsSocket) {
       oldUser.socket = wsSocket;
@@ -297,5 +305,13 @@ export class SessionService {
       return parseInt(userId.split("_")[1], 10);
     }
     return null;
+  }
+
+  /**
+   * Clears the undo/redo stacks (e.g., after a new project version save).
+   */
+  static clearUndoRedo(session) {
+    session.undoStack = [];
+    session.redoStack = [];
   }
 }

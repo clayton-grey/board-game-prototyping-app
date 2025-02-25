@@ -108,17 +108,27 @@
     <!-- MAIN CANVAS -->
     <canvas id="gameCanvas"></canvas>
 
-    <!-- ZOOM CONTROLS -->
+    <!-- ZOOM CONTROLS (bottom-right) -->
     <div id="zoom-controls">
       <button id="zoom-out">-</button>
       <span id="zoom-level">100%</span>
       <button id="zoom-in">+</button>
       <button id="frame-all">Frame</button>
     </div>
-  </div>
 
-  <!-- A single global popover for user actions, absolutely positioned -->
-  <div id="user-action-popover" class="hidden"></div>
+    <!-- UNDO/REDO CONTROLS (bottom-left) -->
+    <div id="undo-redo-controls">
+      <button id="undo-btn" title="Undo (Ctrl+Z)">
+        &#8630;
+      </button>
+      <button id="redo-btn" title="Redo (Ctrl+Y or Ctrl+Shift+Z)">
+        &#8631;
+      </button>
+    </div>
+
+    <!-- A single global popover for user actions, absolutely positioned -->
+    <div id="user-action-popover" class="hidden"></div>
+  </div>
 
   <script type="module" src="js/app.js"></script>
 </body>

@@ -45,6 +45,32 @@ html, body {
   text-align: center;
 }
 
+/* Undo/Redo Controls (bottom-left) => side by side */
+#undo-redo-controls {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  padding: 8px;
+  border-radius: 4px;
+  display: flex; 
+  flex-direction: row; /* side by side */
+  gap: 0.5rem;
+  z-index: 10;
+}
+#undo-redo-controls button {
+  background: none;
+  border: 1px solid #fff;
+  color: #fff;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+#undo-redo-controls button:hover {
+  background: rgba(255,255,255,0.2);
+}
+
 /* Project Info (top-left) */
 #project-info {
   position: absolute;
@@ -134,8 +160,6 @@ html, body {
   border-right: 6px solid rgba(0,0,0,0.9);
 }
 
-
-/* each action is text-based, highlight on hover */
 .user-action-item {
   font-size: 0.85em;
   padding: 2px 0;

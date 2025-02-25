@@ -1,15 +1,15 @@
-// server/routes/projects.js
+// ./server/routes/projects.js
 import express from "express";
 import { authenticateToken } from "../middleware/authMiddleware.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { HttpError } from "../utils/HttpError.js";
 import { ProjectService } from "../services/ProjectService.js";
+import { SessionService } from "../services/SessionService.js";
 
 const router = express.Router();
 
 /**
  * GET /projects/ensureDefault
- * Creates a default project for the current user if none exist
  */
 router.get("/ensureDefault", authenticateToken, asyncHandler(async (req, res) => {
   const project = await ProjectService.createDefaultProjectIfNone(req.user.id);
@@ -18,7 +18,6 @@ router.get("/ensureDefault", authenticateToken, asyncHandler(async (req, res) =>
 
 /**
  * POST /projects
- * Body: { name, description }
  */
 router.post("/", authenticateToken, asyncHandler(async (req, res) => {
   const { name, description } = req.body;
@@ -31,7 +30,6 @@ router.post("/", authenticateToken, asyncHandler(async (req, res) => {
 
 /**
  * GET /projects
- * Return all projects owned by the user
  */
 router.get("/", authenticateToken, asyncHandler(async (req, res) => {
   const projects = await ProjectService.getProjectsByOwner(req.user.id);
@@ -90,7 +88,6 @@ router.get("/:id/versions", authenticateToken, asyncHandler(async (req, res) => 
 
 /**
  * POST /projects/:id/versions
- * Body: { project_data }
  */
 router.post("/:id/versions", authenticateToken, asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -101,6 +98,14 @@ router.post("/:id/versions", authenticateToken, asyncHandler(async (req, res) =>
     throw new HttpError("Not authorized or project not found.", 403);
   }
   const newVersion = await ProjectService.createVersion(id, project_data);
+
+  // Invalidate the undo/redo stacks for the session(s) that reference this project
+  // Example if your session code is "project_<id>"
+  const session = SessionService.getSession(`project_${id}`);
+  if (session) {
+    SessionService.clearUndoRedo(session);
+  }
+
   return res.status(201).json(newVersion);
 }));
 
@@ -115,6 +120,13 @@ router.post("/:id/versions/:versionId/rollback", authenticateToken, asyncHandler
   }
 
   const result = await ProjectService.rollbackVersion(id, versionId);
+
+  // Also clear the undo/redo for that project's session
+  const session = SessionService.getSession(`project_${id}`);
+  if (session) {
+    SessionService.clearUndoRedo(session);
+  }
+
   return res.json(result);
 }));
 

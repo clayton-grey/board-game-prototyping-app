@@ -1,6 +1,4 @@
-/**
- * ./client/js/app.js
- */
+// ./client/js/app.js
 
 import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
 import {
@@ -9,6 +7,7 @@ import {
   handleUserColorUpdate,
   setProjectNameFromServer,
   updateCanvasUserId,
+  removeCursorsForMissingUsers, // NEW
 } from "./canvas.js";
 
 // Read saved login/session from localStorage
@@ -26,7 +25,6 @@ if (!activeUserId) {
 const isLoggedIn = () => !!token && !!currentUser;
 const isCurrentUserAdmin = () => currentUser && currentUser.role === "admin";
 
-// We'll store the ephemeral session code in localStorage
 let ephemeralSessionCode = localStorage.getItem("sessionCode") || "defaultSession";
 let ephemeralOwnerId = null;
 let sessionUsers = [];
@@ -55,12 +53,13 @@ const registerMessage = document.getElementById("register-message");
 const registerCancelBtn = document.getElementById("registerCancelBtn");
 
 const userActionPopover = document.getElementById("user-action-popover");
-let openPopoverUserId = null;
 
-// We'll store our WebSocket once connected
+// Undo/REDO
+const undoBtn = document.getElementById("undo-btn");
+const redoBtn = document.getElementById("redo-btn");
+
 let ws = null;
 
-/** Display a short message in the top-center "messageContainer". */
 function showMessage(msg, isError = false) {
   messageContainer.textContent = msg;
   messageContainer.style.color = isError ? "red" : "green";
@@ -71,19 +70,18 @@ function showMessage(msg, isError = false) {
   }, 3000);
 }
 
-/** Send a JSON message over the WebSocket. */
 function sendWSMessage(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
   }
 }
-window.__sendWSMessage = sendWSMessage; // So canvas.js can call it
+window.__sendWSMessage = sendWSMessage;
 
 function connectWebSocket() {
   ws = new WebSocket("ws://localhost:3000");
   ws.onopen = () => {
     console.log("WebSocket connected.");
-    doJoinSession(); // Join the ephemeral session once open
+    doJoinSession();
   };
   ws.onmessage = (evt) => {
     let data;
@@ -100,7 +98,6 @@ function connectWebSocket() {
   };
 }
 
-/** Process messages from server. */
 function handleServerMessage(data) {
   switch (data.type) {
     case MESSAGE_TYPES.SESSION_USERS: {
@@ -108,11 +105,16 @@ function handleServerMessage(data) {
       ephemeralOwnerId = data.ownerUserId || null;
       renderSessionUsers();
 
-      // Update color for remote cursors
+      // Update cursor user info
       sessionUsers.forEach(u => {
         handleUserColorUpdate(u.userId, u.name, u.color);
       });
-      // Update my local user circle if found
+
+      // Now remove any stale cursors for users who disappeared
+      const userIds = sessionUsers.map(u => u.userId);
+      removeCursorsForMissingUsers(userIds);
+
+      // Update local user circle if found
       const me = sessionUsers.find(u => u.userId === activeUserId);
       if (me) {
         userCircle.style.background = me.color;
@@ -129,7 +131,6 @@ function handleServerMessage(data) {
       break;
     }
 
-    // Real-time collaboration data
     case MESSAGE_TYPES.ELEMENT_STATE:
     case MESSAGE_TYPES.CURSOR_UPDATES:
     case MESSAGE_TYPES.CURSOR_UPDATE:
@@ -141,15 +142,17 @@ function handleServerMessage(data) {
       ws.close();
       break;
 
+    case MESSAGE_TYPES.UNDO_REDO_FAILED:
+      showMessage(data.reason || "Undo/Redo failed", true);
+      break;
+
     default:
       console.log("Unknown message:", data.type, data);
   }
 }
 
-/** Attempt to join the session using the current userId and ephemeralSessionCode. */
 function doJoinSession() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
   const userName = currentUser ? currentUser.name : "Anonymous";
   let userRole = "";
   if (isCurrentUserAdmin()) {
@@ -165,38 +168,27 @@ function doJoinSession() {
   });
 }
 
-/** Quick helper to get first letter or '?'. */
 function getInitial(str) {
   if (!str) return "?";
   return str.trim().charAt(0).toUpperCase();
 }
 
-/**
- * Updated so we do NOT blindly set color = #888.
- * Instead, we check if we are present in `sessionUsers`.
- */
 function updateLocalUserUI() {
   let displayName = "Anonymous";
   if (currentUser?.name) {
     displayName = currentUser.name;
   }
-
   userNameSpan.textContent = displayName;
 
-  // Look up our color in the list of session users
   let finalColor = "#888";
   const me = sessionUsers.find(u => u.userId === activeUserId);
   if (me && me.color) {
     finalColor = me.color;
   }
-
   userCircle.style.background = finalColor;
   userCircleText.textContent = getInitial(displayName);
 }
 
-/* ------------------------------------------------------------------
-   RENDER SESSION USERS
------------------------------------------------------------------- */
 function renderSessionUsers() {
   sessionUsersList.innerHTML = "";
   sessionUsers.forEach(u => {
@@ -224,7 +216,6 @@ function renderSessionUsers() {
   });
 }
 
-/** For ephemeral roles, show small emoji. */
 function getRoleEmoji(u) {
   if (u.isAdmin) return "🪄";
   if (u.isOwner) return "🔑";
@@ -241,6 +232,7 @@ function canManageUser(u) {
   return true;
 }
 
+let openPopoverUserId = null;
 function onUserNameClicked(u, labelElem) {
   if (openPopoverUserId === u.userId) {
     hideUserActionPopover();
@@ -331,11 +323,10 @@ document.addEventListener("click", (evt) => {
 });
 
 /* ------------------------------------------------------------------
-   LOGGING OUT => DOWNGRADE_USER_ID
+   LOG OUT => downgrade
 ------------------------------------------------------------------ */
 function doLogout() {
   if (!currentUser) {
-    // Already anonymous
     return;
   }
   const oldUserId = "user_" + currentUser.id;
@@ -347,7 +338,6 @@ function doLogout() {
     newUserId: newAnonId,
   });
 
-  // Clear local login data
   token = "";
   currentUser = null;
   localStorage.removeItem("token");
@@ -356,15 +346,13 @@ function doLogout() {
   activeUserId = newAnonId;
   localStorage.setItem("activeUserId", newAnonId);
 
-  // Update the canvas's local user ID so we send future element actions with new ID
   updateCanvasUserId(newAnonId);
-
   showMessage("You are now anonymous.");
   updateLocalUserUI();
 }
 
 /* ------------------------------------------------------------------
-   TOP-RIGHT USER PANEL => LOG IN / LOG OUT
+   USER PANEL => log in/log out
 ------------------------------------------------------------------ */
 userInfoPanel.addEventListener("click", (evt) => {
   if (isLoggedIn()) {
@@ -378,7 +366,6 @@ userInfoPanel.addEventListener("click", (evt) => {
   }
 });
 
-// Hide login if clicking outside
 document.addEventListener("click", (evt) => {
   if (
     !loginDropdown.classList.contains("hidden") &&
@@ -390,7 +377,7 @@ document.addEventListener("click", (evt) => {
 });
 
 /* ------------------------------------------------------------------
-   LOGIN FORM => UPGRADE_USER_ID
+   LOGIN => upgrade
 ------------------------------------------------------------------ */
 loginForm.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -408,7 +395,7 @@ loginForm.addEventListener("submit", (e) => {
           throw new Error(obj.message || "Login failed");
         });
       }
-      return res.json(); // { message, user, token }
+      return res.json();
     })
     .then((data) => {
       token = data.token;
@@ -418,11 +405,9 @@ loginForm.addEventListener("submit", (e) => {
 
       const newUserId = "user_" + currentUser.id;
       const oldUserId = activeUserId;
-
       localStorage.setItem("activeUserId", newUserId);
       activeUserId = newUserId;
 
-      // If we were anonymous, rename in place
       if (oldUserId.startsWith("anon_")) {
         sendWSMessage({
           type: MESSAGE_TYPES.UPGRADE_USER_ID,
@@ -432,10 +417,7 @@ loginForm.addEventListener("submit", (e) => {
           newIsAdmin: (currentUser.role === "admin"),
         });
       }
-
-      // Update the canvas to send future lock messages as newUserId
       updateCanvasUserId(newUserId);
-
       showMessage("Logged in as " + currentUser.name);
       loginDropdown.classList.add("hidden");
       updateLocalUserUI();
@@ -446,7 +428,7 @@ loginForm.addEventListener("submit", (e) => {
 });
 
 /* ------------------------------------------------------------------
-   REGISTER => UPGRADE_USER_ID
+   REGISTER => upgrade
 ------------------------------------------------------------------ */
 registerLink.addEventListener("click", (e) => {
   e.preventDefault();
@@ -474,7 +456,7 @@ registerForm.addEventListener("submit", (e) => {
           throw new Error(obj.message || "Registration failed");
         });
       }
-      return res.json(); // { message, user, token }
+      return res.json();
     })
     .then((data) => {
       token = data.token;
@@ -484,7 +466,6 @@ registerForm.addEventListener("submit", (e) => {
 
       const newId = "user_" + currentUser.id;
       const oldId = activeUserId;
-
       localStorage.setItem("activeUserId", newId);
       activeUserId = newId;
 
@@ -497,7 +478,6 @@ registerForm.addEventListener("submit", (e) => {
           newIsAdmin: (currentUser.role === "admin"),
         });
       }
-
       updateCanvasUserId(newId);
 
       registerMessage.textContent = "Registration successful!";
@@ -519,7 +499,7 @@ registerCancelBtn.addEventListener("click", () => {
 });
 
 /* ------------------------------------------------------------------
-   PROJECT MANAGEMENT (basic ephemeral placeholders)
+   PROJECT MANAGEMENT
 ------------------------------------------------------------------ */
 openPMBtn.addEventListener("click", () => {
   if (activeUserId !== ephemeralOwnerId && !isCurrentUserAdmin()) {
@@ -545,7 +525,7 @@ deleteProjectBtn.addEventListener("click", () => {
 });
 
 /* ------------------------------------------------------------------
-   PROJECT NAME EDITING
+   PROJECT NAME EDIT
 ------------------------------------------------------------------ */
 projectNameEl.addEventListener("click", () => {
   startEditingProjectName();
@@ -587,7 +567,6 @@ function commitNameChange(newName) {
     userId: activeUserId,
     newName,
   });
-  // The server broadcast will finalize the name
 }
 
 function revertNameChange() {
@@ -614,4 +593,25 @@ window.addEventListener("DOMContentLoaded", () => {
   connectWebSocket();
   initCanvas(activeUserId);
   updateLocalUserUI();
+});
+
+/* ------------------------------------------------------------------
+   UNDO/REDO UI + Keyboard
+------------------------------------------------------------------ */
+undoBtn?.addEventListener("click", () => {
+  sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
+});
+redoBtn?.addEventListener("click", () => {
+  sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
+});
+
+// Keyboard shortcuts: Ctrl+Z => undo, Ctrl+Shift+Z or Ctrl+Y => redo
+window.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && !e.shiftKey && e.key === "z") {
+    e.preventDefault();
+    sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
+  } else if ((e.ctrlKey && e.shiftKey && e.key === "z") || (e.ctrlKey && e.key === "y")) {
+    e.preventDefault();
+    sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
+  }
 });
