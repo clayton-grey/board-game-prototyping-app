@@ -1,4 +1,5 @@
 // ./server/ws/messageDispatcher.js
+
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 import { handleJoinSession, handleUpgradeUserId, handleDowngradeUserId } from './handlers/sessionHandlers.js';
 import { handleCursorUpdate } from './handlers/cursorHandlers.js';
@@ -11,6 +12,9 @@ import {
 import { handleMakeEditor, handleRemoveEditor, handleKickUser } from './handlers/permissionHandlers.js';
 import { handleProjectNameChange } from './handlers/projectHandlers.js';
 import { handleUndo, handleRedo } from './handlers/undoRedoHandlers.js';
+
+// NEW: Import chat message handler
+import { handleChatMessage } from './handlers/chatHandlers.js';
 
 export function handleIncomingMessage(session, data, ws) {
   switch (data.type) {
@@ -65,6 +69,11 @@ export function handleIncomingMessage(session, data, ws) {
       break;
     case MESSAGE_TYPES.REDO:
       handleRedo(session, data, ws);
+      break;
+
+    // NEW: Chat messages
+    case MESSAGE_TYPES.CHAT_MESSAGE:
+      handleChatMessage(session, data, ws);
       break;
 
     default:

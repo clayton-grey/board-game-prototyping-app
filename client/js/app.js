@@ -7,7 +7,7 @@ import {
   handleUserColorUpdate,
   setProjectNameFromServer,
   updateCanvasUserId,
-  removeCursorsForMissingUsers, // NEW
+  removeCursorsForMissingUsers,
 } from "./canvas.js";
 
 // Read saved login/session from localStorage
@@ -128,6 +128,12 @@ function handleServerMessage(data) {
       setProjectNameFromServer(newName);
       restoreNameSpan();
       showMessage(`Renamed to: ${newName}`);
+      break;
+    }
+
+    case MESSAGE_TYPES.CHAT_MESSAGE: {
+      // The server broadcasts a new chat message
+      appendChatMessage(data.message.userId, data.message.text);
       break;
     }
 
@@ -615,3 +621,61 @@ window.addEventListener("keydown", (e) => {
     sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
   }
 });
+
+/* ------------------------------------------------------------------
+   CHAT FEATURE
+------------------------------------------------------------------ */
+
+// 1) Grab references to the chat DOM elements
+const chatMessagesDiv = document.getElementById("chat-messages");
+const chatInput = document.getElementById("chat-input");
+const chatSendBtn = document.getElementById("chat-send-btn");
+
+/**
+ * Appends a chat message to the chat log.
+ * For a more polished UI, you might colorize or style based on user.
+ */
+function appendChatMessage(userId, text) {
+  const div = document.createElement("div");
+  div.textContent = `${userId}: ${text}`;
+  chatMessagesDiv.appendChild(div);
+
+  // Optionally, scroll to bottom
+  chatMessagesDiv.scrollTop = chatMessagesDiv.scrollHeight;
+}
+
+/**
+ * Sends a chat message to the server via WebSocket.
+ */
+function sendChatMessage() {
+  const text = chatInput.value.trim();
+  if (!text) return;
+
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.CHAT_MESSAGE,
+    userId: activeUserId,
+    text
+  });
+
+  chatInput.value = "";
+}
+
+/**
+ * Attach click/enter key event to send chat messages.
+ */
+chatSendBtn.addEventListener("click", sendChatMessage);
+chatInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    sendChatMessage();
+  }
+});
+
+/* 
+   Now, in handleServerMessage (already in app.js), we have:
+   --------------------------------------------------------
+   case MESSAGE_TYPES.CHAT_MESSAGE:
+     appendChatMessage(data.message.userId, data.message.text);
+     break;
+*/
+

@@ -25,4 +25,7 @@ export const MESSAGE_TYPES = {
   UNDO: 'undo',
   REDO: 'redo',
   UNDO_REDO_FAILED: 'undo-redo-failed',
+
+  // New ephemeral chat message
+  CHAT_MESSAGE: 'chat-message',
 };

@@ -1,3 +1,4 @@
+<!-- ./client/index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -124,6 +125,15 @@
       <button id="redo-btn" title="Redo (Ctrl+Y or Ctrl+Shift+Z)">
         &#8631;
       </button>
+    </div>
+
+    <!-- feat: ephemeral chat UI -->
+    <div id="chat-container">
+      <div id="chat-messages"></div>
+      <div id="chat-input-row">
+        <input type="text" id="chat-input" placeholder="Type a message..." />
+        <button id="chat-send-btn">Send</button>
+      </div>
     </div>
 
     <!-- A single global popover for user actions, absolutely positioned -->
