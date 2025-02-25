@@ -3675,7 +3675,6 @@ export const MESSAGE_TYPES = {
 
 ===== ./client/index.html =====
 
-<!-- ./client/index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3690,7 +3689,7 @@ export const MESSAGE_TYPES = {
 <body>
   <div id="app">
     <!-- TOP-LEFT: Project Info -->
-    <div id="project-info">
+    <div id="project-info" class="floating-panel">
       <span id="project-name" title="Click to edit project name">Test</span>
       <button id="open-project-manager" title="Manage Project">
         <svg
@@ -3707,14 +3706,14 @@ export const MESSAGE_TYPES = {
     </div>
 
     <!-- TOP-RIGHT: Local user info -->
-    <div id="user-info">
+    <div id="user-info" class="floating-panel">
       <span id="user-name">Anonymous</span>
       <div id="user-circle">
         <span id="user-circle-text">?</span>
       </div>
 
       <!-- Login popover if not logged in -->
-      <div id="login-dropdown" class="hidden">
+      <div id="login-dropdown" class="floating-panel hidden">
         <form id="loginForm">
           <div class="login-row">
             <input type="email" id="loginEmail" placeholder="Email" required />
@@ -3731,11 +3730,11 @@ export const MESSAGE_TYPES = {
     </div>
 
     <!-- Session users list (floated left) -->
-    <ul id="session-users-list"></ul>
+    <ul id="session-users-list" class="floating-panel"></ul>
 
     <!-- REGISTER MODAL -->
-    <div id="register-modal" class="hidden">
-      <div class="modal-content">
+    <div id="register-modal" class="modal-backdrop hidden">
+      <div class="modal-content floating-panel">
         <h2>Register Account</h2>
         <div id="register-message" class="message"></div>
         <form id="registerForm">
@@ -3760,8 +3759,8 @@ export const MESSAGE_TYPES = {
     </div>
 
     <!-- PROJECT MANAGEMENT MODAL -->
-    <div id="project-manager-modal" class="hidden">
-      <div class="modal-content">
+    <div id="project-manager-modal" class="modal-backdrop hidden">
+      <div class="modal-content floating-panel">
         <h2>Project Management</h2>
 
         <div id="messageContainer"></div>
@@ -3787,7 +3786,7 @@ export const MESSAGE_TYPES = {
     <canvas id="gameCanvas"></canvas>
 
     <!-- ZOOM CONTROLS (bottom-right) -->
-    <div id="zoom-controls">
+    <div id="zoom-controls" class="floating-panel">
       <button id="zoom-out">-</button>
       <span id="zoom-level">100%</span>
       <button id="zoom-in">+</button>
@@ -3795,17 +3794,13 @@ export const MESSAGE_TYPES = {
     </div>
 
     <!-- UNDO/REDO CONTROLS (bottom-left) -->
-    <div id="undo-redo-controls">
-      <button id="undo-btn" title="Undo (Ctrl+Z)">
-        &#8630;
-      </button>
-      <button id="redo-btn" title="Redo (Ctrl+Y or Ctrl+Shift+Z)">
-        &#8631;
-      </button>
+    <div id="undo-redo-controls" class="floating-panel">
+      <button id="undo-btn" title="Undo (Ctrl+Z)">&#8630;</button>
+      <button id="redo-btn" title="Redo (Ctrl+Y or Ctrl+Shift+Z)">&#8631;</button>
     </div>
 
     <!-- feat: ephemeral chat UI -->
-    <div id="chat-container">
+    <div id="chat-container" class="floating-panel">
       <div id="chat-messages"></div>
       <div id="chat-input-row">
         <input type="text" id="chat-input" placeholder="Type a message..." />
@@ -3824,8 +3819,6 @@ export const MESSAGE_TYPES = {
 
 ===== ./client/css/style.css =====
 
-/* ./client/css/style.css */
-
 /* Basic Reset */
 html, body {
   margin: 0;
@@ -3833,6 +3826,12 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  font-family: sans-serif;
+  box-sizing: border-box;
+}
+
+*, *::before, *::after {
+  box-sizing: inherit;
 }
 
 #app {
@@ -3841,12 +3840,15 @@ html, body {
   height: 100%;
 }
 
-/* Canvas */
+/* 
+  The main canvas remains the same background as before 
+  so the "infinite board" look is not broken.
+*/
 #gameCanvas {
   display: block;
   width: 100%;
   height: 100%;
-  background-color: #222;
+  background-color: #222; /* Keep the existing dark canvas background */
   cursor: default;
 }
 #gameCanvas.grabbing {
@@ -3854,164 +3856,51 @@ html, body {
   cursor: -webkit-grabbing;
 }
 
-/* Zoom Controls (bottom-right) */
-#zoom-controls {
-  position: absolute;
-  bottom: 20px;
-  right: 20px;
-  background: rgba(0,0,0,0.7);
+/* 
+  FLOATING PANELS 
+  We apply this to all overlay UI elements to mimic a "white card with shadow" 
+  reminiscent of Miro's interface 
+*/
+.floating-panel {
+  background-color: #fff;
+  color: #333;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
   padding: 8px;
-  border-radius: 4px;
-  color: #fff;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  position: absolute;
   z-index: 10;
 }
-#zoom-level {
-  min-width: 48px;
-  text-align: center;
-}
 
-/* Undo/Redo Controls (bottom-left) => side by side */
-#undo-redo-controls {
-  position: absolute;
-  bottom: 20px;
-  left: 20px;
-  background: rgba(0,0,0,0.7);
-  color: #fff;
-  padding: 8px;
-  border-radius: 4px;
-  display: flex;
-  flex-direction: row; /* side by side */
-  gap: 0.5rem;
-  z-index: 10;
-}
-#undo-redo-controls button {
-  background: none;
-  border: 1px solid #fff;
-  color: #fff;
-  padding: 4px 8px;
-  cursor: pointer;
-  border-radius: 4px;
-}
-#undo-redo-controls button:hover {
-  background: rgba(255,255,255,0.2);
-}
-
-/* Project Info (top-left) */
+/* 
+  Top-left panel: #project-info 
+*/
 #project-info {
-  position: absolute;
   top: 20px;
   left: 20px;
-  background: rgba(0,0,0,0.7);
-  color: #fff;
-  padding: 4px 8px;
-  border-radius: 4px;
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  z-index: 10;
+  min-width: 140px;
 }
-#project-name {
+#project-info #project-name {
   font-weight: bold;
   cursor: pointer;
 }
 #open-project-manager {
   background: transparent;
   border: none;
-  color: #fff;
   cursor: pointer;
-  padding: 0;
 }
 
 /*
-   Session users list, left side under project info
-*/
-#session-users-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-
-  position: absolute;
-  top: 70px; /* below #project-info */
-  left: 20px;
-  background: rgba(0,0,0,0.7);
-  color: #fff;
-  width: 180px;
-  max-height: 140px;
-  overflow-y: auto;
-  border-radius: 4px;
-  z-index: 10;
-}
-#session-users-list li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px;
-  border-bottom: 1px solid rgba(255,255,255,0.2);
-  cursor: default;
-}
-#session-users-list li:last-child {
-  border-bottom: none;
-}
-.session-user-circle {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-/* hidden class to hide it by default */
-.hidden {
-  display: none !important;
-}
-
-/* arrow pointing left from the popover */
-#user-action-popover {
-  position: absolute;
-  background: rgba(0,0,0,0.9);
-  color: #fff;
-  padding: 8px 10px;
-  border-radius: 4px;
-  z-index: 9999;
-}
-
-#user-action-popover::before {
-  content: "";
-  position: absolute;
-  left: -6px;
-  top: 50%;
-  transform: translateY(-50%);
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-  border-right: 6px solid rgba(0,0,0,0.9);
-}
-
-.user-action-item {
-  font-size: 0.85em;
-  padding: 2px 0;
-  cursor: pointer;
-}
-.user-action-item:hover {
-  background: rgba(255,255,255,0.1);
-}
-
-/*
-   Top-right local user row
+  Right-top user info panel 
 */
 #user-info {
-  position: absolute;
   top: 20px;
   right: 20px;
-  background: rgba(0,0,0,0.7);
-  color: #fff;
-  padding: 4px 8px;
-  border-radius: 4px;
   display: flex;
   align-items: center;
   gap: 8px;
-  z-index: 10;
 }
 #user-name {
   font-weight: bold;
@@ -4030,72 +3919,83 @@ html, body {
   font-weight: bold;
 }
 
-/* Login dropdown */
+/* Login dropdown is also a floating panel (absolute inside #user-info) */
 #login-dropdown {
-  position: absolute;
-  top: 48px;
+  top: 48px; /* offset below user-info container */
   right: 0;
-  background: rgba(0,0,0,0.9);
-  padding: 8px;
-  border-radius: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 200px;
+  min-width: 220px;
 }
 #login-dropdown.hidden {
   display: none;
 }
 .login-row {
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 .login-row input {
   width: 100%;
-  padding: 4px;
-  box-sizing: border-box;
+  padding: 6px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
 }
 .login-actions {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-top: 4px;
 }
 .login-actions a {
-  color: #66f;
+  color: #0066cc;
   text-decoration: none;
   font-size: 0.9em;
 }
 .login-actions button {
-  padding: 4px 8px;
+  padding: 6px 10px;
+  background-color: #0066cc;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.login-actions button:hover {
+  background-color: #005bb5;
 }
 
-/* Register modal => top z-index */
-#register-modal {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  background: rgba(0,0,0,0.4);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 9999;
-}
-#register-modal.hidden {
-  display: none;
-}
-#register-modal .modal-content {
-  background: #fff;
-  color: #000;
-  padding: 20px;
-  border-radius: 8px;
-  min-width: 300px;
-  max-height: 90vh;
+/*
+  Session users list => left side, under the project info
+*/
+#session-users-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  top: 70px; /* below #project-info */
+  left: 20px;
+  width: 180px;
+  max-height: 150px;
   overflow-y: auto;
 }
+#session-users-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  border-bottom: 1px solid #eee;
+  cursor: default;
+}
+#session-users-list li:last-child {
+  border-bottom: none;
+}
+.session-user-circle {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
 
-/* Project Management modal => also high z-index */
-#project-manager-modal {
+/* 
+  Project Management & Registration modals 
+  => we want them to float above everything, with a semi-opaque backdrop 
+*/
+.modal-backdrop {
   position: fixed;
   top: 0;
   left: 0;
@@ -4107,41 +4007,22 @@ html, body {
   align-items: center;
   z-index: 9999;
 }
-#project-manager-modal.hidden {
+.modal-backdrop.hidden {
   display: none;
 }
-#project-manager-modal .modal-content {
-  background: #fff;
-  color: #000;
-  padding: 20px;
-  border-radius: 8px;
-  min-width: 400px;
+.modal-content {
+  position: relative; /* So it can work with .floating-panel styling */
   max-height: 90vh;
   overflow-y: auto;
   box-sizing: border-box;
 }
-.versions-section {
-  margin-bottom: 1em;
+.modal-content h2 {
+  margin-top: 0;
 }
-.versions-controls {
-  margin-bottom: 0.5em;
-  display: flex;
-  gap: 8px;
-}
-#versionsList {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-#versionsList li {
-  margin: 4px 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.danger-section {
-  margin: 1em 0;
-}
+
+/* 
+  Buttons in the modals 
+*/
 button.danger {
   background-color: #e10;
   color: #fff;
@@ -4150,65 +4031,165 @@ button.danger {
   cursor: pointer;
   border-radius: 4px;
 }
+button.danger:hover {
+  background-color: #c00;
+}
 #messageContainer {
   margin-bottom: 0.5em;
   min-height: 20px;
   font-weight: bold;
 }
 
-/* Example marquee selection rectangle in the canvas */
-.selection-rectangle {
-  position: absolute;
-  border: 2px solid blue;
-  background: rgba(0,0,255,0.2);
-  pointer-events: none;
-  z-index: 9999;
+/* 
+  Zoom controls => bottom-right 
+*/
+#zoom-controls {
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+#zoom-level {
+  min-width: 48px;
+  text-align: center;
+}
+#zoom-controls button {
+  background-color: #f8f8f8;
+  border: 1px solid #ddd;
+  color: #333;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+#zoom-controls button:hover {
+  background-color: #eee;
 }
 
-/* feat: ephemeral chat styles */
+/* 
+  Undo/Redo controls => bottom-left 
+*/
+#undo-redo-controls {
+  bottom: 20px;
+  left: 20px;
+  display: flex;
+  flex-direction: row;
+  gap: 0.5rem;
+}
+#undo-redo-controls button {
+  background-color: #f8f8f8;
+  border: 1px solid #ddd;
+  color: #333;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+#undo-redo-controls button:hover {
+  background-color: #eee;
+}
+
+/*
+  Chat container => bottom-left, above undo/redo
+*/
 #chat-container {
-  position: absolute;
   bottom: 90px;
   left: 20px;
-  width: 200px;
-  height: 200px;
-  background: rgba(0,0,0,0.7);
-  color: #fff;
-  border-radius: 4px;
   display: flex;
   flex-direction: column;
+  width: 220px;
+  height: 220px;
   justify-content: flex-end;
   overflow: hidden;
-  z-index: 10;
+  padding: 0; /* We'll nest the chat inside with some spacing. */
 }
 #chat-messages {
   flex: 1;
   padding: 8px;
   overflow-y: auto;
+  background: #fafafa;
+  border-radius: 4px 4px 0 0;
+  border: 1px solid #ddd;
+  border-bottom: none;
+  color: #333;
 }
 #chat-input-row {
   display: flex;
   gap: 4px;
   padding: 4px;
-  background: rgba(0,0,0,0.2);
+  border: 1px solid #ddd;
+  border-radius: 0 0 4px 4px;
+  background: #f8f8f8;
 }
 #chat-input {
   flex: 1;
-  padding: 4px;
-  border: none;
-  outline: none;
+  padding: 6px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
   color: #333;
 }
 #chat-send-btn {
-  padding: 4px 8px;
-  background: #444;
+  padding: 6px 10px;
+  background: #0066cc;
   border: none;
   color: #fff;
   cursor: pointer;
   border-radius: 4px;
 }
 #chat-send-btn:hover {
-  background: #666;
+  background: #005bb5;
+}
+.chat-message {
+  font-size: 0.8em;
+}
+
+/*
+  Hidden utility 
+*/
+.hidden {
+  display: none !important;
+}
+
+/* 
+  The user-action popover (for admin/owner actions) 
+*/
+#user-action-popover {
+  position: absolute;
+  background: #fff;
+  color: #333;
+  padding: 8px 10px;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  z-index: 9999;
+}
+#user-action-popover::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-right: 6px solid #fff;
+}
+.user-action-item {
+  font-size: 0.85em;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.user-action-item:hover {
+  background: rgba(0,0,0,0.05);
+}
+
+/*
+  Example "marquee" selection rectangle 
+  (though your code draws it directly in the canvas, we keep this just in case)
+*/
+.selection-rectangle {
+  position: absolute;
+  border: 2px solid blue;
+  background: rgba(0,0,255,0.2);
+  pointer-events: none;
+  z-index: 9999;
 }
 
 
@@ -5481,6 +5462,7 @@ const chatSendBtn = document.getElementById("chat-send-btn");
 function appendChatMessage(userId, text) {
   const div = document.createElement("div");
   div.textContent = `${userId}: ${text}`;
+  div.classList.add("chat-message")
   chatMessagesDiv.appendChild(div);
 
   // Optionally, scroll to bottom

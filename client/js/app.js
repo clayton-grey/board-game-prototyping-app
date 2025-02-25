@@ -638,6 +638,7 @@ const chatSendBtn = document.getElementById("chat-send-btn");
 function appendChatMessage(userId, text) {
   const div = document.createElement("div");
   div.textContent = `${userId}: ${text}`;
+  div.classList.add("chat-message")
   chatMessagesDiv.appendChild(div);
 
   // Optionally, scroll to bottom
