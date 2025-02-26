@@ -1,5 +1,4 @@
 // ./server/ws/handlers/undoRedoHandlers.js
-// Removed unused import of WebSocket (no longer needed).
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { broadcastElementState } from '../collabUtils.js';
 
@@ -69,28 +68,43 @@ export function handleRedo(session, data, ws) {
   broadcastElementState(session);
 }
 
+/**
+ * If a user has any "pendingMoves" (e.g. mid-drag) for shapes,
+ * finalize them so they become part of the undo history.
+ */
 function finalizeAllPendingMovesForUser(session, userId) {
+  if (!session.pendingMoves) {
+    session.pendingMoves = new Map();
+  }
+
+  // Gather all elementIds whose pending move belongs to this user
   const toFinalize = [];
-  for (const [elementId, pending] of session.pendingMoves.entries()) {
-    if (pending.userId === userId) {
+  for (const [elementId, moveData] of session.pendingMoves.entries()) {
+    if (moveData.userId === userId) {
       toFinalize.push(elementId);
     }
   }
+
+  // Finalize each
   for (const elementId of toFinalize) {
     const el = session.elements.find(e => e.id === elementId);
     if (!el) {
+      // If the element was removed or doesn't exist, just delete the pending entry
       session.pendingMoves.delete(elementId);
       continue;
     }
-    const pending = session.pendingMoves.get(elementId);
-    if (!pending) continue;
 
-    const oldX = pending.oldX;
-    const oldY = pending.oldY;
+    const moveData = session.pendingMoves.get(elementId);
+    if (!moveData) continue;  // might already have been deleted
+
+    const oldX = moveData.oldX;
+    const oldY = moveData.oldY;
     const newX = el.x;
     const newY = el.y;
+
     session.pendingMoves.delete(elementId);
 
+    // If the element didn't actually move, no need to create an action
     if (oldX === newX && oldY === newY) {
       continue;
     }
@@ -109,29 +123,42 @@ function finalizeAllPendingMovesForUser(session, userId) {
   }
 }
 
+/**
+ * Similar logic for pending resizes.
+ */
 function finalizeAllPendingResizesForUser(session, userId) {
   if (!session.pendingResizes) {
     session.pendingResizes = new Map();
   }
+
+  // Identify all elementIds that the given user is resizing
   const toFinalize = [];
-  for (const [elementId, pending] of session.pendingResizes.entries()) {
-    if (pending.userId === userId) {
+  for (const [elementId, resizeData] of session.pendingResizes.entries()) {
+    if (resizeData.userId === userId) {
       toFinalize.push(elementId);
     }
   }
+
   for (const elementId of toFinalize) {
     const el = session.elements.find(e => e.id === elementId);
     if (!el) {
+      // If the element was removed or doesn't exist, just delete the pending
       session.pendingResizes.delete(elementId);
       continue;
     }
-    const { oldX, oldY, oldW, oldH } = pending;
+
+    const resizeData = session.pendingResizes.get(elementId);
+    if (!resizeData) continue;  // might already have been deleted
+
+    const { oldX, oldY, oldW, oldH } = resizeData;
     const newX = el.x;
     const newY = el.y;
     const newW = el.w;
     const newH = el.h;
+
     session.pendingResizes.delete(elementId);
 
+    // If there's no actual size change, skip
     if (oldX === newX && oldY === newY && oldW === newW && oldH === newH) {
       continue;
     }
@@ -150,33 +177,19 @@ function finalizeAllPendingResizesForUser(session, userId) {
   }
 }
 
+/**
+ * Determines whether the user can apply the given action
+ * (i.e., no shape is locked by a different user).
+ */
 function canApplyAction(session, action, userId) {
-  if (action.type === 'move') {
+  if (!action?.diffs || !Array.isArray(action.diffs)) return true;
+
+  if (['move','create','delete','resize'].includes(action.type)) {
     for (const diff of action.diffs) {
-      const el = session.elements.find(e => e.id === diff.elementId);
-      if (!el) continue;
+      const elId = action.type === 'delete' ? diff.id : diff.elementId;
+      const el = session.elements.find(e => e.id === elId);
+      if (!el) continue; // shape no longer exists => skip
       if (el.lockedBy && el.lockedBy !== userId) {
-        return false;
-      }
-    }
-  } else if (action.type === 'create') {
-    for (const diff of action.diffs) {
-      const el = session.elements.find(e => e.id === diff.elementId);
-      if (el && el.lockedBy && el.lockedBy !== userId) {
-        return false;
-      }
-    }
-  } else if (action.type === 'delete') {
-    for (const d of action.diffs) {
-      const el = session.elements.find(e => e.id === d.id);
-      if (el && el.lockedBy && el.lockedBy !== userId) {
-        return false;
-      }
-    }
-  } else if (action.type === 'resize') {
-    for (const diff of action.diffs) {
-      const el = session.elements.find(e => e.id === diff.elementId);
-      if (el && el.lockedBy && el.lockedBy !== userId) {
         return false;
       }
     }
@@ -184,75 +197,110 @@ function canApplyAction(session, action, userId) {
   return true;
 }
 
+/**
+ * Re-applies an action to the session (redo).
+ */
 function applyAction(session, action) {
-  if (action.type === 'move') {
-    for (const diff of action.diffs) {
-      const el = session.elements.find(e => e.id === diff.elementId);
-      if (!el) continue;
-      el.x = diff.to.x;
-      el.y = diff.to.y;
-    }
-  } else if (action.type === 'create') {
-    // minimal re-create not fully stored
-  } else if (action.type === 'delete') {
-    // Re-DELETE
-    for (const d of action.diffs) {
-      const idx = session.elements.findIndex(e => e.id === d.id);
-      if (idx >= 0) {
-        session.elements.splice(idx, 1);
+  if (!action?.type) return;
+
+  switch (action.type) {
+    case 'move':
+      for (const diff of action.diffs) {
+        const el = session.elements.find(e => e.id === diff.elementId);
+        if (!el) continue;
+        el.x = diff.to.x;
+        el.y = diff.to.y;
       }
-    }
-  } else if (action.type === 'resize') {
-    for (const diff of action.diffs) {
-      const el = session.elements.find(e => e.id === diff.elementId);
-      if (!el) continue;
-      el.x = diff.to.x;
-      el.y = diff.to.y;
-      el.w = diff.to.w;
-      el.h = diff.to.h;
-    }
+      break;
+
+    case 'create':
+      // Minimal re-create not fully stored,
+      // typically you only do partial re-create on an undo->redo.
+      // If needed, store full shape data in `diffs`.
+      break;
+
+    case 'delete':
+      // Re-DELETE
+      for (const d of action.diffs) {
+        const idx = session.elements.findIndex(e => e.id === d.id);
+        if (idx >= 0) {
+          session.elements.splice(idx, 1);
+        }
+      }
+      break;
+
+    case 'resize':
+      for (const diff of action.diffs) {
+        const el = session.elements.find(e => e.id === diff.elementId);
+        if (!el) continue;
+        el.x = diff.to.x;
+        el.y = diff.to.y;
+        el.w = diff.to.w;
+        el.h = diff.to.h;
+      }
+      break;
+
+    default:
+      break;
   }
 }
 
+/**
+ * Reverts an action (undo).
+ */
 function revertAction(session, action) {
-  if (action.type === 'move') {
-    for (const diff of action.diffs) {
-      const el = session.elements.find(e => e.id === diff.elementId);
-      if (!el) continue;
-      el.x = diff.from.x;
-      el.y = diff.from.y;
-    }
-  } else if (action.type === 'create') {
-    for (const diff of action.diffs) {
-      const idx = session.elements.findIndex(e => e.id === diff.elementId);
-      if (idx >= 0) {
-        session.elements.splice(idx, 1);
+  if (!action?.type) return;
+
+  switch (action.type) {
+    case 'move':
+      for (const diff of action.diffs) {
+        const el = session.elements.find(e => e.id === diff.elementId);
+        if (!el) continue;
+        el.x = diff.from.x;
+        el.y = diff.from.y;
       }
-    }
-  } else if (action.type === 'delete') {
-    // Undo a delete => re-add them
-    for (const d of action.diffs) {
-      const exists = session.elements.find(e => e.id === d.id);
-      if (!exists) {
-        session.elements.push({
-          id: d.id,
-          shape: d.shape,
-          x: d.x,
-          y: d.y,
-          w: d.w,
-          h: d.h,
-          lockedBy: null,
-        });
+      break;
+
+    case 'create':
+      // Undo a create => remove the shape
+      for (const diff of action.diffs) {
+        const idx = session.elements.findIndex(e => e.id === diff.elementId);
+        if (idx >= 0) {
+          session.elements.splice(idx, 1);
+        }
       }
-    }
-  } else if (action.type === 'resize') {
-    for (const diff of action.diffs) {
-      const el = session.elements.find(e => e.id === diff.elementId);
-      if (!el) continue;
-      el.x = diff.from.x;
-      el.y = diff.from.y;
-      el.w = diff.from.w;
-      el.h = diff.from.h;
-    }
+      break;
+
+    case 'delete':
+      // Undo a delete => re-add them
+      for (const d of action.diffs) {
+        const exists = session.elements.find(e => e.id === d.id);
+        if (!exists) {
+          session.elements.push({
+            id: d.id,
+            shape: d.shape,
+            x: d.x,
+            y: d.y,
+            w: d.w,
+            h: d.h,
+            lockedBy: null,
+          });
+        }
+      }
+      break;
+
+    case 'resize':
+      for (const diff of action.diffs) {
+        const el = session.elements.find(e => e.id === diff.elementId);
+        if (!el) continue;
+        el.x = diff.from.x;
+        el.y = diff.from.y;
+        el.w = diff.from.w;
+        el.h = diff.from.h;
+      }
+      break;
+
+    default:
+      break;
   }
 }

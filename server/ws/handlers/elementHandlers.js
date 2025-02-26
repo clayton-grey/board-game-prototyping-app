@@ -1,12 +1,15 @@
 // ./server/ws/handlers/elementHandlers.js
 import { broadcastElementState } from '../collabUtils.js';
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { pushUndoAction } from './undoRedoHandlers.js';
+
+/**
+ * handleElementGrab, handleElementMove, handleElementRelease, handleElementDeselect, etc.
+ * (Same general logic, but with small clarifications to finalize multiple elements if needed.)
+ */
 
 export function handleElementGrab(session, data, ws) {
   if (!session) return;
   const { userId, elementId } = data;
-
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
@@ -17,7 +20,10 @@ export function handleElementGrab(session, data, ws) {
   // Otherwise, lock it to me
   el.lockedBy = userId;
 
-  // If we do not have a pending record, store old position
+  // Store old position if not already pending
+  if (!session.pendingMoves) {
+    session.pendingMoves = new Map();
+  }
   if (!session.pendingMoves.has(elementId)) {
     session.pendingMoves.set(elementId, {
       userId,
@@ -36,6 +42,7 @@ export function handleElementMove(session, data, ws) {
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
+  // Must be locked by this user to move
   if (el.lockedBy === userId) {
     el.x = x;
     el.y = y;
@@ -52,7 +59,7 @@ export function handleElementRelease(session, data, ws) {
 
   if (el.lockedBy === userId) {
     finalizePendingMove(session, elementId, userId);
-    // do not unlock automatically
+    // do not unlock automatically => user must deselect or move onto next action
     broadcastElementState(session);
   }
 }
@@ -62,15 +69,16 @@ export function handleElementDeselect(session, data, ws) {
   const { userId, elementIds } = data;
   if (!Array.isArray(elementIds)) return;
 
-  elementIds.forEach((elementId) => {
+  for (const elementId of elementIds) {
     const el = session.elements.find(e => e.id === elementId);
-    if (!el) return;
+    if (!el) continue;
     if (el.lockedBy === userId) {
       finalizePendingMove(session, elementId, userId);
       finalizePendingResize(session, elementId, userId);
+      // Now unlock
       el.lockedBy = null;
     }
-  });
+  }
 
   broadcastElementState(session);
 }
@@ -91,11 +99,11 @@ export function handleElementCreate(session, data, ws) {
     id: newId,
     shape,
     x, y, w, h,
-    lockedBy: userId, // lock it by default
+    lockedBy: userId, // lock by default
   };
   session.elements.push(newElement);
 
-  // Put a "create" action onto the undo stack
+  // Put a "create" action on the undo stack
   const action = {
     type: 'create',
     diffs: [
@@ -114,7 +122,6 @@ export function handleElementDelete(session, data, ws) {
   const { userId, elementIds } = data;
   if (!Array.isArray(elementIds) || elementIds.length === 0) return;
 
-  // Gather the shape data of each to remove, so we can undo later
   const toDelete = [];
   for (const id of elementIds) {
     const idx = session.elements.findIndex(e => e.id === id);
@@ -122,20 +129,20 @@ export function handleElementDelete(session, data, ws) {
       const el = session.elements[idx];
       // If locked by someone else, skip
       if (el.lockedBy && el.lockedBy !== userId) {
-        continue; 
+        continue;
       }
-      toDelete.push({ ...el }); // shallow copy shape data
-      // Remove from session
+      toDelete.push({ ...el }); // shallow copy
       session.elements.splice(idx, 1);
     }
   }
 
   if (toDelete.length === 0) {
+    // no real changes
     broadcastElementState(session);
     return;
   }
 
-  // Put a "delete" action onto the undo stack
+  // Put a "delete" action onto undo stack
   const action = {
     type: 'delete',
     diffs: toDelete.map(el => ({
@@ -153,12 +160,9 @@ export function handleElementDelete(session, data, ws) {
   broadcastElementState(session);
 }
 
-/* ------------------------------------------------------------------
-   NEW: Resizing
-   data: { userId, elementId, x, y, w, h }
-   - We treat each call as an incremental update to a shape's size.
-   - Similar to "move", we track pendingResizes to handle undo/redo.
------------------------------------------------------------------- */
+/**
+ * Resizing logic: data = { userId, elementId, x, y, w, h }
+ */
 export function handleElementResize(session, data, ws) {
   if (!session) return;
   const { userId, elementId, x, y, w, h } = data;
@@ -166,16 +170,14 @@ export function handleElementResize(session, data, ws) {
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  // Lock check
+  // Must be locked or lock now
   if (el.lockedBy && el.lockedBy !== userId) {
-    return; 
+    return;
   }
-  // If not locked, automatically lock to me (similar to handleElementGrab)
   if (!el.lockedBy) {
     el.lockedBy = userId;
   }
 
-  // If we do not have a pending record, store old x/y/w/h
   if (!session.pendingResizes) {
     session.pendingResizes = new Map();
   }
@@ -189,7 +191,7 @@ export function handleElementResize(session, data, ws) {
     });
   }
 
-  // Now update the shape
+  // update shape
   el.x = x;
   el.y = y;
   el.w = w;
@@ -202,6 +204,9 @@ export function handleElementResize(session, data, ws) {
    INTERNAL UTILS
 ------------------------------------------------------------------ */
 function finalizePendingMove(session, elementId, userId) {
+  if (!session.pendingMoves) {
+    session.pendingMoves = new Map();
+  }
   const pending = session.pendingMoves.get(elementId);
   if (!pending || pending.userId !== userId) {
     return;
@@ -215,8 +220,9 @@ function finalizePendingMove(session, elementId, userId) {
   const oldY = pending.oldY;
   const newX = el.x;
   const newY = el.y;
+
   if (oldX === newX && oldY === newY) {
-    return; // no actual movement
+    return; // no real movement => skip action
   }
 
   const action = {
@@ -252,7 +258,7 @@ function finalizePendingResize(session, elementId, userId) {
   const newH = el.h;
 
   if (oldX === newX && oldY === newY && oldW === newW && oldH === newH) {
-    return; // no actual resize
+    return; // no resize => skip
   }
 
   const action = {
