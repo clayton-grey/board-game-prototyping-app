@@ -28,6 +28,16 @@ let marqueeEndWorldX = 0, marqueeEndWorldY = 0;
 let elements = [];
 let currentProjectName = "New Project";
 
+// Tools
+let currentTool = "select"; // default
+let creationState = null; // { active, tool, startWX, startWY, curWX, curWY }
+
+// We track whether Shift is currently held down
+let shiftDown = false;
+
+/** Constants used for text shape. */
+const TEXT_DEFAULT_HEIGHT = 30;
+
 /** 1) INIT: pointer events & remove mouseleave. */
 export function initCanvas(initialUserId) {
   localUserId = initialUserId;
@@ -53,19 +63,63 @@ export function initCanvas(initialUserId) {
   // Mouse wheel => zoom
   canvas.addEventListener("wheel", onWheel, { passive: false });
 
+  // Initialize keyboard listeners to track shiftDown
+  setupKeyListeners();
+
   // Zoom UI
   document.getElementById("zoom-in").addEventListener("click", () => zoomAroundCenter(buttonZoomStep));
   document.getElementById("zoom-out").addEventListener("click", () => zoomAroundCenter(-buttonZoomStep));
   document.getElementById("frame-all").addEventListener("click", frameAllElements);
 
-  // ESC => clear selection
+  // ESC => clear selection or cancel creation
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      deselectAll();
+      if (creationState && creationState.active) {
+        // Cancel shape creation
+        creationState.active = false;
+      } else {
+        deselectAll();
+      }
     }
   });
 
+  // Initialize the tools palette event listeners
+  initToolsPalette();
+
+  window.addEventListener("keydown", (e) => {
+  // Already handling SHIFT, ESC, etc.
+  // Let's add handling for Delete
+  if (e.key === "Delete" || e.key === "Backspace") {
+    // If you want to allow backspace as well, but be mindful not to conflict with text fields
+    if (selectedElementIds.length > 0) {
+      // Send a new message type
+      window.__sendWSMessage({
+        type: MESSAGE_TYPES.ELEMENT_DELETE,
+        userId: localUserId,
+        elementIds: [...selectedElementIds],
+      });
+
+      // Optionally clear local selection
+      selectedElementIds = [];
+    }
+  }
+});
+
   requestAnimationFrame(render);
+}
+
+/** Track Shift Key up/down globally so ephemeral shape constraints update in real time. */
+function setupKeyListeners() {
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Shift") {
+      shiftDown = true;
+    }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "Shift") {
+      shiftDown = false;
+    }
+  });
 }
 
 /** If the user ID changes (login/out), update. */
@@ -77,11 +131,13 @@ export function updateCanvasUserId(newId) {
 export function handleCanvasMessage(data, myUserId) {
   switch (data.type) {
     case MESSAGE_TYPES.ELEMENT_STATE: {
+      const oldElementIds = elements.map(e => e.id);
       elements = data.elements || [];
       if (data.projectName) {
         currentProjectName = data.projectName;
       }
-      // Filter out any selected items the server locked to someone else
+
+      // Filter out any selected items that the server locked to someone else
       selectedElementIds = selectedElementIds.filter((id) => {
         const el = elements.find((e) => e.id === id);
         if (!el) return false;
@@ -90,13 +146,23 @@ export function handleCanvasMessage(data, myUserId) {
         }
         return true;
       });
+
+      // If there's a new element locked to me that wasn't in oldElementIds, auto-select it
+      for (const el of elements) {
+        if (el.lockedBy === myUserId && !oldElementIds.includes(el.id)) {
+          // It's newly created => select it
+          selectedElementIds = [el.id];
+        }
+      }
       break;
     }
+
     case MESSAGE_TYPES.CURSOR_UPDATE:
       if (data.userId !== myUserId) {
         remoteCursors.set(data.userId, { x: data.x, y: data.y });
       }
       break;
+
     case MESSAGE_TYPES.CURSOR_UPDATES:
       for (const [uId, pos] of Object.entries(data.cursors)) {
         remoteCursors.set(uId, pos);
@@ -133,6 +199,24 @@ export function removeCursorsForMissingUsers(currentUserIds) {
 }
 
 /* ------------------------------------------------------------------
+   TOOL PALETTE
+------------------------------------------------------------------ */
+function initToolsPalette() {
+  const palette = document.getElementById("tools-palette");
+  if (!palette) return;
+  const buttons = palette.querySelectorAll(".tool-btn");
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      // Remove "selected" from all, then add to this one
+      buttons.forEach((b) => b.classList.remove("selected"));
+      btn.classList.add("selected");
+
+      currentTool = btn.getAttribute("data-tool") || "select";
+    });
+  });
+}
+
+/* ------------------------------------------------------------------
    POINTER HANDLERS
 ------------------------------------------------------------------ */
 let lastMouseX = 0, lastMouseY = 0;
@@ -142,8 +226,8 @@ function onPointerDown(e) {
   const canvas = e.currentTarget;
   canvas.setPointerCapture(e.pointerId); // keep receiving pointer events
 
+  // Middle or right => panning
   if (e.button === 1 || e.button === 2) {
-    // Middle or right => panning
     isPanning = true;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
@@ -151,85 +235,109 @@ function onPointerDown(e) {
     return;
   }
 
-  // Left button => selection logic
+  // Left button
   if (e.button === 0) {
-    const rect = canvas.getBoundingClientRect();
-    const screenX = e.clientX - rect.left;
-    const screenY = e.clientY - rect.top;
-    const wx = camX + screenX / scale;
-    const wy = camY + screenY / scale;
-
-    // Find if user clicked an element
-    const clicked = findTopmostElementAt(wx, wy);
-    if (clicked) {
-      // SHIFT => toggle that clicked item
-      if (e.shiftKey) {
-        if (selectedElementIds.includes(clicked.id)) {
-          // Already selected => remove it
-          sendDeselectElement([clicked.id]);
-          selectedElementIds = selectedElementIds.filter(id => id !== clicked.id);
-          // might not drag
-        } else {
-          // Add to selection
-          const newSel = [...selectedElementIds, clicked.id];
-          updateSelection(newSel);
-        }
-      } else {
-        // No SHIFT => single select
-        // Deselect everything except the clicked item
-        if (!selectedElementIds.includes(clicked.id)) {
-          sendDeselectElement(selectedElementIds.filter(id => id !== clicked.id));
-          selectedElementIds = [];
-          updateSelection([clicked.id]);
-        }
-      }
-
-      // 
-      // KEY CHANGE FOR MULTI-DRAG:
-      // If the final selection STILL includes the clicked item,
-      // we want to move *all* selected items if they belong to me.
-      // So set up lockedOffsets for each selected item.
-      // 
-      if (selectedElementIds.includes(clicked.id)) {
-        for (const id of selectedElementIds) {
-          const el = elements.find(ele => ele.id === id);
-          if (el?.lockedBy === localUserId) {
-            lockedOffsets[id] = {
-              dx: wx - el.x,
-              dy: wy - el.y,
-            };
-          }
-        }
-        isDragging = true;
-        canvas.classList.add("grabbing");
-      }
+    if (currentTool === "select") {
+      handleSelectPointerDown(e);
     } else {
-      // If no item => start a marquee
-      isMarqueeSelecting = true;
-      marqueeStartCanvasX = screenX * devicePixelRatio;
-      marqueeStartCanvasY = screenY * devicePixelRatio;
-      marqueeEndCanvasX = marqueeStartCanvasX;
-      marqueeEndCanvasY = marqueeStartCanvasY;
-      marqueeStartWorldX = wx;
-      marqueeStartWorldY = wy;
-      marqueeEndWorldX = wx;
-      marqueeEndWorldY = wy;
-
-      if (!e.shiftKey) {
-        deselectAll();
-      }
-      isDragging = false;
-      canvas.classList.add("grabbing");
+      startShapeCreation(e, currentTool);
     }
   }
 }
 
-/** onPointerMove => pan or drag selected items. */
+function handleSelectPointerDown(e) {
+  const canvas = e.currentTarget;
+  const rect = canvas.getBoundingClientRect();
+  const screenX = e.clientX - rect.left;
+  const screenY = e.clientY - rect.top;
+  const wx = camX + screenX / scale;
+  const wy = camY + screenY / scale;
+
+  // Find if user clicked an element
+  const clicked = findTopmostElementAt(wx, wy);
+  if (clicked) {
+    // SHIFT => toggle
+    if (e.shiftKey) {
+      if (selectedElementIds.includes(clicked.id)) {
+        // remove it
+        sendDeselectElement([clicked.id]);
+        selectedElementIds = selectedElementIds.filter(id => id !== clicked.id);
+      } else {
+        sendGrabElement(clicked.id);
+        selectedElementIds.push(clicked.id);
+      }
+    } else {
+      // single select
+      if (!selectedElementIds.includes(clicked.id)) {
+        sendDeselectElement(selectedElementIds.filter(id => id !== clicked.id));
+        selectedElementIds = [];
+        sendGrabElement(clicked.id);
+        selectedElementIds.push(clicked.id);
+      }
+    }
+
+    // if the final selection STILL includes the clicked item,
+    // we prepare for dragging
+    if (selectedElementIds.includes(clicked.id)) {
+      for (const id of selectedElementIds) {
+        const el = elements.find(ele => ele.id === id);
+        if (el?.lockedBy === localUserId) {
+          lockedOffsets[id] = {
+            dx: wx - el.x,
+            dy: wy - el.y,
+          };
+        }
+      }
+      isDragging = true;
+      canvas.classList.add("grabbing");
+    }
+  } else {
+    // If no item => start a marquee
+    isMarqueeSelecting = true;
+    marqueeStartCanvasX = screenX * devicePixelRatio;
+    marqueeStartCanvasY = screenY * devicePixelRatio;
+    marqueeEndCanvasX = marqueeStartCanvasX;
+    marqueeEndCanvasY = marqueeStartCanvasY;
+    marqueeStartWorldX = wx;
+    marqueeStartWorldY = wy;
+    marqueeEndWorldX = wx;
+    marqueeEndWorldY = wy;
+
+    if (!e.shiftKey) {
+      deselectAll();
+    }
+    isDragging = false;
+    canvas.classList.add("grabbing");
+  }
+}
+
+/**
+ * startShapeCreation => store creationState so we can drag to size.
+ */
+function startShapeCreation(e, tool) {
+  const canvas = e.currentTarget;
+  const rect = canvas.getBoundingClientRect();
+  const screenX = e.clientX - rect.left;
+  const screenY = e.clientY - rect.top;
+  const wx = camX + screenX / scale;
+  const wy = camY + screenY / scale;
+
+  creationState = {
+    active: true,
+    tool,
+    startWX: wx,
+    startWY: wy,
+    curWX: wx,
+    curWY: wy,
+  };
+}
+
+/** onPointerMove => pan or drag selected items, or size shape. */
 function onPointerMove(e) {
   const canvas = e.currentTarget;
 
   if (isPanning && (e.buttons & (2|4))) {
-    // Right or middle button is down => pan
+    // Right or middle button => pan
     const dx = e.clientX - lastMouseX;
     const dy = e.clientY - lastMouseY;
     camX -= dx / scale;
@@ -238,7 +346,7 @@ function onPointerMove(e) {
     lastMouseY = e.clientY;
   }
   else if (isDragging && (e.buttons & 1)) {
-    // Left is still down => move all locked items
+    // Move locked items
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
@@ -256,6 +364,16 @@ function onPointerMove(e) {
         }
       }
     }
+  }
+  else if (creationState && creationState.active && (e.buttons & 1)) {
+    // Update ephemeral shape
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const wx = camX + sx / scale;
+    const wy = camY + sy / scale;
+    creationState.curWX = wx;
+    creationState.curWY = wy;
   }
   else if (isMarqueeSelecting && (e.buttons & 1)) {
     // If we're marquee-selecting
@@ -278,11 +396,11 @@ function onPointerMove(e) {
   sendCursorUpdate(localUserId, wx, wy);
 }
 
-/** onPointerUp => end panning or marquee or drag. */
+/** onPointerUp => end panning, dragging, shape creation, or marquee. */
 function onPointerUp(e) {
   const canvas = e.currentTarget;
   
-  // End panning if right/middle
+  // End panning
   if (isPanning && (e.button === 1 || e.button === 2)) {
     isPanning = false;
     canvas.classList.remove("grabbing");
@@ -295,7 +413,13 @@ function onPointerUp(e) {
     canvas.classList.remove("grabbing");
   }
 
-  // If we were marquee-selecting
+  // End shape creation if needed
+  if (creationState && creationState.active && e.button === 0) {
+    finalizeShapeCreation();
+    return;
+  }
+
+  // End marquee if left
   if (isMarqueeSelecting && e.button === 0) {
     isMarqueeSelecting = false;
     canvas.classList.remove("grabbing");
@@ -314,11 +438,9 @@ function onPointerUp(e) {
         }
       }
     }
-    // If not shift => everything else is cleared
     if (!e.shiftKey) {
       deselectAll();
     }
-    // Grab each newly selected item
     for (const id of newlySelected) {
       if (!selectedElementIds.includes(id)) {
         selectedElementIds.push(id);
@@ -329,22 +451,85 @@ function onPointerUp(e) {
 }
 
 /* ------------------------------------------------------------------
-   SELECTION / LOCKING
+   CREATION LOGIC
 ------------------------------------------------------------------ */
-function updateSelection(newSelectedIds) {
-  // For each newly added ID => sendGrabElement
-  const added = newSelectedIds.filter(id => !selectedElementIds.includes(id));
-  for (const id of added) {
-    sendGrabElement(id);
+
+/**
+ * finalizeShapeCreation => once user releases mouse
+ * we compute final x,y,w,h for the shape and create it on the server.
+ */
+function finalizeShapeCreation() {
+  if (!creationState) return;
+  const { tool, startWX, startWY, curWX, curWY } = creationState;
+  creationState.active = false;
+
+  let x = Math.min(startWX, curWX);
+  let y = Math.min(startWY, curWY);
+  let w = Math.abs(curWX - startWX);
+  let h = Math.abs(curWY - startWY);
+
+  // SHIFT => keep aspect ratio (for rect/ellipse)
+  if (shiftDown && (tool === "rectangle" || tool === "ellipse")) {
+    const side = Math.max(w, h);
+    w = side;
+    h = side;
   }
-  // For each removed => forcibly unlock
-  const removed = selectedElementIds.filter(id => !newSelectedIds.includes(id));
-  if (removed.length > 0) {
-    sendDeselectElement(removed);
+
+  if (tool === "text") {
+    // For text, we fix the height, only vary width
+    h = TEXT_DEFAULT_HEIGHT;
   }
-  selectedElementIds = newSelectedIds;
+
+  // If w or h is super small, skip creation
+  if (w < 2 && h < 2) {
+    // do nothing
+    return;
+  }
+
+  // Deselect anything else
+  if (selectedElementIds.length > 0) {
+    deselectAll();
+  }
+
+  // Round coords to integer
+  x = Math.round(x);
+  y = Math.round(y);
+  w = Math.round(w);
+  h = Math.round(h);
+
+  // Send create message
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_CREATE,
+    userId: localUserId,
+    shape: tool,
+    x,
+    y,
+    w,
+    h
+  });
+
+  // revert to select tool
+  revertToSelectTool();
 }
 
+function revertToSelectTool() {
+  currentTool = "select";
+  const palette = document.getElementById("tools-palette");
+  if (!palette) return;
+  const buttons = palette.querySelectorAll(".tool-btn");
+  buttons.forEach((b) => {
+    const t = b.getAttribute("data-tool");
+    if (t === "select") {
+      b.classList.add("selected");
+    } else {
+      b.classList.remove("selected");
+    }
+  });
+}
+
+/* ------------------------------------------------------------------
+   SELECTION / LOCKING
+------------------------------------------------------------------ */
 function deselectAll() {
   if (selectedElementIds.length > 0) {
     sendDeselectElement(selectedElementIds);
@@ -352,6 +537,9 @@ function deselectAll() {
   }
 }
 
+/* ------------------------------------------------------------------
+   SEND MESSAGES
+------------------------------------------------------------------ */
 function sendGrabElement(elementId) {
   window.__sendWSMessage({
     type: MESSAGE_TYPES.ELEMENT_GRAB,
@@ -472,8 +660,24 @@ function render() {
   ctx.scale(scale, scale);
 
   for (const el of elements) {
+    ctx.save();
     ctx.fillStyle = "#CCC";
-    ctx.fillRect(el.x, el.y, el.w, el.h);
+
+    if (el.shape === "ellipse") {
+      ctx.beginPath();
+      ctx.ellipse(el.x + el.w/2, el.y + el.h/2, el.w/2, el.h/2, 0, 0, Math.PI*2);
+      ctx.fill();
+    } else {
+      // rectangle or text
+      ctx.fillRect(el.x, el.y, el.w, el.h);
+    }
+
+    // If it's text, draw a placeholder label
+    if (el.shape === "text") {
+      ctx.fillStyle = "#333";
+      ctx.font = "14px sans-serif";
+      ctx.fillText("Text", el.x + 5, el.y + el.h/2 + 5);
+    }
 
     // Outline color if locked or selected
     let outlineColor = null;
@@ -486,15 +690,27 @@ function render() {
     if (outlineColor) {
       ctx.strokeStyle = outlineColor;
       ctx.lineWidth = 2;
-      ctx.strokeRect(el.x, el.y, el.w, el.h);
+      if (el.shape === "ellipse") {
+        ctx.beginPath();
+        ctx.ellipse(el.x + el.w/2, el.y + el.h/2, el.w/2, el.h/2, 0, 0, Math.PI*2);
+        ctx.stroke();
+      } else {
+        ctx.strokeRect(el.x, el.y, el.w, el.h);
+      }
     }
+    ctx.restore();
   }
 
   ctx.restore();
 
-  // Draw marquee
+  // Draw marquee if active
   if (isMarqueeSelecting) {
     drawMarquee(ctx);
+  }
+
+  // Draw ephemeral shape if creationState.active
+  if (creationState && creationState.active) {
+    drawEphemeralShape(ctx);
   }
 
   // Draw remote cursors
@@ -557,6 +773,49 @@ function drawMarquee(ctx) {
   ctx.restore();
 }
 
+/** Draw the ephemeral shape while user is dragging to size. */
+function drawEphemeralShape(ctx) {
+  const { tool, startWX, startWY, curWX, curWY } = creationState;
+  let x = Math.min(startWX, curWX);
+  let y = Math.min(startWY, curWY);
+  let w = Math.abs(curWX - startWX);
+  let h = Math.abs(curWY - startWY);
+
+  // SHIFT => keep ratio for rectangle/ellipse
+  if (shiftDown && (tool === "rectangle" || tool === "ellipse")) {
+    const side = Math.max(w, h);
+    w = side;
+    h = side;
+  }
+
+  if (tool === "text") {
+    // fixed height, only vary width
+    h = TEXT_DEFAULT_HEIGHT;
+  }
+
+  ctx.save();
+  ctx.translate(-camX * scale, -camY * scale);
+  ctx.scale(scale, scale);
+
+  ctx.beginPath();
+  if (tool === "ellipse") {
+    ctx.ellipse(x + w/2, y + h/2, w/2, h/2, 0, 0, Math.PI*2);
+  } else {
+    // rect or text
+    ctx.rect(x, y, w, h);
+  }
+
+  // fill with semi-transparent color
+  ctx.fillStyle = "rgba(255,0,0,0.2)";
+  ctx.fill();
+
+  ctx.strokeStyle = "red";
+  ctx.lineWidth = 2 / scale;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
 function drawRemoteCursors(ctx) {
   ctx.save();
   for (const [uId, pos] of remoteCursors) {
@@ -601,8 +860,18 @@ function drawArrowCursor(ctx, sx, sy, outlineColor, label) {
 function findTopmostElementAt(wx, wy) {
   for (let i = elements.length - 1; i >= 0; i--) {
     const el = elements[i];
-    if (wx >= el.x && wx <= el.x + el.w && wy >= el.y && wy <= el.y + el.h) {
-      return el;
+    if (el.shape === "ellipse") {
+      // ellipse hit test
+      const rx = el.w / 2, ry = el.h / 2;
+      const cx = el.x + rx, cy = el.y + ry;
+      const dx = wx - cx, dy = wy - cy;
+      const inside = (dx*dx)/(rx*rx) + (dy*dy)/(ry*ry) <= 1;
+      if (inside) return el;
+    } else {
+      // rectangle or text
+      if (wx >= el.x && wx <= el.x + el.w && wy >= el.y && wy <= el.y + el.h) {
+        return el;
+      }
     }
   }
   return null;

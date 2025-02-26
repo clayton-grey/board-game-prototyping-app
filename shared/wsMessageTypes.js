@@ -10,8 +10,9 @@ export const MESSAGE_TYPES = {
   ELEMENT_RELEASE: 'element-release',
   ELEMENT_STATE: 'element-state',
 
-  // New for multi-select "unlocking" or removing items from selection
   ELEMENT_DESELECT: 'element-deselect',
+  ELEMENT_CREATE: 'element-create',
+  ELEMENT_DELETE: 'element-delete',
 
   PROJECT_NAME_CHANGE: 'project-name-change',
   SESSION_USERS: 'session-users',
@@ -26,6 +27,5 @@ export const MESSAGE_TYPES = {
   REDO: 'redo',
   UNDO_REDO_FAILED: 'undo-redo-failed',
 
-  // New ephemeral chat message
   CHAT_MESSAGE: 'chat-message',
 };

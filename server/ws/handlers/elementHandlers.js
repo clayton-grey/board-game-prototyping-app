@@ -2,9 +2,8 @@
 import { broadcastElementState } from '../collabUtils.js';
 
 /**
- * 1) handleElementGrab:
- *   - If the element is unlocked or locked by the same user, lock it.
- *   - If not in pendingMoves, store oldX,oldY for undo.
+ * handleElementGrab, handleElementMove, handleElementRelease, handleElementDeselect
+ * (unchanged from previous patch)
  */
 export function handleElementGrab(session, data, ws) {
   if (!session) return;
@@ -32,10 +31,6 @@ export function handleElementGrab(session, data, ws) {
   broadcastElementState(session);
 }
 
-/**
- * 2) handleElementMove:
- *   - If locked by me, update position in real time.
- */
 export function handleElementMove(session, data, ws) {
   if (!session) return;
   const { userId, elementId, x, y } = data;
@@ -50,11 +45,6 @@ export function handleElementMove(session, data, ws) {
   }
 }
 
-/**
- * 3) handleElementRelease:
- *   - Finalizes the move in the undo stack so user can immediately Undo.
- *   - We do NOT unlock => user keeps the lock until they explicitly deselect.
- */
 export function handleElementRelease(session, data, ws) {
   if (!session) return;
   const { userId, elementId } = data;
@@ -64,32 +54,22 @@ export function handleElementRelease(session, data, ws) {
 
   if (el.lockedBy === userId) {
     finalizePendingMove(session, elementId, userId);
-    // Notice: we do NOT do "el.lockedBy = null" => user remains lock holder
+    // Notice: do not unlock
     broadcastElementState(session);
   }
 }
 
-/**
- * 4) handleElementDeselect:
- *   - The user is removing one or more elements from their selection,
- *     so we free the lock for each.
- *   - If they had a partial/pending move, we finalize it first so it doesn't get lost.
- */
 export function handleElementDeselect(session, data, ws) {
   if (!session) return;
-  const { userId, elementIds } = data; 
-  // elementIds is an array of items the user is deselecting.
-
+  const { userId, elementIds } = data;
   if (!Array.isArray(elementIds)) return;
 
   elementIds.forEach((elementId) => {
     const el = session.elements.find(e => e.id === elementId);
     if (!el) return;
-
-    // If locked by me, finalize & unlock
     if (el.lockedBy === userId) {
       finalizePendingMove(session, elementId, userId);
-      el.lockedBy = null; 
+      el.lockedBy = null;
     }
   });
 
@@ -97,9 +77,105 @@ export function handleElementDeselect(session, data, ws) {
 }
 
 /**
- * finalizePendingMove => if there's a record in pendingMoves for (elementId,userId),
- * we create a "move" action in undoStack and remove pendingMoves entry.
+ * handleElementCreate:
+ *   - assign next ID, lockedBy = user
+ *   - push "create" action to undoStack
  */
+export function handleElementCreate(session, data, ws) {
+  if (!session) return;
+  const { userId, shape, x, y, w, h } = data;
+  if (!userId || !shape) return;
+
+  // find max ID
+  let maxId = 0;
+  for (const e of session.elements) {
+    if (e.id > maxId) maxId = e.id;
+  }
+  const newId = maxId + 1;
+
+  const newElement = {
+    id: newId,
+    shape,
+    x, y, w, h,
+    lockedBy: userId, // lock it by default
+  };
+  session.elements.push(newElement);
+
+  // Clear redo stack
+  session.redoStack = [];
+  const action = {
+    type: 'create',
+    diffs: [
+      {
+        elementId: newId,
+      },
+    ],
+  };
+  session.undoStack.push(action);
+  if (session.undoStack.length > 50) {
+    session.undoStack.shift();
+  }
+
+  broadcastElementState(session);
+}
+
+/**
+ * NEW: handleElementDelete
+ * data: { userId, elementIds: number[] }
+ */
+export function handleElementDelete(session, data, ws) {
+  if (!session) return;
+  const { userId, elementIds } = data;
+  if (!Array.isArray(elementIds) || elementIds.length === 0) return;
+
+  // Gather the shape data of each to remove, so we can undo later
+  const toDelete = [];
+  for (const id of elementIds) {
+    const idx = session.elements.findIndex(e => e.id === id);
+    if (idx >= 0) {
+      const el = session.elements[idx];
+      // If locked by someone else, skip
+      if (el.lockedBy && el.lockedBy !== userId) {
+        continue; 
+      }
+      toDelete.push({ ...el }); // shallow copy shape data
+      // Remove from session
+      session.elements.splice(idx, 1);
+    }
+  }
+
+  if (toDelete.length === 0) {
+    // nothing removed => just broadcast or skip
+    broadcastElementState(session);
+    return;
+  }
+
+  // Clear redo stack
+  session.redoStack = [];
+
+  // Add an undo stack action
+  // We store type=delete and an array of the full shape data in diffs
+  const action = {
+    type: 'delete',
+    diffs: toDelete.map(el => ({
+      id: el.id,
+      shape: el.shape,
+      x: el.x,
+      y: el.y,
+      w: el.w,
+      h: el.h,
+      lockedBy: el.lockedBy,
+    })),
+  };
+
+  session.undoStack.push(action);
+  if (session.undoStack.length > 50) {
+    session.undoStack.shift();
+  }
+
+  broadcastElementState(session);
+}
+
 function finalizePendingMove(session, elementId, userId) {
   const pending = session.pendingMoves.get(elementId);
   if (!pending || pending.userId !== userId) {
@@ -118,9 +194,8 @@ function finalizePendingMove(session, elementId, userId) {
     return; // no actual movement
   }
 
-  // Clear redo stack because we have a new action
+  // Clear redo stack
   session.redoStack = [];
-
   const action = {
     type: 'move',
     diffs: [

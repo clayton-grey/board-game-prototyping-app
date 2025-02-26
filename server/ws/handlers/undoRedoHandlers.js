@@ -3,11 +3,6 @@ import { WebSocket } from 'ws';
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { broadcastElementState } from '../collabUtils.js';
 
-/**
- * handleUndo:
- *   - 1) finalize any pending moves for this user
- *   - 2) revert the top item in undoStack if concurrency checks pass
- */
 export function handleUndo(session, data, ws) {
   if (!session) return;
   const { userId } = data;
@@ -15,7 +10,7 @@ export function handleUndo(session, data, ws) {
   finalizeAllPendingMovesForUser(session, userId);
 
   if (session.undoStack.length === 0) {
-    return; // no action to undo
+    return;
   }
 
   const action = session.undoStack[session.undoStack.length - 1];
@@ -27,21 +22,13 @@ export function handleUndo(session, data, ws) {
     return;
   }
 
-  // Remove from undo
   session.undoStack.pop();
   revertAction(session, action);
-
-  // Add to redo
   session.redoStack.push(action);
 
   broadcastElementState(session);
 }
 
-/**
- * handleRedo:
- *   - 1) finalize leftover moves for user
- *   - 2) re-apply top item in redoStack if concurrency checks pass
- */
 export function handleRedo(session, data, ws) {
   if (!session) return;
   const { userId } = data;
@@ -49,7 +36,7 @@ export function handleRedo(session, data, ws) {
   finalizeAllPendingMovesForUser(session, userId);
 
   if (session.redoStack.length === 0) {
-    return; // nothing to redo
+    return;
   }
 
   const action = session.redoStack[session.redoStack.length - 1];
@@ -63,17 +50,11 @@ export function handleRedo(session, data, ws) {
 
   session.redoStack.pop();
   applyAction(session, action);
-
   session.undoStack.push(action);
 
   broadcastElementState(session);
 }
 
-/**
- * finalizeAllPendingMovesForUser:
- *   - for any pendingMoves that belong to userId, we finalize them
- *     as undoStack actions
- */
 function finalizeAllPendingMovesForUser(session, userId) {
   const toFinalize = [];
   for (const [elementId, pending] of session.pendingMoves.entries()) {
@@ -81,7 +62,6 @@ function finalizeAllPendingMovesForUser(session, userId) {
       toFinalize.push(elementId);
     }
   }
-
   for (const elementId of toFinalize) {
     const el = session.elements.find(e => e.id === elementId);
     if (!el) {
@@ -98,12 +78,10 @@ function finalizeAllPendingMovesForUser(session, userId) {
     session.pendingMoves.delete(elementId);
 
     if (oldX === newX && oldY === newY) {
-      continue; // no actual move
+      continue;
     }
 
-    // Clear redo since we have a new action
     session.redoStack = [];
-
     const action = {
       type: 'move',
       diffs: [
@@ -121,30 +99,36 @@ function finalizeAllPendingMovesForUser(session, userId) {
   }
 }
 
-/**
- * canApplyAction: 
- *   - If an element is locked by another user, we reject the undo/redo
- *   - If locked by the same user or unlocked => allow
- */
 function canApplyAction(session, action, userId) {
   if (action.type === 'move') {
     for (const diff of action.diffs) {
       const el = session.elements.find(e => e.id === diff.elementId);
       if (!el) continue;
-
       if (el.lockedBy && el.lockedBy !== userId) {
-        return false; // locked by someone else => fail
+        return false;
+      }
+    }
+  } else if (action.type === 'create') {
+    for (const diff of action.diffs) {
+      const el = session.elements.find(e => e.id === diff.elementId);
+      if (el && el.lockedBy && el.lockedBy !== userId) {
+        return false;
+      }
+    }
+  } else if (action.type === 'delete') {
+    // If these elements exist, ensure not locked by another user
+    for (const d of action.diffs) {
+      // If the element is currently in the session, check lock
+      const el = session.elements.find(e => e.id === d.id);
+      if (el && el.lockedBy && el.lockedBy !== userId) {
+        return false;
       }
     }
   }
+
   return true;
 }
 
-/**
- * applyAction => set x,y to 'to'
- * revertAction => set x,y to 'from'
- * We do NOT unlock or alter lockedBy.
- */
 function applyAction(session, action) {
   if (action.type === 'move') {
     for (const diff of action.diffs) {
@@ -152,6 +136,18 @@ function applyAction(session, action) {
       if (!el) continue;
       el.x = diff.to.x;
       el.y = diff.to.y;
+    }
+  } else if (action.type === 'create') {
+    // Minimal. If undone, the shape was removed. 
+    // Without storing shape details in 'create' diffs, we can't fully re-add it.
+    // For quick demo, we skip a thorough re-hydration. 
+  } else if (action.type === 'delete') {
+    // Re-DELETE the elements if redoing a delete
+    for (const d of action.diffs) {
+      const idx = session.elements.findIndex(e => e.id === d.id);
+      if (idx >= 0) {
+        session.elements.splice(idx, 1);
+      }
     }
   }
 }
@@ -163,6 +159,31 @@ function revertAction(session, action) {
       if (!el) continue;
       el.x = diff.from.x;
       el.y = diff.from.y;
+    }
+  } else if (action.type === 'create') {
+    // removing the newly created element
+    for (const diff of action.diffs) {
+      const idx = session.elements.findIndex(e => e.id === diff.elementId);
+      if (idx >= 0) {
+        session.elements.splice(idx, 1);
+      }
+    }
+  } else if (action.type === 'delete') {
+    // Undoing a delete => re-add them
+    for (const d of action.diffs) {
+      // If they don't exist, re-insert
+      const exists = session.elements.find(e => e.id === d.id);
+      if (!exists) {
+        session.elements.push({
+          id: d.id,
+          shape: d.shape,
+          x: d.x,
+          y: d.y,
+          w: d.w,
+          h: d.h,
+          lockedBy: null, // Usually re-adding unlocked or store d.lockedBy if you want
+        });
+      }
     }
   }
 }

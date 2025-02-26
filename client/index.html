@@ -55,6 +55,17 @@
     <!-- Session users list (floated left) -->
     <ul id="session-users-list" class="floating-panel"></ul>
 
+    <!--
+      TOOLS PALETTE (VERTICAL, LEFT SIDE).
+      Defaulting to "select" tool.
+    -->
+    <div id="tools-palette" class="floating-panel left-tools-palette">
+      <button data-tool="select" class="tool-btn selected" title="Select Tool">Select</button>
+      <button data-tool="rectangle" class="tool-btn" title="Draw Rectangle">Rectangle</button>
+      <button data-tool="ellipse" class="tool-btn" title="Draw Ellipse">Ellipse</button>
+      <button data-tool="text" class="tool-btn" title="Place Text Label">Text</button>
+    </div>
+
     <!-- REGISTER MODAL -->
     <div id="register-modal" class="modal-backdrop hidden">
       <div class="modal-content floating-panel">
@@ -122,7 +133,8 @@
       <button id="redo-btn" title="Redo (Ctrl+Y or Ctrl+Shift+Z)">&#8631;</button>
     </div>
 
-    <!-- feat: ephemeral chat UI -->
+    <!-- Chat UI --> 
+    <!-- MOVED to the right side to keep the left side for tools -->
     <div id="chat-container" class="floating-panel">
       <div id="chat-messages"></div>
       <div id="chat-input-row">

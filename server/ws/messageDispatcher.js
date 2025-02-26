@@ -8,12 +8,12 @@ import {
   handleElementMove,
   handleElementRelease,
   handleElementDeselect,
+  handleElementCreate,
+  handleElementDelete,
 } from './handlers/elementHandlers.js';
 import { handleMakeEditor, handleRemoveEditor, handleKickUser } from './handlers/permissionHandlers.js';
 import { handleProjectNameChange } from './handlers/projectHandlers.js';
 import { handleUndo, handleRedo } from './handlers/undoRedoHandlers.js';
-
-// NEW: Import chat message handler
 import { handleChatMessage } from './handlers/chatHandlers.js';
 
 export function handleIncomingMessage(session, data, ws) {
@@ -46,6 +46,12 @@ export function handleIncomingMessage(session, data, ws) {
     case MESSAGE_TYPES.ELEMENT_DESELECT:
       handleElementDeselect(session, data, ws);
       break;
+    case MESSAGE_TYPES.ELEMENT_CREATE:
+      handleElementCreate(session, data, ws);
+      break;
+    case MESSAGE_TYPES.ELEMENT_DELETE:
+      handleElementDelete(session, data, ws);
+      break;
 
     // Permissions
     case MESSAGE_TYPES.MAKE_EDITOR:
@@ -71,7 +77,7 @@ export function handleIncomingMessage(session, data, ws) {
       handleRedo(session, data, ws);
       break;
 
-    // NEW: Chat messages
+    // Chat messages
     case MESSAGE_TYPES.CHAT_MESSAGE:
       handleChatMessage(session, data, ws);
       break;
