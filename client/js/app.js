@@ -10,7 +10,27 @@ import {
   removeCursorsForMissingUsers,
 } from "./canvas.js";
 
-// Read saved login/session from localStorage
+// A small helper for JSON fetch calls
+async function fetchJSON(url, method = "GET", bodyObj = null) {
+  const fetchOptions = { method, headers: {} };
+  if (bodyObj) {
+    fetchOptions.headers["Content-Type"] = "application/json";
+    fetchOptions.body = JSON.stringify(bodyObj);
+  }
+  const res = await fetch(url, fetchOptions);
+  let data;
+  try {
+    data = await res.json();
+  } catch (err) {
+    // In case the response isn't JSON, or parse fails
+    throw new Error(`Fetch error: ${err.message}`);
+  }
+  if (!res.ok) {
+    throw new Error(data.message || `HTTP ${res.status} - ${res.statusText}`);
+  }
+  return data;
+}
+
 let token = localStorage.getItem("token") || "";
 let currentUser = localStorage.getItem("user")
   ? JSON.parse(localStorage.getItem("user"))
@@ -385,52 +405,42 @@ document.addEventListener("click", (evt) => {
 /* ------------------------------------------------------------------
    LOGIN => upgrade
 ------------------------------------------------------------------ */
-loginForm.addEventListener("submit", (e) => {
+loginForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const email = document.getElementById("loginEmail").value.trim();
   const pass = document.getElementById("loginPassword").value;
 
-  fetch("/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password: pass }),
-  })
-    .then((res) => {
-      if (!res.ok) {
-        return res.json().then((obj) => {
-          throw new Error(obj.message || "Login failed");
-        });
-      }
-      return res.json();
-    })
-    .then((data) => {
-      token = data.token;
-      currentUser = data.user;
-      localStorage.setItem("token", token);
-      localStorage.setItem("user", JSON.stringify(currentUser));
-
-      const newUserId = "user_" + currentUser.id;
-      const oldUserId = activeUserId;
-      localStorage.setItem("activeUserId", newUserId);
-      activeUserId = newUserId;
-
-      if (oldUserId.startsWith("anon_")) {
-        sendWSMessage({
-          type: MESSAGE_TYPES.UPGRADE_USER_ID,
-          oldUserId,
-          newUserId,
-          newName: currentUser.name,
-          newIsAdmin: (currentUser.role === "admin"),
-        });
-      }
-      updateCanvasUserId(newUserId);
-      showMessage("Logged in as " + currentUser.name);
-      loginDropdown.classList.add("hidden");
-      updateLocalUserUI();
-    })
-    .catch((err) => {
-      showMessage(err.message, true);
+  try {
+    const data = await fetchJSON("/auth/login", "POST", {
+      email,
+      password: pass,
     });
+    token = data.token;
+    currentUser = data.user;
+    localStorage.setItem("token", token);
+    localStorage.setItem("user", JSON.stringify(currentUser));
+
+    const newUserId = "user_" + currentUser.id;
+    const oldUserId = activeUserId;
+    localStorage.setItem("activeUserId", newUserId);
+    activeUserId = newUserId;
+
+    if (oldUserId.startsWith("anon_")) {
+      sendWSMessage({
+        type: MESSAGE_TYPES.UPGRADE_USER_ID,
+        oldUserId,
+        newUserId,
+        newName: currentUser.name,
+        newIsAdmin: currentUser.role === "admin",
+      });
+    }
+    updateCanvasUserId(newUserId);
+    showMessage("Logged in as " + currentUser.name);
+    loginDropdown.classList.add("hidden");
+    updateLocalUserUI();
+  } catch (err) {
+    showMessage(err.message, true);
+  }
 });
 
 /* ------------------------------------------------------------------
@@ -442,7 +452,7 @@ registerLink.addEventListener("click", (e) => {
   registerModal.classList.remove("hidden");
 });
 
-registerForm.addEventListener("submit", (e) => {
+registerForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   registerMessage.textContent = "";
 
@@ -451,53 +461,45 @@ registerForm.addEventListener("submit", (e) => {
   const password = document.getElementById("regPassword").value;
   const confirmPassword = document.getElementById("regConfirm").value;
 
-  fetch("/auth/register", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, email, password, confirmPassword }),
-  })
-    .then((res) => {
-      if (!res.ok) {
-        return res.json().then((obj) => {
-          throw new Error(obj.message || "Registration failed");
-        });
-      }
-      return res.json();
-    })
-    .then((data) => {
-      token = data.token;
-      currentUser = data.user;
-      localStorage.setItem("token", token);
-      localStorage.setItem("user", JSON.stringify(currentUser));
-
-      const newId = "user_" + currentUser.id;
-      const oldId = activeUserId;
-      localStorage.setItem("activeUserId", newId);
-      activeUserId = newId;
-
-      if (oldId.startsWith("anon_")) {
-        sendWSMessage({
-          type: MESSAGE_TYPES.UPGRADE_USER_ID,
-          oldUserId: oldId,
-          newUserId: newId,
-          newName: currentUser.name,
-          newIsAdmin: (currentUser.role === "admin"),
-        });
-      }
-      updateCanvasUserId(newId);
-
-      registerMessage.textContent = "Registration successful!";
-      registerMessage.style.color = "green";
-      setTimeout(() => {
-        registerModal.classList.add("hidden");
-        showMessage("Logged in as " + currentUser.name);
-        updateLocalUserUI();
-      }, 1000);
-    })
-    .catch((err) => {
-      registerMessage.textContent = err.message;
-      registerMessage.style.color = "red";
+  try {
+    const data = await fetchJSON("/auth/register", "POST", {
+      name,
+      email,
+      password,
+      confirmPassword,
     });
+    token = data.token;
+    currentUser = data.user;
+    localStorage.setItem("token", token);
+    localStorage.setItem("user", JSON.stringify(currentUser));
+
+    const newId = "user_" + currentUser.id;
+    const oldId = activeUserId;
+    localStorage.setItem("activeUserId", newId);
+    activeUserId = newId;
+
+    if (oldId.startsWith("anon_")) {
+      sendWSMessage({
+        type: MESSAGE_TYPES.UPGRADE_USER_ID,
+        oldUserId: oldId,
+        newUserId: newId,
+        newName: currentUser.name,
+        newIsAdmin: currentUser.role === "admin",
+      });
+    }
+    updateCanvasUserId(newId);
+
+    registerMessage.textContent = "Registration successful!";
+    registerMessage.style.color = "green";
+    setTimeout(() => {
+      registerModal.classList.add("hidden");
+      showMessage("Logged in as " + currentUser.name);
+      updateLocalUserUI();
+    }, 1000);
+  } catch (err) {
+    registerMessage.textContent = err.message;
+    registerMessage.style.color = "red";
+  }
 });
 
 registerCancelBtn.addEventListener("click", () => {
@@ -625,29 +627,18 @@ window.addEventListener("keydown", (e) => {
 /* ------------------------------------------------------------------
    CHAT FEATURE
 ------------------------------------------------------------------ */
-
-// 1) Grab references to the chat DOM elements
 const chatMessagesDiv = document.getElementById("chat-messages");
 const chatInput = document.getElementById("chat-input");
 const chatSendBtn = document.getElementById("chat-send-btn");
 
-/**
- * Appends a chat message to the chat log.
- * For a more polished UI, you might colorize or style based on user.
- */
 function appendChatMessage(userId, text) {
   const div = document.createElement("div");
   div.textContent = `${userId}: ${text}`;
-  div.classList.add("chat-message")
+  div.classList.add("chat-message");
   chatMessagesDiv.appendChild(div);
-
-  // Optionally, scroll to bottom
   chatMessagesDiv.scrollTop = chatMessagesDiv.scrollHeight;
 }
 
-/**
- * Sends a chat message to the server via WebSocket.
- */
 function sendChatMessage() {
   const text = chatInput.value.trim();
   if (!text) return;
@@ -657,13 +648,9 @@ function sendChatMessage() {
     userId: activeUserId,
     text
   });
-
   chatInput.value = "";
 }
 
-/**
- * Attach click/enter key event to send chat messages.
- */
 chatSendBtn.addEventListener("click", sendChatMessage);
 chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
@@ -671,12 +658,3 @@ chatInput.addEventListener("keydown", (e) => {
     sendChatMessage();
   }
 });
-
-/* 
-   Now, in handleServerMessage (already in app.js), we have:
-   --------------------------------------------------------
-   case MESSAGE_TYPES.CHAT_MESSAGE:
-     appendChatMessage(data.message.userId, data.message.text);
-     break;
-*/
-

@@ -98,14 +98,7 @@ export class ProjectService {
    * Create a new version for the project, auto-incrementing version_number.
    */
   static async createVersion(projectId, projectData) {
-    // find max version_number
-    const maxVerResult = await pool.query(
-      `SELECT COALESCE(MAX(version_number), 0) AS max_ver
-       FROM project_versions
-       WHERE project_id = $1`,
-      [projectId]
-    );
-    const maxVer = maxVerResult.rows[0].max_ver || 0;
+    const maxVer = await this._getMaxVersionNumber(projectId);
     const newVer = maxVer + 1;
 
     const insertResult = await pool.query(
@@ -135,13 +128,7 @@ export class ProjectService {
     const oldData = oldVersionResult.rows[0].project_data;
 
     // Then create a brand-new version row representing the rollback
-    const maxVerResult = await pool.query(
-      `SELECT COALESCE(MAX(version_number), 0) AS max_ver
-       FROM project_versions
-       WHERE project_id = $1`,
-      [projectId]
-    );
-    const maxVer = maxVerResult.rows[0].max_ver || 0;
+    const maxVer = await this._getMaxVersionNumber(projectId);
     const newVer = maxVer + 1;
 
     const rollbackInsert = await pool.query(
@@ -166,5 +153,19 @@ export class ProjectService {
     const ownerId = await this.getProjectOwnerId(projectId);
     if (!ownerId) return false;
     return ownerId === user.id;
+  }
+
+  /**
+   * Internal helper: returns the current max version_number of a given project,
+   * or 0 if no versions exist.
+   */
+  static async _getMaxVersionNumber(projectId) {
+    const result = await pool.query(
+      `SELECT COALESCE(MAX(version_number), 0) AS max_ver
+       FROM project_versions
+       WHERE project_id = $1`,
+      [projectId]
+    );
+    return result.rows[0].max_ver || 0;
   }
 }
