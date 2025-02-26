@@ -1,7 +1,19 @@
 // ./server/ws/handlers/undoRedoHandlers.js
-import { WebSocket } from 'ws';
+// Removed unused import of WebSocket (no longer needed).
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { broadcastElementState } from '../collabUtils.js';
+
+/**
+ * A small helper to push an action onto the undo stack,
+ * clearing the redo stack and limiting size.
+ */
+export function pushUndoAction(session, action) {
+  session.redoStack = [];
+  session.undoStack.push(action);
+  if (session.undoStack.length > 50) {
+    session.undoStack.shift();
+  }
+}
 
 export function handleUndo(session, data, ws) {
   if (!session) return;
@@ -83,7 +95,6 @@ function finalizeAllPendingMovesForUser(session, userId) {
       continue;
     }
 
-    session.redoStack = [];
     const action = {
       type: 'move',
       diffs: [
@@ -94,10 +105,7 @@ function finalizeAllPendingMovesForUser(session, userId) {
         }
       ],
     };
-    session.undoStack.push(action);
-    if (session.undoStack.length > 50) {
-      session.undoStack.shift();
-    }
+    pushUndoAction(session, action);
   }
 }
 
@@ -117,9 +125,6 @@ function finalizeAllPendingResizesForUser(session, userId) {
       session.pendingResizes.delete(elementId);
       continue;
     }
-    const pending = session.pendingResizes.get(elementId);
-    if (!pending) continue;
-
     const { oldX, oldY, oldW, oldH } = pending;
     const newX = el.x;
     const newY = el.y;
@@ -131,7 +136,6 @@ function finalizeAllPendingResizesForUser(session, userId) {
       continue;
     }
 
-    session.redoStack = [];
     const action = {
       type: 'resize',
       diffs: [
@@ -142,10 +146,7 @@ function finalizeAllPendingResizesForUser(session, userId) {
         }
       ],
     };
-    session.undoStack.push(action);
-    if (session.undoStack.length > 50) {
-      session.undoStack.shift();
-    }
+    pushUndoAction(session, action);
   }
 }
 

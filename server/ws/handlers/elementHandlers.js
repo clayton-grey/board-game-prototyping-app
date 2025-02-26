@@ -1,11 +1,7 @@
 // ./server/ws/handlers/elementHandlers.js
 import { broadcastElementState } from '../collabUtils.js';
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
-
-/**
- * handleElementGrab, handleElementMove, handleElementRelease, handleElementDeselect
- * (Unchanged from previous except for references to resizing, see below)
- */
+import { pushUndoAction } from './undoRedoHandlers.js';
 
 export function handleElementGrab(session, data, ws) {
   if (!session) return;
@@ -99,8 +95,7 @@ export function handleElementCreate(session, data, ws) {
   };
   session.elements.push(newElement);
 
-  // Clear redo stack
-  session.redoStack = [];
+  // Put a "create" action onto the undo stack
   const action = {
     type: 'create',
     diffs: [
@@ -109,10 +104,7 @@ export function handleElementCreate(session, data, ws) {
       },
     ],
   };
-  session.undoStack.push(action);
-  if (session.undoStack.length > 50) {
-    session.undoStack.shift();
-  }
+  pushUndoAction(session, action);
 
   broadcastElementState(session);
 }
@@ -143,9 +135,7 @@ export function handleElementDelete(session, data, ws) {
     return;
   }
 
-  // Clear redo stack
-  session.redoStack = [];
-  // Add an undo stack action
+  // Put a "delete" action onto the undo stack
   const action = {
     type: 'delete',
     diffs: toDelete.map(el => ({
@@ -158,11 +148,7 @@ export function handleElementDelete(session, data, ws) {
       lockedBy: el.lockedBy,
     })),
   };
-
-  session.undoStack.push(action);
-  if (session.undoStack.length > 50) {
-    session.undoStack.shift();
-  }
+  pushUndoAction(session, action);
 
   broadcastElementState(session);
 }
@@ -233,8 +219,6 @@ function finalizePendingMove(session, elementId, userId) {
     return; // no actual movement
   }
 
-  // Clear redo stack
-  session.redoStack = [];
   const action = {
     type: 'move',
     diffs: [
@@ -245,10 +229,7 @@ function finalizePendingMove(session, elementId, userId) {
       },
     ],
   };
-  session.undoStack.push(action);
-  if (session.undoStack.length > 50) {
-    session.undoStack.shift();
-  }
+  pushUndoAction(session, action);
 }
 
 function finalizePendingResize(session, elementId, userId) {
@@ -274,8 +255,6 @@ function finalizePendingResize(session, elementId, userId) {
     return; // no actual resize
   }
 
-  // Clear redo stack
-  session.redoStack = [];
   const action = {
     type: 'resize',
     diffs: [
@@ -286,8 +265,5 @@ function finalizePendingResize(session, elementId, userId) {
       },
     ],
   };
-  session.undoStack.push(action);
-  if (session.undoStack.length > 50) {
-    session.undoStack.shift();
-  }
+  pushUndoAction(session, action);
 }

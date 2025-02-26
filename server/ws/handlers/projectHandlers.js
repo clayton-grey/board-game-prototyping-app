@@ -1,4 +1,4 @@
-// server/ws/handlers/projectHandlers.js
+// ./server/ws/handlers/projectHandlers.js
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { broadcastToSession, broadcastElementState } from '../collabUtils.js';
 
@@ -24,8 +24,7 @@ export function handleProjectNameChange(session, data, ws) {
       newName,
     });
 
-    // Optionally also re-broadcast the element state if desired
-    // (some clients might want that to ensure consistent data)
+    // Re-broadcast the element state (ensures consistent data for all)
     broadcastElementState(session);
   }
 }
