@@ -8,6 +8,7 @@ export function handleUndo(session, data, ws) {
   const { userId } = data;
 
   finalizeAllPendingMovesForUser(session, userId);
+  finalizeAllPendingResizesForUser(session, userId);
 
   if (session.undoStack.length === 0) {
     return;
@@ -34,6 +35,7 @@ export function handleRedo(session, data, ws) {
   const { userId } = data;
 
   finalizeAllPendingMovesForUser(session, userId);
+  finalizeAllPendingResizesForUser(session, userId);
 
   if (session.redoStack.length === 0) {
     return;
@@ -99,6 +101,54 @@ function finalizeAllPendingMovesForUser(session, userId) {
   }
 }
 
+function finalizeAllPendingResizesForUser(session, userId) {
+  if (!session.pendingResizes) {
+    session.pendingResizes = new Map();
+  }
+  const toFinalize = [];
+  for (const [elementId, pending] of session.pendingResizes.entries()) {
+    if (pending.userId === userId) {
+      toFinalize.push(elementId);
+    }
+  }
+  for (const elementId of toFinalize) {
+    const el = session.elements.find(e => e.id === elementId);
+    if (!el) {
+      session.pendingResizes.delete(elementId);
+      continue;
+    }
+    const pending = session.pendingResizes.get(elementId);
+    if (!pending) continue;
+
+    const { oldX, oldY, oldW, oldH } = pending;
+    const newX = el.x;
+    const newY = el.y;
+    const newW = el.w;
+    const newH = el.h;
+    session.pendingResizes.delete(elementId);
+
+    if (oldX === newX && oldY === newY && oldW === newW && oldH === newH) {
+      continue;
+    }
+
+    session.redoStack = [];
+    const action = {
+      type: 'resize',
+      diffs: [
+        {
+          elementId,
+          from: { x: oldX, y: oldY, w: oldW, h: oldH },
+          to: { x: newX, y: newY, w: newW, h: newH },
+        }
+      ],
+    };
+    session.undoStack.push(action);
+    if (session.undoStack.length > 50) {
+      session.undoStack.shift();
+    }
+  }
+}
+
 function canApplyAction(session, action, userId) {
   if (action.type === 'move') {
     for (const diff of action.diffs) {
@@ -116,16 +166,20 @@ function canApplyAction(session, action, userId) {
       }
     }
   } else if (action.type === 'delete') {
-    // If these elements exist, ensure not locked by another user
     for (const d of action.diffs) {
-      // If the element is currently in the session, check lock
       const el = session.elements.find(e => e.id === d.id);
       if (el && el.lockedBy && el.lockedBy !== userId) {
         return false;
       }
     }
+  } else if (action.type === 'resize') {
+    for (const diff of action.diffs) {
+      const el = session.elements.find(e => e.id === diff.elementId);
+      if (el && el.lockedBy && el.lockedBy !== userId) {
+        return false;
+      }
+    }
   }
-
   return true;
 }
 
@@ -138,16 +192,23 @@ function applyAction(session, action) {
       el.y = diff.to.y;
     }
   } else if (action.type === 'create') {
-    // Minimal. If undone, the shape was removed. 
-    // Without storing shape details in 'create' diffs, we can't fully re-add it.
-    // For quick demo, we skip a thorough re-hydration. 
+    // minimal re-create not fully stored
   } else if (action.type === 'delete') {
-    // Re-DELETE the elements if redoing a delete
+    // Re-DELETE
     for (const d of action.diffs) {
       const idx = session.elements.findIndex(e => e.id === d.id);
       if (idx >= 0) {
         session.elements.splice(idx, 1);
       }
+    }
+  } else if (action.type === 'resize') {
+    for (const diff of action.diffs) {
+      const el = session.elements.find(e => e.id === diff.elementId);
+      if (!el) continue;
+      el.x = diff.to.x;
+      el.y = diff.to.y;
+      el.w = diff.to.w;
+      el.h = diff.to.h;
     }
   }
 }
@@ -161,7 +222,6 @@ function revertAction(session, action) {
       el.y = diff.from.y;
     }
   } else if (action.type === 'create') {
-    // removing the newly created element
     for (const diff of action.diffs) {
       const idx = session.elements.findIndex(e => e.id === diff.elementId);
       if (idx >= 0) {
@@ -169,9 +229,8 @@ function revertAction(session, action) {
       }
     }
   } else if (action.type === 'delete') {
-    // Undoing a delete => re-add them
+    // Undo a delete => re-add them
     for (const d of action.diffs) {
-      // If they don't exist, re-insert
       const exists = session.elements.find(e => e.id === d.id);
       if (!exists) {
         session.elements.push({
@@ -181,9 +240,18 @@ function revertAction(session, action) {
           y: d.y,
           w: d.w,
           h: d.h,
-          lockedBy: null, // Usually re-adding unlocked or store d.lockedBy if you want
+          lockedBy: null,
         });
       }
+    }
+  } else if (action.type === 'resize') {
+    for (const diff of action.diffs) {
+      const el = session.elements.find(e => e.id === diff.elementId);
+      if (!el) continue;
+      el.x = diff.from.x;
+      el.y = diff.from.y;
+      el.w = diff.from.w;
+      el.h = diff.from.h;
     }
   }
 }

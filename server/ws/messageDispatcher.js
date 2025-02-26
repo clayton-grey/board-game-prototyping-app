@@ -10,6 +10,7 @@ import {
   handleElementDeselect,
   handleElementCreate,
   handleElementDelete,
+  handleElementResize, // <-- NEW
 } from './handlers/elementHandlers.js';
 import { handleMakeEditor, handleRemoveEditor, handleKickUser } from './handlers/permissionHandlers.js';
 import { handleProjectNameChange } from './handlers/projectHandlers.js';
@@ -51,6 +52,9 @@ export function handleIncomingMessage(session, data, ws) {
       break;
     case MESSAGE_TYPES.ELEMENT_DELETE:
       handleElementDelete(session, data, ws);
+      break;
+    case MESSAGE_TYPES.ELEMENT_RESIZE: // <-- NEW
+      handleElementResize(session, data, ws);
       break;
 
     // Permissions

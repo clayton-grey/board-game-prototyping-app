@@ -14,6 +14,8 @@ export const MESSAGE_TYPES = {
   ELEMENT_CREATE: 'element-create',
   ELEMENT_DELETE: 'element-delete',
 
+  ELEMENT_RESIZE: 'element-resize',
+
   PROJECT_NAME_CHANGE: 'project-name-change',
   SESSION_USERS: 'session-users',
   UPGRADE_USER_ID: 'upgrade-user-id',

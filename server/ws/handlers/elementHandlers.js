@@ -1,10 +1,12 @@
 // ./server/ws/handlers/elementHandlers.js
 import { broadcastElementState } from '../collabUtils.js';
+import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 
 /**
  * handleElementGrab, handleElementMove, handleElementRelease, handleElementDeselect
- * (unchanged from previous patch)
+ * (Unchanged from previous except for references to resizing, see below)
  */
+
 export function handleElementGrab(session, data, ws) {
   if (!session) return;
   const { userId, elementId } = data;
@@ -54,7 +56,7 @@ export function handleElementRelease(session, data, ws) {
 
   if (el.lockedBy === userId) {
     finalizePendingMove(session, elementId, userId);
-    // Notice: do not unlock
+    // do not unlock automatically
     broadcastElementState(session);
   }
 }
@@ -69,6 +71,7 @@ export function handleElementDeselect(session, data, ws) {
     if (!el) return;
     if (el.lockedBy === userId) {
       finalizePendingMove(session, elementId, userId);
+      finalizePendingResize(session, elementId, userId);
       el.lockedBy = null;
     }
   });
@@ -76,11 +79,6 @@ export function handleElementDeselect(session, data, ws) {
   broadcastElementState(session);
 }
 
-/**
- * handleElementCreate:
- *   - assign next ID, lockedBy = user
- *   - push "create" action to undoStack
- */
 export function handleElementCreate(session, data, ws) {
   if (!session) return;
   const { userId, shape, x, y, w, h } = data;
@@ -119,10 +117,6 @@ export function handleElementCreate(session, data, ws) {
   broadcastElementState(session);
 }
 
-/**
- * NEW: handleElementDelete
- * data: { userId, elementIds: number[] }
- */
 export function handleElementDelete(session, data, ws) {
   if (!session) return;
   const { userId, elementIds } = data;
@@ -145,16 +139,13 @@ export function handleElementDelete(session, data, ws) {
   }
 
   if (toDelete.length === 0) {
-    // nothing removed => just broadcast or skip
     broadcastElementState(session);
     return;
   }
 
   // Clear redo stack
   session.redoStack = [];
-
   // Add an undo stack action
-  // We store type=delete and an array of the full shape data in diffs
   const action = {
     type: 'delete',
     diffs: toDelete.map(el => ({
@@ -176,6 +167,54 @@ export function handleElementDelete(session, data, ws) {
   broadcastElementState(session);
 }
 
+/* ------------------------------------------------------------------
+   NEW: Resizing
+   data: { userId, elementId, x, y, w, h }
+   - We treat each call as an incremental update to a shape's size.
+   - Similar to "move", we track pendingResizes to handle undo/redo.
+------------------------------------------------------------------ */
+export function handleElementResize(session, data, ws) {
+  if (!session) return;
+  const { userId, elementId, x, y, w, h } = data;
+
+  const el = session.elements.find(e => e.id === elementId);
+  if (!el) return;
+
+  // Lock check
+  if (el.lockedBy && el.lockedBy !== userId) {
+    return; 
+  }
+  // If not locked, automatically lock to me (similar to handleElementGrab)
+  if (!el.lockedBy) {
+    el.lockedBy = userId;
+  }
+
+  // If we do not have a pending record, store old x/y/w/h
+  if (!session.pendingResizes) {
+    session.pendingResizes = new Map();
+  }
+  if (!session.pendingResizes.has(elementId)) {
+    session.pendingResizes.set(elementId, {
+      userId,
+      oldX: el.x,
+      oldY: el.y,
+      oldW: el.w,
+      oldH: el.h,
+    });
+  }
+
+  // Now update the shape
+  el.x = x;
+  el.y = y;
+  el.w = w;
+  el.h = h;
+
+  broadcastElementState(session);
+}
+
+/* ------------------------------------------------------------------
+   INTERNAL UTILS
+------------------------------------------------------------------ */
 function finalizePendingMove(session, elementId, userId) {
   const pending = session.pendingMoves.get(elementId);
   if (!pending || pending.userId !== userId) {
@@ -203,6 +242,47 @@ function finalizePendingMove(session, elementId, userId) {
         elementId,
         from: { x: oldX, y: oldY },
         to: { x: newX, y: newY },
+      },
+    ],
+  };
+  session.undoStack.push(action);
+  if (session.undoStack.length > 50) {
+    session.undoStack.shift();
+  }
+}
+
+function finalizePendingResize(session, elementId, userId) {
+  if (!session.pendingResizes) {
+    session.pendingResizes = new Map();
+  }
+  const pending = session.pendingResizes.get(elementId);
+  if (!pending || pending.userId !== userId) {
+    return;
+  }
+
+  const el = session.elements.find(e => e.id === elementId);
+  session.pendingResizes.delete(elementId);
+  if (!el) return;
+
+  const { oldX, oldY, oldW, oldH } = pending;
+  const newX = el.x;
+  const newY = el.y;
+  const newW = el.w;
+  const newH = el.h;
+
+  if (oldX === newX && oldY === newY && oldW === newW && oldH === newH) {
+    return; // no actual resize
+  }
+
+  // Clear redo stack
+  session.redoStack = [];
+  const action = {
+    type: 'resize',
+    diffs: [
+      {
+        elementId,
+        from: { x: oldX, y: oldY, w: oldW, h: oldH },
+        to: { x: newX, y: newY, w: newW, h: newH },
       },
     ],
   };
