@@ -43,6 +43,13 @@ let activeHandle = null; // 'left','right','top','bottom','top-left','top-right'
 let boundingBoxAtDragStart = { x: 0, y: 0, w: 0, h: 0 };
 let shapesSnapshot = [];
 
+/**
+ * Helper to clamp the scale to [minScale, maxScale].
+ */
+function clampScale(value) {
+  return Math.max(minScale, Math.min(value, maxScale));
+}
+
 /** 1) INIT: pointer events, etc. */
 export function initCanvas(initialUserId) {
   localUserId = initialUserId;
@@ -71,7 +78,7 @@ export function initCanvas(initialUserId) {
   setupKeyListeners();
 
   // Zoom UI
-  document.getElementById("zoom-in").addEventListener("click", () => zoomAroundCenter(buttonZoomStep));
+  document.getElementById("zoom-in").addEventListener("click", () => zoomAroundCenter(+buttonZoomStep));
   document.getElementById("zoom-out").addEventListener("click", () => zoomAroundCenter(-buttonZoomStep));
   document.getElementById("frame-all").addEventListener("click", frameAllElements);
 
@@ -588,8 +595,6 @@ function deselectAll() {
 
 /* ------------------------------------------------------------------
    HELPER: "Can the local user transform the current selection?"
-   If ANY selected element is locked by another user,
-   we return false => no transform UI (bounding box) is drawn.
 ------------------------------------------------------------------ */
 function canTransformSelection() {
   for (const id of selectedElementIds) {
@@ -624,7 +629,6 @@ function getSelectionBoundingBox() {
 }
 
 function drawSelectionBoundingBox(ctx) {
-  // If user cannot transform, skip drawing bounding box
   if (!canTransformSelection()) {
     return;
   }
@@ -633,12 +637,11 @@ function drawSelectionBoundingBox(ctx) {
   if (!bb) return;
 
   ctx.save();
-  // Make it a solid blue line
   ctx.strokeStyle = "rgba(0,0,255,0.8)";
   ctx.lineWidth = 2 / scale;
   ctx.strokeRect(bb.x, bb.y, bb.w, bb.h);
 
-  // Corner circles
+  // corner circles
   const radius = 6 / scale;
   const cornerStroke = 4 / scale;
   const corners = [
@@ -660,7 +663,6 @@ function drawSelectionBoundingBox(ctx) {
 }
 
 function hitTestResizeHandles(e) {
-  // Only if user can transform
   if (!canTransformSelection()) return null;
 
   const rect = e.currentTarget.getBoundingClientRect();
@@ -673,7 +675,7 @@ function hitTestResizeHandles(e) {
   const bb = getSelectionBoundingBox();
   if (!bb) return null;
 
-  // Corners
+  // corners
   const cornerRadius = 8 / scale;
   const corners = [
     { x: bb.x, y: bb.y, name: "top-left" },
@@ -689,7 +691,7 @@ function hitTestResizeHandles(e) {
     }
   }
 
-  // Edges => small tolerance
+  // edges => small tolerance
   const edgeTol = 6 / scale;
   // top
   if (
@@ -797,7 +799,6 @@ function updateResizing(e) {
     const originalRatio = boundingBoxAtDragStart.w / boundingBoxAtDragStart.h;
     const newRatio = bb.w / bb.h;
     if (newRatio > originalRatio) {
-      // expand height or shrink width
       const wFactor = bb.w / boundingBoxAtDragStart.w;
       bb.h = boundingBoxAtDragStart.h * wFactor;
 
@@ -808,7 +809,6 @@ function updateResizing(e) {
         bb.x = boundingBoxAtDragStart.x + boundingBoxAtDragStart.w - bb.w;
       }
     } else {
-      // expand width or shrink height
       const hFactor = bb.h / boundingBoxAtDragStart.h;
       bb.w = boundingBoxAtDragStart.w * hFactor;
 
@@ -821,7 +821,6 @@ function updateResizing(e) {
     }
   }
 
-  // update each shape
   const scaleX = bb.w / boundingBoxAtDragStart.w;
   const scaleY = bb.h / boundingBoxAtDragStart.h;
 
@@ -921,26 +920,16 @@ function render() {
       ctx.fillText("Text", el.x + 5, el.y + el.h / 2 + 5);
     }
 
-    // LOCKED OUTLINE => FIXED 2px AT ANY ZOOM
+    // If locked by someone else, outline
     if (el.lockedBy && el.lockedBy !== localUserId) {
       const info = userInfoMap.get(el.lockedBy);
       const outlineColor = info?.color || "#FFA500";
-
-      // We'll make the line width fixed in screen pixels, so:
-      ctx.lineWidth = 2 / scale;  // ensures 2px in screen space
+      ctx.lineWidth = 2 / scale;
       ctx.strokeStyle = outlineColor;
 
       if (el.shape === "ellipse") {
         ctx.beginPath();
-        ctx.ellipse(
-          el.x + el.w / 2,
-          el.y + el.h / 2,
-          el.w / 2,
-          el.h / 2,
-          0,
-          0,
-          Math.PI * 2
-        );
+        ctx.ellipse(el.x + el.w / 2, el.y + el.h / 2, el.w / 2, el.h / 2, 0, 0, Math.PI * 2);
         ctx.stroke();
       } else {
         ctx.strokeRect(el.x, el.y, el.w, el.h);
@@ -949,7 +938,7 @@ function render() {
     ctx.restore();
   }
 
-  // Draw bounding box for selection (with corners) if allowed
+  // bounding box for selection
   if (selectedElementIds.length > 0 && currentTool === "select") {
     drawSelectionBoundingBox(ctx);
   }
@@ -1156,7 +1145,7 @@ function zoomAroundCenter(step) {
 
 function zoomAroundPoint(newScale, anchorX, anchorY) {
   const oldScale = scale;
-  scale = Math.max(minScale, Math.min(maxScale, newScale));
+  scale = clampScale(newScale);
   if (scale === oldScale) return;
 
   const wx = camX + anchorX / oldScale;
@@ -1188,7 +1177,7 @@ function frameAllElements() {
   const margin = 50;
   const scaleX = (cw - margin * 2) / w;
   const scaleY = (ch - margin * 2) / h;
-  const newScale = Math.max(minScale, Math.min(maxScale, Math.min(scaleX, scaleY)));
+  const newScale = clampScale(Math.min(scaleX, scaleY));
   scale = newScale;
 
   const cx = minX + w / 2;
@@ -1204,27 +1193,6 @@ function updateZoomUI() {
   if (el) {
     el.textContent = `${Math.round(scale * 100)}%`;
   }
-}
-
-/* ------------------------------------------------------------------
-   CURSOR FOR RESIZE HANDLE
------------------------------------------------------------------- */
-function getCursorForHandle(handle) {
-  // corners
-  if (handle === "top-left" || handle === "bottom-right") {
-    return "nwse-resize";
-  }
-  if (handle === "top-right" || handle === "bottom-left") {
-    return "nesw-resize";
-  }
-  // edges
-  if (handle === "left" || handle === "right") {
-    return "ew-resize";
-  }
-  if (handle === "top" || handle === "bottom") {
-    return "ns-resize";
-  }
-  return "default";
 }
 
 function sendCursorUpdate(uId, wx, wy) {
