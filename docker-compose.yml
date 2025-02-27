@@ -1,4 +1,4 @@
-version: "3.8"
+# docker-compose.yml
 
 services:
   app:
@@ -20,30 +20,29 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgrespassword
-      POSTGRES_DB: board_game_prototyping
+      POSTGRES_DB: postgres
     ports:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+      - ./db-init-scripts:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       retries: 5
       timeout: 5s
 
-  db-init:
-    image: postgres:latest
+  test:
+    build: .
+    env_file:
+      - .env.test
     depends_on:
       db:
         condition: service_healthy
     volumes:
-      - ./db-init-scripts:/docker-entrypoint-initdb.d
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
-      POSTGRES_DB: board_game_prototyping
-    entrypoint: >
-      sh -c "PGPASSWORD=postgrespassword psql -h db -U postgres -d board_game_prototyping -f /docker-entrypoint-initdb.d/init.sql"
+      - .:/app
+    working_dir: /app
+    command: ["npm", "test"]
 
 volumes:
   pg_data: {}

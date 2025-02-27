@@ -2,11 +2,10 @@
   "name": "board-game-prototyping-app",
   "version": "0.0.1",
   "type": "module",
-  "description": "An interactive board game prototyping environment",
-  "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "nodemon server/index.js"
+    "dev": "nodemon server/index.js",
+    "test": "jest"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -18,7 +17,11 @@
     "ws": "^8.11.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "@babel/core": "^7.26.9",
+    "@babel/preset-env": "^7.26.9",
+    "jest": "^29.0.0",
+    "nodemon": "^3.0.1",
+    "supertest": "^6.0.0"
   },
   "engines": {
     "node": ">=16"

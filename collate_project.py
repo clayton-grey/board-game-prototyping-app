@@ -1,7 +1,7 @@
 import os
 
 # File extensions to include
-INCLUDE_EXTENSIONS = [".js", ".json", ".html", ".css", ".md", ".sql", ".yml", ".yaml", ".env"]
+INCLUDE_EXTENSIONS = [".js", ".json", ".html", ".css", ".md", ".sql", ".yml", ".yaml", ".env", ".test", ".cjs"]
 
 # Output file
 OUTPUT_FILE = "board-game-prototyping-app.txt"
