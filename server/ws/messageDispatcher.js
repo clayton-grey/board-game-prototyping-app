@@ -1,5 +1,4 @@
 // ./server/ws/messageDispatcher.js
-
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 import { handleJoinSession, handleUpgradeUserId, handleDowngradeUserId } from './handlers/sessionHandlers.js';
 import { handleCursorUpdate } from './handlers/cursorHandlers.js';
@@ -10,7 +9,8 @@ import {
   handleElementDeselect,
   handleElementCreate,
   handleElementDelete,
-  handleElementResize, // <-- NEW
+  handleElementResize,
+  handleElementResizeEnd
 } from './handlers/elementHandlers.js';
 import { handleMakeEditor, handleRemoveEditor, handleKickUser } from './handlers/permissionHandlers.js';
 import { handleProjectNameChange } from './handlers/projectHandlers.js';
@@ -53,8 +53,11 @@ export function handleIncomingMessage(session, data, ws) {
     case MESSAGE_TYPES.ELEMENT_DELETE:
       handleElementDelete(session, data, ws);
       break;
-    case MESSAGE_TYPES.ELEMENT_RESIZE: // <-- NEW
+    case MESSAGE_TYPES.ELEMENT_RESIZE:
       handleElementResize(session, data, ws);
+      break;
+    case MESSAGE_TYPES.ELEMENT_RESIZE_END:
+      handleElementResizeEnd(session, data, ws);
       break;
 
     // Permissions

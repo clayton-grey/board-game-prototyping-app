@@ -43,14 +43,31 @@ let activeHandle = null; // 'left','right','top','bottom','top-left','top-right'
 let boundingBoxAtDragStart = { x: 0, y: 0, w: 0, h: 0 };
 let shapesSnapshot = [];
 
-/**
- * Helper to clamp the scale to [minScale, maxScale].
- */
+/** Helper to clamp the scale to [minScale, maxScale]. */
 function clampScale(value) {
-  return Math.max(minScale, Math.min(value, maxScale));
+  return Math.max(minScale, Math.min(maxScale, value));
 }
 
-/** 1) INIT: pointer events, etc. */
+/** Restore transform cursor styles. */
+function getCursorForHandle(handle) {
+  // corners
+  if (handle === "top-left" || handle === "bottom-right") {
+    return "nwse-resize";
+  }
+  if (handle === "top-right" || handle === "bottom-left") {
+    return "nesw-resize";
+  }
+  // edges
+  if (handle === "top" || handle === "bottom") {
+    return "ns-resize";
+  }
+  if (handle === "left" || handle === "right") {
+    return "ew-resize";
+  }
+  return "default";
+}
+
+/** Initialize canvas pointer events, etc. */
 export function initCanvas(initialUserId) {
   localUserId = initialUserId;
 
@@ -88,7 +105,7 @@ export function initCanvas(initialUserId) {
       if (creationState && creationState.active) {
         creationState.active = false;
       } else if (isResizing) {
-        endResizing();
+        endResizing(true); // force finalize
       } else {
         deselectAll();
       }
@@ -332,12 +349,9 @@ function onPointerMove(e) {
   if (!isResizing && currentTool === "select" && selectedElementIds.length > 0) {
     if (canTransformSelection()) {
       const hoverHandle = hitTestResizeHandles(e);
-      if (hoverHandle) {
-        // Show cursor for that handle
-        e.currentTarget.style.cursor = getCursorForHandle(hoverHandle);
-      } else {
-        e.currentTarget.style.cursor = isDragging ? "grabbing" : "default";
-      }
+      e.currentTarget.style.cursor = hoverHandle
+        ? getCursorForHandle(hoverHandle)
+        : (isDragging ? "grabbing" : "default");
     } else {
       e.currentTarget.style.cursor = isDragging ? "grabbing" : "default";
     }
@@ -358,7 +372,7 @@ function onPointerUp(e) {
 
   // End resizing
   if (isResizing && e.button === 0) {
-    endResizing();
+    endResizing(false);
     return;
   }
 
@@ -863,12 +877,31 @@ function updateResizing(e) {
   }
 }
 
-function endResizing() {
+/**
+ * Called when the user finishes resizing by releasing the mouse or pressing ESC.
+ * If 'forceFinalize' is true, finalize the transform even if user didn't do pointerUp.
+ */
+function endResizing(forceFinalize) {
   isResizing = false;
   activeHandle = null;
   shapesSnapshot = [];
+
+  if (selectedElementIds.length > 0) {
+    // In all cases, finalize a single group transform with these shapes
+    sendElementResizeEnd(selectedElementIds);
+  }
 }
 
+/** Tells the server to finalize the pending multi-element transform. */
+function sendElementResizeEnd(ids) {
+  window.__sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_RESIZE_END,
+    userId: localUserId,
+    elementIds: ids,
+  });
+}
+
+/** Sends incremental update for each shape. */
 function sendResizeElement(elementId, x, y, w, h) {
   window.__sendWSMessage({
     type: MESSAGE_TYPES.ELEMENT_RESIZE,
@@ -1177,8 +1210,7 @@ function frameAllElements() {
   const margin = 50;
   const scaleX = (cw - margin * 2) / w;
   const scaleY = (ch - margin * 2) / h;
-  const newScale = clampScale(Math.min(scaleX, scaleY));
-  scale = newScale;
+  scale = clampScale(Math.min(scaleX, scaleY));
 
   const cx = minX + w / 2;
   const cy = minY + h / 2;
