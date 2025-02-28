@@ -54,6 +54,8 @@ export class ProjectService {
    * Delete a project by ID. Returns the deleted row or null if not found.
    */
   static async deleteProject(projectId) {
+    await pool.query('DELETE FROM project_versions WHERE project_id = $1', [projectId]);
+
     const result = await pool.query(
       "DELETE FROM projects WHERE id = $1 RETURNING *",
       [projectId]

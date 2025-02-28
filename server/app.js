@@ -5,6 +5,7 @@ import path from 'path';
 import authRoutes from './routes/auth.js';
 import projectRoutes from './routes/projects.js';
 import config from './config.js';
+import adminRoutes from './routes/admin.js';
 
 /**
  * Instead of import.meta.url + fileURLToPath, we'll use process.cwd() or
@@ -32,6 +33,7 @@ app.use('/shared', express.static(path.join(ROOT_DIR, 'shared')));
 // API Routes
 app.use('/auth', authRoutes);
 app.use('/projects', projectRoutes);
+app.use('/admin', adminRoutes);
 
 // Serve index.html for root (assuming /client/index.html exists)
 app.get('/', (req, res) => {
