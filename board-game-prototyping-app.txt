@@ -7174,6 +7174,224 @@ describe('Dummy test suite', () => {
 });
 
 
+===== ./tests/unit/permissionHandlers.test.js =====
+
+// tests/unit/permissionHandlers.test.js
+
+import { handleMakeEditor, handleRemoveEditor, handleKickUser } from '../../server/ws/handlers/permissionHandlers.js';
+import { SessionService } from '../../server/services/SessionService.js';
+import { broadcastUserList, broadcastElementState, broadcastToSession } from '../../server/ws/collabUtils.js';
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+import { WebSocket } from 'ws';
+
+jest.mock('../../server/services/SessionService.js');
+jest.mock('../../server/ws/collabUtils.js', () => ({
+  broadcastUserList: jest.fn(),
+  broadcastElementState: jest.fn(),
+  broadcastToSession: jest.fn()
+}));
+
+describe('permissionHandlers', () => {
+  let mockSession, mockWs;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockWs = { send: jest.fn(), readyState: WebSocket.OPEN };
+
+    mockSession = {
+      code: 'test-permissions',
+      users: new Map(),
+      elements: []
+    };
+  });
+
+  test('handleMakeEditor => only works if canManage returns true and user is found', () => {
+    // Suppose user1 is the one sending the request, user2 is the target
+    const user1 = { userId: 'user1', isOwner: true };
+    const user2 = { userId: 'user2', isEditor: false };
+    mockSession.users.set('user1', user1);
+    mockSession.users.set('user2', user2);
+
+    SessionService.canManage.mockReturnValue(true);
+
+    handleMakeEditor(mockSession, { userId: 'user1', targetUserId: 'user2' }, mockWs);
+    expect(SessionService.setEditorRole).toHaveBeenCalledWith(mockSession, 'user2', true);
+    expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
+  });
+
+  test('handleMakeEditor => does nothing if SessionService.canManage = false', () => {
+    SessionService.canManage.mockReturnValue(false);
+    handleMakeEditor(mockSession, { userId: 'x', targetUserId: 'y' }, mockWs);
+    expect(SessionService.setEditorRole).not.toHaveBeenCalled();
+    expect(broadcastUserList).not.toHaveBeenCalled();
+  });
+
+  test('handleRemoveEditor => unsets editor role if canManage = true', () => {
+    const adminUser = { userId: 'admin', isAdmin: true };
+    const normalUser = { userId: 'u100', isEditor: true };
+    mockSession.users.set('admin', adminUser);
+    mockSession.users.set('u100', normalUser);
+
+    SessionService.canManage.mockReturnValue(true);
+
+    handleRemoveEditor(mockSession, { userId: 'admin', targetUserId: 'u100' }, mockWs);
+    expect(SessionService.setEditorRole).toHaveBeenCalledWith(mockSession, 'u100', false);
+    expect(broadcastUserList).toHaveBeenCalled();
+  });
+
+  test('handleKickUser => calls SessionService.kickUser if can manage, broadcasts', () => {
+    const userA = { userId: 'userA', isOwner: true };
+    const userB = { userId: 'userB' };
+    mockSession.users.set('userA', userA);
+    mockSession.users.set('userB', userB);
+
+    SessionService.kickUser.mockReturnValue({
+      userId: 'userB',
+      socket: { send: jest.fn(), readyState: WebSocket.OPEN }
+    });
+
+    handleKickUser(mockSession, { userId: 'userA', targetUserId: 'userB' }, mockWs);
+
+    expect(SessionService.kickUser).toHaveBeenCalledWith(mockSession, 'userA', 'userB');
+    expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
+    expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
+
+    // Also expect kicked user's socket to receive a "KICKED" message
+    const kickedUser = SessionService.kickUser.mock.results[0].value;
+    expect(kickedUser.socket.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: MESSAGE_TYPES.KICKED }),
+      expect.any(Function)
+    );
+  });
+
+  test('handleKickUser => no action if SessionService.kickUser returns null', () => {
+    SessionService.kickUser.mockReturnValue(null);
+    handleKickUser(mockSession, { userId: 'admin', targetUserId: 'somebody' }, mockWs);
+    expect(broadcastUserList).not.toHaveBeenCalled();
+    expect(broadcastElementState).not.toHaveBeenCalled();
+    expect(broadcastToSession).not.toHaveBeenCalled();
+  });
+});
+
+
+===== ./tests/unit/collabUtils.test.js =====
+
+// tests/unit/collabUtils.test.js
+import { broadcastToSession, broadcastElementState, broadcastUserList } from '../../server/ws/collabUtils.js';
+import { WebSocket } from 'ws';
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+
+// We’ll mock out the actual WebSocket send method
+jest.mock('ws', () => {
+  const MockWebSocket = jest.fn().mockImplementation(() => ({
+    readyState: 1,
+    send: jest.fn((msg, cb) => {
+      if (cb) cb(); // mimic behavior
+    })
+  }));
+
+  // Provide the “OPEN” constant
+  MockWebSocket.OPEN = 1;
+
+  return { WebSocket: MockWebSocket };
+});
+
+describe('collabUtils', () => {
+  let mockSession;
+
+  beforeEach(() => {
+    mockSession = {
+      code: 'test-session',
+      projectName: 'TestProject',
+      elements: [
+        { id: 1, x: 10, y: 10, w: 50, h: 50, lockedBy: null },
+      ],
+      users: new Map(),
+    };
+    // Create a few fake user objects with mock sockets
+    const user1Socket = new WebSocket();
+    const user2Socket = new WebSocket();
+    mockSession.users.set('user1', {
+      userId: 'user1',
+      socket: user1Socket
+    });
+    mockSession.users.set('user2', {
+      userId: 'user2',
+      socket: user2Socket
+    });
+  });
+
+  test('broadcastToSession sends stringified data to all connected user sockets', () => {
+    broadcastToSession(mockSession, { type: 'TEST_MESSAGE', hello: 'world' });
+
+    // For each user, confirm `socket.send` was called
+    for (const user of mockSession.users.values()) {
+      expect(user.socket.send).toHaveBeenCalledTimes(1);
+      const sentMsg = user.socket.send.mock.calls[0][0];
+      expect(JSON.parse(sentMsg)).toMatchObject({
+        type: 'TEST_MESSAGE',
+        hello: 'world',
+      });
+    }
+  });
+
+  test('broadcastElementState sends ELEMENT_STATE with elements & projectName', () => {
+    broadcastElementState(mockSession);
+
+    for (const user of mockSession.users.values()) {
+      expect(user.socket.send).toHaveBeenCalledTimes(1);
+      const msg = JSON.parse(user.socket.send.mock.calls[0][0]);
+      expect(msg.type).toBe(MESSAGE_TYPES.ELEMENT_STATE);
+      expect(msg.elements).toEqual(mockSession.elements);
+      expect(msg.projectName).toBe(mockSession.projectName);
+    }
+  });
+
+  test('broadcastUserList sends SESSION_USERS with sorted user array & ownerUserId', () => {
+    // Let’s mark user1 as owner
+    mockSession.users.get('user1').isOwner = true;
+    // Mark user2 as admin, just as an example
+    mockSession.users.get('user2').isAdmin = true;
+
+    broadcastUserList(mockSession);
+
+    for (const user of mockSession.users.values()) {
+      expect(user.socket.send).toHaveBeenCalledTimes(1);
+      const msg = JSON.parse(user.socket.send.mock.calls[0][0]);
+      expect(msg.type).toBe(MESSAGE_TYPES.SESSION_USERS);
+      expect(Array.isArray(msg.users)).toBe(true);
+      // We expect two
+      expect(msg.users.length).toBe(2);
+
+      // user1 is the owner
+      const foundOwner = msg.users.find(u => u.userId === 'user1');
+      expect(foundOwner.isOwner).toBe(true);
+      expect(msg.ownerUserId).toBe('user1');
+
+      // user2 is admin
+      const foundAdmin = msg.users.find(u => u.userId === 'user2');
+      expect(foundAdmin.isAdmin).toBe(true);
+    }
+  });
+
+  test('broadcastToSession does nothing if user socket is missing or not open', () => {
+    // Remove socket for user2
+    mockSession.users.get('user2').socket = null;
+
+    // Mark user1’s socket as closed
+    mockSession.users.get('user1').socket.readyState = 3; // WebSocket.CLOSED is often 3
+
+    broadcastToSession(mockSession, { type: 'ANY', data: 1 });
+
+    // No calls for a closed or null socket
+    for (const user of mockSession.users.values()) {
+      if (!user.socket) continue;
+      expect(user.socket.send).not.toHaveBeenCalled();
+    }
+  });
+});
+
+
 ===== ./tests/unit/UserService.test.js =====
 
 // tests/unit/UserService.test.js
@@ -7391,6 +7609,221 @@ describe('SessionService', () => {
 });
 
 
+===== ./tests/unit/chatHandlers.test.js =====
+
+// tests/unit/chatHandlers.test.js
+
+import { handleChatMessage } from '../../server/ws/handlers/chatHandlers.js';
+import { broadcastToSession } from '../../server/ws/collabUtils.js';
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+
+jest.mock('../../server/ws/collabUtils.js', () => ({
+  broadcastToSession: jest.fn()
+}));
+
+describe('chatHandlers', () => {
+  let mockSession, mockWs;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockWs = { send: jest.fn() };
+
+    mockSession = {
+      code: 'test-chat',
+      users: new Map(),
+      chatMessages: []
+    };
+  });
+
+  test('handleChatMessage => appends message to session.chatMessages & broadcasts', () => {
+    const data = {
+      userId: 'userA',
+      text: 'Hello World'
+    };
+    handleChatMessage(mockSession, data, mockWs);
+
+    expect(mockSession.chatMessages).toHaveLength(1);
+    const msgObj = mockSession.chatMessages[0];
+    expect(msgObj.userId).toBe('userA');
+    expect(msgObj.text).toBe('Hello World');
+    expect(typeof msgObj.timestamp).toBe('number');
+
+    expect(broadcastToSession).toHaveBeenCalledWith(mockSession, {
+      type: MESSAGE_TYPES.CHAT_MESSAGE,
+      message: msgObj
+    });
+  });
+
+  test('handleChatMessage => does nothing if text or userId missing', () => {
+    handleChatMessage(mockSession, { text: '' }, mockWs);
+    expect(mockSession.chatMessages).toHaveLength(0);
+    expect(broadcastToSession).not.toHaveBeenCalled();
+
+    handleChatMessage(mockSession, { userId: 'u1' }, mockWs);
+    expect(mockSession.chatMessages).toHaveLength(0);
+    expect(broadcastToSession).not.toHaveBeenCalled();
+  });
+});
+
+
+===== ./tests/unit/undoRedoHandlers.test.js =====
+
+// tests/unit/undoRedoHandlers.test.js
+import { handleUndo, handleRedo, pushUndoAction } from '../../server/ws/handlers/undoRedoHandlers.js';
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+
+describe('undoRedoHandlers', () => {
+  let session;
+  let mockSend;
+
+  beforeEach(() => {
+    mockSend = jest.fn();
+    session = {
+      users: new Map([
+        ['userA', { userId: 'userA', socket: { send: mockSend, readyState: 1 } }]
+      ]),
+      elements: [
+        { id: 10, x: 0, y: 0, w: 50, h: 50 },
+      ],
+      undoStack: [],
+      redoStack: [],
+      pendingMoves: new Map(),
+      pendingResizes: new Map(),
+    };
+  });
+
+  test('pushUndoAction clears redoStack and appends to undoStack', () => {
+    session.redoStack = [{ some: 'action' }];
+    expect(session.redoStack.length).toBe(1);
+    pushUndoAction(session, { type: 'testAction' });
+    expect(session.undoStack.length).toBe(1);
+    expect(session.undoStack[0]).toMatchObject({ type: 'testAction' });
+    expect(session.redoStack.length).toBe(0);
+  });
+
+  test('handleUndo does nothing if undoStack is empty', () => {
+    handleUndo(session, { userId: 'userA' }, {});
+    expect(session.undoStack.length).toBe(0);
+    // No message of type UNDO_REDO_FAILED
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  test('handleUndo reverts the last action if canApplyAction is satisfied', () => {
+    // Add an element
+    session.elements.push({ id: 11, x: 50, y: 50, w: 20, h: 20, lockedBy: null });
+    session.undoStack = [
+      {
+        type: 'move',
+        diffs: [
+          {
+            elementId: 11,
+            from: { x: 50, y: 50 },
+            to: { x: 70, y: 70 },
+          }
+        ],
+      }
+    ];
+    // Our element is currently at x=70,y=70 => pretend it's moved
+    session.elements[1].x = 70;
+    session.elements[1].y = 70;
+
+    handleUndo(session, { userId: 'userA' }, {});
+
+    // We expect that the element is moved back to the 'from' position
+    expect(session.elements[1].x).toBe(50);
+    expect(session.elements[1].y).toBe(50);
+
+    // Undo stack => now empty
+    expect(session.undoStack.length).toBe(0);
+
+    // Redo stack => has the undone action
+    expect(session.redoStack.length).toBe(1);
+
+    // We also expect the "ELEMENT_STATE" broadcast
+    expect(mockSend).toHaveBeenCalled();
+    const lastCall = mockSend.mock.calls[mockSend.mock.calls.length - 1];
+    const msgParsed = JSON.parse(lastCall[0]);
+    expect(msgParsed.type).toBe(MESSAGE_TYPES.ELEMENT_STATE);
+  });
+
+  test('handleUndo sends UNDO_REDO_FAILED if locked by another user', () => {
+    // Make the shape locked by someone else
+    session.elements[0].lockedBy = 'someone_else';
+    session.undoStack = [
+      {
+        type: 'move',
+        diffs: [
+          { elementId: 10, from: { x: 0, y: 0 }, to: { x: 10, y: 10 } }
+        ]
+      }
+    ];
+
+    // Pass our shared mockSend so we can verify it was called
+    handleUndo(session, { userId: 'userA' }, { send: mockSend });
+
+    // We expect a message to userA with type=UNDO_REDO_FAILED
+    expect(mockSend).toHaveBeenCalled();
+    const [sentJSON] = mockSend.mock.calls[0];
+    const data = JSON.parse(sentJSON);
+    expect(data.type).toBe(MESSAGE_TYPES.UNDO_REDO_FAILED);
+    expect(data.reason).toMatch(/Element locked by another user/);
+  });
+
+  test('handleRedo does nothing if redoStack is empty', () => {
+    handleRedo(session, { userId: 'userA' }, {});
+    expect(session.redoStack.length).toBe(0);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  test('handleRedo re-applies the last undone action', () => {
+    // Suppose we have an undone move action in the redo stack
+    session.redoStack.push({
+      type: 'move',
+      diffs: [
+        {
+          elementId: 10,
+          from: { x: 0, y: 0 },
+          to: { x: 100, y: 100 },
+        }
+      ],
+    });
+    // The element is currently at x=0,y=0
+
+    handleRedo(session, { userId: 'userA' }, {});
+
+    // We expect the element is now at x=100,y=100
+    expect(session.elements[0].x).toBe(100);
+    expect(session.elements[0].y).toBe(100);
+
+    // Undo stack now has the re-applied action
+    expect(session.undoStack.length).toBe(1);
+    expect(session.redoStack.length).toBe(0);
+    // And we broadcast the new element state
+    expect(mockSend).toHaveBeenCalled();
+    const lastCall = mockSend.mock.calls[mockSend.mock.calls.length - 1];
+    const msgParsed = JSON.parse(lastCall[0]);
+    expect(msgParsed.type).toBe(MESSAGE_TYPES.ELEMENT_STATE);
+  });
+
+  test('handleRedo also fails if an element is locked by another user', () => {
+    session.elements[0].lockedBy = 'someone_else';
+    session.redoStack.push({
+      type: 'move',
+      diffs: [
+        { elementId: 10, from: { x: 0, y: 0 }, to: { x: 50, y: 60 } }
+      ]
+    });
+
+    // Again, provide a valid ws-like object that uses our shared mock
+    handleRedo(session, { userId: 'userA' }, { send: mockSend });
+
+    expect(mockSend).toHaveBeenCalled();
+    const data = JSON.parse(mockSend.mock.calls[0][0]);
+    expect(data.type).toBe(MESSAGE_TYPES.UNDO_REDO_FAILED);
+  });
+});
+
+
 ===== ./tests/unit/ProjectService.test.js =====
 
 // tests/unit/ProjectService.test.js
@@ -7468,6 +7901,103 @@ describe('ProjectService', () => {
 });
 
 
+===== ./tests/unit/messageDispatcher.test.js =====
+
+// tests/unit/messageDispatcher.test.js
+
+import { handleIncomingMessage } from '../../server/ws/messageDispatcher.js';
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+
+// We’ll mock each handler we dispatch to:
+import * as sessionHandlers from '../../server/ws/handlers/sessionHandlers.js';
+import * as cursorHandlers from '../../server/ws/handlers/cursorHandlers.js';
+import * as elementHandlers from '../../server/ws/handlers/elementHandlers.js';
+import * as permissionHandlers from '../../server/ws/handlers/permissionHandlers.js';
+import * as projectHandlers from '../../server/ws/handlers/projectHandlers.js';
+import * as undoRedoHandlers from '../../server/ws/handlers/undoRedoHandlers.js';
+import * as chatHandlers from '../../server/ws/handlers/chatHandlers.js';
+
+jest.mock('../../server/ws/handlers/sessionHandlers.js');
+jest.mock('../../server/ws/handlers/cursorHandlers.js');
+jest.mock('../../server/ws/handlers/elementHandlers.js');
+jest.mock('../../server/ws/handlers/permissionHandlers.js');
+jest.mock('../../server/ws/handlers/projectHandlers.js');
+jest.mock('../../server/ws/handlers/undoRedoHandlers.js');
+jest.mock('../../server/ws/handlers/chatHandlers.js');
+
+describe('messageDispatcher.js - handleIncomingMessage', () => {
+  let mockSession, mockWs;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSession = { code: 'fake-session' };
+    mockWs = { readyState: 1, send: jest.fn() };
+  });
+
+  test('handles JOIN_SESSION => handleJoinSession', () => {
+    const data = { type: MESSAGE_TYPES.JOIN_SESSION };
+    handleIncomingMessage(mockSession, data, mockWs);
+    expect(sessionHandlers.handleJoinSession).toHaveBeenCalledWith(mockSession, data, mockWs);
+  });
+
+  test('handles UPGRADE_USER_ID => handleUpgradeUserId', () => {
+    const data = { type: MESSAGE_TYPES.UPGRADE_USER_ID };
+    handleIncomingMessage(mockSession, data, mockWs);
+    expect(sessionHandlers.handleUpgradeUserId).toHaveBeenCalledWith(mockSession, data, mockWs);
+  });
+
+  test('handles CURSOR_UPDATE => handleCursorUpdate', () => {
+    const data = { type: MESSAGE_TYPES.CURSOR_UPDATE };
+    handleIncomingMessage(mockSession, data, mockWs);
+    expect(cursorHandlers.handleCursorUpdate).toHaveBeenCalledWith(mockSession, data, mockWs);
+  });
+
+  test('handles ELEMENT_MOVE => handleElementMove', () => {
+    const data = { type: MESSAGE_TYPES.ELEMENT_MOVE };
+    handleIncomingMessage(mockSession, data, mockWs);
+    expect(elementHandlers.handleElementMove).toHaveBeenCalledWith(mockSession, data, mockWs);
+  });
+
+  test('handles MAKE_EDITOR => handleMakeEditor', () => {
+    const data = { type: MESSAGE_TYPES.MAKE_EDITOR };
+    handleIncomingMessage(mockSession, data, mockWs);
+    expect(permissionHandlers.handleMakeEditor).toHaveBeenCalledWith(mockSession, data, mockWs);
+  });
+
+  test('handles PROJECT_NAME_CHANGE => handleProjectNameChange', () => {
+    const data = { type: MESSAGE_TYPES.PROJECT_NAME_CHANGE };
+    handleIncomingMessage(mockSession, data, mockWs);
+    expect(projectHandlers.handleProjectNameChange).toHaveBeenCalledWith(mockSession, data, mockWs);
+  });
+
+  test('handles UNDO => handleUndo', () => {
+    const data = { type: MESSAGE_TYPES.UNDO };
+    handleIncomingMessage(mockSession, data, mockWs);
+    expect(undoRedoHandlers.handleUndo).toHaveBeenCalledWith(mockSession, data, mockWs);
+  });
+
+  test('handles REDO => handleRedo', () => {
+    const data = { type: MESSAGE_TYPES.REDO };
+    handleIncomingMessage(mockSession, data, mockWs);
+    expect(undoRedoHandlers.handleRedo).toHaveBeenCalledWith(mockSession, data, mockWs);
+  });
+
+  test('handles CHAT_MESSAGE => handleChatMessage', () => {
+    const data = { type: MESSAGE_TYPES.CHAT_MESSAGE };
+    handleIncomingMessage(mockSession, data, mockWs);
+    expect(chatHandlers.handleChatMessage).toHaveBeenCalledWith(mockSession, data, mockWs);
+  });
+
+  test('unknown message type => does nothing', () => {
+    const data = { type: 'some-unsupported-type' };
+    handleIncomingMessage(mockSession, data, mockWs);
+    // No calls
+    expect(sessionHandlers.handleJoinSession).not.toHaveBeenCalled();
+    expect(cursorHandlers.handleCursorUpdate).not.toHaveBeenCalled();
+  });
+});
+
+
 ===== ./tests/unit/AuthService.test.js =====
 
 // tests/unit/AuthService.test.js
@@ -7539,6 +8069,103 @@ describe('AuthService', () => {
     // A token that expires immediately
     const token = jwt.sign({ exp: Math.floor(Date.now() / 1000) - 1 }, 'test_secret_key');
     expect(() => AuthService.verifyToken(token)).toThrow(/jwt expired/i);
+  });
+});
+
+
+===== ./tests/unit/collaboration.test.js =====
+
+// tests/unit/collaboration.test.js
+
+import { handleWebSocketConnection } from '../../server/ws/collaboration.js';
+import { SessionService } from '../../server/services/SessionService.js';
+import { broadcastUserList, broadcastElementState } from '../../server/ws/collabUtils.js';
+import { WebSocketServer } from 'ws';
+
+// We mock these modules so we can inspect calls
+jest.mock('../../server/services/SessionService.js');
+jest.mock('../../server/ws/collabUtils.js', () => ({
+  broadcastUserList: jest.fn(),
+  broadcastElementState: jest.fn()
+}));
+
+describe('collaboration.js - handleWebSocketConnection', () => {
+  let mockWss;
+  let mockWs;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    // A mock WebSocket server
+    mockWss = new WebSocketServer({ noServer: true });
+    
+    // A mock WebSocket instance
+    mockWs = {
+      on: jest.fn(),
+      send: jest.fn(),
+      sessionCode: undefined,
+      userId: undefined
+    };
+  });
+
+  test('attaches message and close handlers to the incoming ws', () => {
+    handleWebSocketConnection(mockWs, mockWss);
+
+    // We expect two .on calls: one for 'message' and one for 'close'
+    expect(mockWs.on).toHaveBeenCalledTimes(2);
+    expect(mockWs.on).toHaveBeenCalledWith('message', expect.any(Function));
+    expect(mockWs.on).toHaveBeenCalledWith('close', expect.any(Function));
+  });
+
+  test('on close: if no sessionCode or userId, does nothing', () => {
+    // Simulate ws.on('close', callback)
+    handleWebSocketConnection(mockWs, mockWss);
+    
+    // Find the 'close' callback
+    const closeHandler = mockWs.on.mock.calls.find(
+      call => call[0] === 'close'
+    )[1];
+    
+    // Invoke it with ws.sessionCode = undefined
+    closeHandler();
+    
+    // SessionService should not be called
+    expect(SessionService.getSession).not.toHaveBeenCalled();
+    expect(SessionService.removeUser).not.toHaveBeenCalled();
+  });
+
+  test('on close: if session found, remove user, broadcast, possibly remove session', () => {
+    // Suppose the ws gets a sessionCode/userId set at some point
+    mockWs.sessionCode = 'test-session-code';
+    mockWs.userId = 'test-user';
+
+    // The session object returned
+    const mockSession = {
+      code: 'test-session-code',
+      users: new Map([['test-user',{ userId:'test-user' }]]),
+    };
+
+    // Stubs
+    SessionService.getSession.mockReturnValue(mockSession);
+    SessionService.removeUser.mockImplementation((sess, uid) => {
+      sess.users.delete(uid);
+    });
+    
+    // handleWebSocketConnection => sets up 'close' 
+    handleWebSocketConnection(mockWs, mockWss);
+
+    // Grab the close handler
+    const closeHandler = mockWs.on.mock.calls.find(c => c[0] === 'close')[1];
+    
+    closeHandler();
+    
+    expect(SessionService.getSession).toHaveBeenCalledWith('test-session-code');
+    expect(SessionService.removeUser).toHaveBeenCalledWith(mockSession, 'test-user');
+    // After removing user, we broadcast user list & element state
+    expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
+    expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
+    // Then sees if session is empty => remove it
+    expect(SessionService.removeSession).toHaveBeenCalledWith('test-session-code');
   });
 });
 
