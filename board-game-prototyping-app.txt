@@ -3561,31 +3561,31 @@ import { broadcastElementState } from '../collabUtils.js';
 import { pushUndoAction } from './undoRedoHandlers.js';
 
 /**
- * In this updated approach, we store multi-element transforms as a single group action.
- * We no longer finalize each shape's resize individually. Instead, we:
- * 1) track the first time user resizes a shape => we store "old positions" if not stored
- * 2) update shape positions in real time
- * 3) on ELEMENT_RESIZE_END => create a single "resize" action with diffs for all shapes
+ * In this refactored approach, we use session.pendingResizes (similar to pendingMoves)
+ * for multi-shape resizing. When the user first calls ELEMENT_RESIZE for a shape,
+ * we store its original (x,y,w,h) if not already stored. We continuously update the shape.
+ * Then, on ELEMENT_RESIZE_END, we finalize a single group action for all changed shapes.
+ *
+ * We thus avoid any global __groupResizes. Everything is in session-based data.
  */
 
-if (!global.__groupResizes) {
-  // userId -> { [elementId]: { x, y, w, h } }
-  // On first 'ELEMENT_RESIZE' from user, we store old positions for each shape if not present
-  // Then at 'ELEMENT_RESIZE_END', we finalize as a single group action
-  global.__groupResizes = new Map();
-}
-
-function getUserGroupResize(userId) {
-  let gr = global.__groupResizes.get(userId);
-  if (!gr) {
-    gr = {};
-    global.__groupResizes.set(userId, gr);
+/** Ensures session.pendingResizes is ready. */
+function ensurePendingResizes(session) {
+  if (!session.pendingResizes) {
+    // userId -> { elementId -> { x, y, w, h } }
+    session.pendingResizes = new Map();
   }
-  return gr;
 }
 
-function clearUserGroupResize(userId) {
-  global.__groupResizes.delete(userId);
+/** Return (and possibly create) the map for a given user’s pending resizes. */
+function getUserResizeMap(session, userId) {
+  ensurePendingResizes(session);
+  let userMap = session.pendingResizes.get(userId);
+  if (!userMap) {
+    userMap = new Map();
+    session.pendingResizes.set(userId, userMap);
+  }
+  return userMap;
 }
 
 export function handleElementGrab(session, data, ws) {
@@ -3627,8 +3627,8 @@ export function handleElementRelease(session, data, ws) {
   if (!el) return;
 
   if (el.lockedBy === userId) {
-    // If you want a single-step for moves, you can finalize here (like old approach),
-    // but let's keep it the same for moves. We'll do a "release" if you want.
+    // (No special finalize logic for simple moves in this code,
+    //  but you could create an undo action here if you prefer.)
     broadcastElementState(session);
   }
 }
@@ -3664,7 +3664,7 @@ export function handleElementCreate(session, data, ws) {
     id: newId,
     shape,
     x, y, w, h,
-    lockedBy: userId, // automatically lock?
+    lockedBy: userId, // automatically lock to the creator
   };
   session.elements.push(newElement);
 
@@ -3692,7 +3692,7 @@ export function handleElementDelete(session, data, ws) {
     if (idx >= 0) {
       const el = session.elements[idx];
       if (el.lockedBy && el.lockedBy !== userId) {
-        continue; 
+        continue; // locked by someone else => skip
       }
       toDelete.push({ ...el });
       session.elements.splice(idx, 1);
@@ -3721,29 +3721,35 @@ export function handleElementDelete(session, data, ws) {
   broadcastElementState(session);
 }
 
-/** Called repeatedly as user drags to resize shapes. We store the original position in a user-based groupResizes object. */
+/**
+ * handleElementResize => user is dragging a shape corner/edge.
+ * If shape is not locked, auto-lock it. Then store the shape’s original (x,y,w,h)
+ * in session.pendingResizes if not already stored. Update the shape, broadcast.
+ */
 export function handleElementResize(session, data, ws) {
   if (!session) return;
   const { userId, elementId, x, y, w, h } = data;
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
+  // If locked by someone else, do nothing
   if (el.lockedBy && el.lockedBy !== userId) {
     return;
   }
-  // If not locked, automatically lock
+  // If not locked, auto-lock it to this user
   if (!el.lockedBy) {
     el.lockedBy = userId;
   }
 
-  // Start / Update the group-resize record for this user
-  const group = getUserGroupResize(userId);
-  if (!group[elementId]) {
-    // store old position the first time we see it
-    group[elementId] = { x: el.x, y: el.y, w: el.w, h: el.h };
+  // Store original position if not already in pendingResizes
+  const userMap = getUserResizeMap(session, userId);
+  if (!userMap.has(elementId)) {
+    userMap.set(elementId, {
+      x: el.x, y: el.y, w: el.w, h: el.h,
+    });
   }
 
-  // now update the shape
+  // Update the shape
   el.x = x;
   el.y = y;
   el.w = w;
@@ -3753,64 +3759,62 @@ export function handleElementResize(session, data, ws) {
 }
 
 /**
- * Finalize multi-element transform: create a single 'resize' action
- * with diffs for all shapes that changed.
+ * handleElementResizeEnd => finalize multi-element transform. We gather all shapes that
+ * user was resizing, see which ones actually changed, push a single 'resize' undo action,
+ * and then clear them from session.pendingResizes.
  */
 export function handleElementResizeEnd(session, data, ws) {
   if (!session) return;
   const { userId, elementIds } = data;
   if (!Array.isArray(elementIds) || elementIds.length === 0) return;
 
-  const group = getUserGroupResize(userId);
-  if (!group) {
-    // no group data => nothing to finalize
-    return broadcastElementState(session);
+  if (!session.pendingResizes || !session.pendingResizes.has(userId)) {
+    broadcastElementState(session);
+    return;
   }
 
+  const userMap = session.pendingResizes.get(userId);
   const diffs = [];
+
   for (const elementId of elementIds) {
     const el = session.elements.find(e => e.id === elementId);
     if (!el) continue;
-    if (el.lockedBy !== userId) continue; // skip shapes not locked
+    if (el.lockedBy !== userId) continue;
 
-    // If we never stored an old position, skip
-    const oldPos = group[elementId];
-    if (!oldPos) {
-      continue;
+    const original = userMap.get(elementId);
+    if (!original) {
+      continue; // no original stored => no diff
     }
-    // If no real changes, skip
+    // Check if there's an actual change
     if (
-      oldPos.x === el.x &&
-      oldPos.y === el.y &&
-      oldPos.w === el.w &&
-      oldPos.h === el.h
+      el.x !== original.x ||
+      el.y !== original.y ||
+      el.w !== original.w ||
+      el.h !== original.h
     ) {
-      continue;
+      diffs.push({
+        elementId,
+        from: { ...original },
+        to: { x: el.x, y: el.y, w: el.w, h: el.h },
+      });
     }
-    diffs.push({
-      elementId,
-      from: { x: oldPos.x, y: oldPos.y, w: oldPos.w, h: oldPos.h },
-      to: { x: el.x, y: el.y, w: el.w, h: el.h },
-    });
+
+    // Clean up the stored pending data
+    userMap.delete(elementId);
   }
 
-  // If no actual diffs, do nothing
+  // If userMap is now empty, remove it from session
+  if (userMap.size === 0) {
+    session.pendingResizes.delete(userId);
+  }
+
+  // If any changes, push a single group 'resize' action
   if (diffs.length > 0) {
     const action = {
       type: 'resize',
       diffs,
     };
     pushUndoAction(session, action);
-  }
-
-  // Clean up group data, unlock shapes if desired
-  clearUserGroupResize(userId);
-  for (const elementId of elementIds) {
-    const el = session.elements.find(e => e.id === elementId);
-    if (el && el.lockedBy === userId) {
-      // Decide if you want to auto-unlock them:
-      // el.lockedBy = null; 
-    }
   }
 
   broadcastElementState(session);
@@ -3824,7 +3828,7 @@ import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { broadcastElementState } from '../collabUtils.js';
 
 /**
- * A small helper to push an action onto the undo stack,
+ * A helper to push an action onto the undo stack,
  * clearing the redo stack and limiting size.
  */
 export function pushUndoAction(session, action) {
@@ -3840,7 +3844,8 @@ export function handleUndo(session, data, ws) {
   const { userId } = data;
 
   finalizeAllPendingMovesForUser(session, userId);
-  finalizeAllPendingResizesForUser(session, userId);
+  // We no longer do finalizeAllPendingResizesForUser here — resizing is
+  // finalized by handleElementResizeEnd.
 
   if (session.undoStack.length === 0) {
     return;
@@ -3867,7 +3872,6 @@ export function handleRedo(session, data, ws) {
   const { userId } = data;
 
   finalizeAllPendingMovesForUser(session, userId);
-  finalizeAllPendingResizesForUser(session, userId);
 
   if (session.redoStack.length === 0) {
     return;
@@ -3889,16 +3893,11 @@ export function handleRedo(session, data, ws) {
   broadcastElementState(session);
 }
 
-/**
- * If a user has any "pendingMoves" (e.g. mid-drag) for shapes,
- * finalize them so they become part of the undo history.
- */
 function finalizeAllPendingMovesForUser(session, userId) {
   if (!session.pendingMoves) {
     session.pendingMoves = new Map();
   }
 
-  // Gather all elementIds whose pending move belongs to this user
   const toFinalize = [];
   for (const [elementId, moveData] of session.pendingMoves.entries()) {
     if (moveData.userId === userId) {
@@ -3906,17 +3905,15 @@ function finalizeAllPendingMovesForUser(session, userId) {
     }
   }
 
-  // Finalize each
   for (const elementId of toFinalize) {
     const el = session.elements.find(e => e.id === elementId);
     if (!el) {
-      // If the element was removed or doesn't exist, just delete the pending entry
       session.pendingMoves.delete(elementId);
       continue;
     }
 
     const moveData = session.pendingMoves.get(elementId);
-    if (!moveData) continue;  // might already have been deleted
+    if (!moveData) continue;
 
     const oldX = moveData.oldX;
     const oldY = moveData.oldY;
@@ -3925,7 +3922,6 @@ function finalizeAllPendingMovesForUser(session, userId) {
 
     session.pendingMoves.delete(elementId);
 
-    // If the element didn't actually move, no need to create an action
     if (oldX === newX && oldY === newY) {
       continue;
     }
@@ -3944,64 +3940,6 @@ function finalizeAllPendingMovesForUser(session, userId) {
   }
 }
 
-/**
- * Similar logic for pending resizes.
- */
-function finalizeAllPendingResizesForUser(session, userId) {
-  if (!session.pendingResizes) {
-    session.pendingResizes = new Map();
-  }
-
-  // Identify all elementIds that the given user is resizing
-  const toFinalize = [];
-  for (const [elementId, resizeData] of session.pendingResizes.entries()) {
-    if (resizeData.userId === userId) {
-      toFinalize.push(elementId);
-    }
-  }
-
-  for (const elementId of toFinalize) {
-    const el = session.elements.find(e => e.id === elementId);
-    if (!el) {
-      // If the element was removed or doesn't exist, just delete the pending
-      session.pendingResizes.delete(elementId);
-      continue;
-    }
-
-    const resizeData = session.pendingResizes.get(elementId);
-    if (!resizeData) continue;  // might already have been deleted
-
-    const { oldX, oldY, oldW, oldH } = resizeData;
-    const newX = el.x;
-    const newY = el.y;
-    const newW = el.w;
-    const newH = el.h;
-
-    session.pendingResizes.delete(elementId);
-
-    // If there's no actual size change, skip
-    if (oldX === newX && oldY === newY && oldW === newW && oldH === newH) {
-      continue;
-    }
-
-    const action = {
-      type: 'resize',
-      diffs: [
-        {
-          elementId,
-          from: { x: oldX, y: oldY, w: oldW, h: oldH },
-          to: { x: newX, y: newY, w: newW, h: newH },
-        }
-      ],
-    };
-    pushUndoAction(session, action);
-  }
-}
-
-/**
- * Determines whether the user can apply the given action
- * (i.e., no shape is locked by a different user).
- */
 function canApplyAction(session, action, userId) {
   if (!action?.diffs || !Array.isArray(action.diffs)) return true;
 
@@ -4018,9 +3956,6 @@ function canApplyAction(session, action, userId) {
   return true;
 }
 
-/**
- * Re-applies an action to the session (redo).
- */
 function applyAction(session, action) {
   if (!action?.type) return;
 
@@ -4035,9 +3970,8 @@ function applyAction(session, action) {
       break;
 
     case 'create':
-      // Minimal re-create not fully stored,
-      // typically you only do partial re-create on an undo->redo.
-      // If needed, store full shape data in `diffs`.
+      // In the current code, we only store partial data for create. 
+      // Possibly expand if you need to fully re-create shapes on redo.
       break;
 
     case 'delete':
@@ -4066,9 +4000,6 @@ function applyAction(session, action) {
   }
 }
 
-/**
- * Reverts an action (undo).
- */
 function revertAction(session, action) {
   if (!action?.type) return;
 
@@ -5066,11 +4997,9 @@ export function initCanvas(initialUserId) {
   window.addEventListener("keydown", (e) => {
     if (e.key === "Delete" || e.key === "Backspace") {
       // Skip if a text field is focused
-      if (
-        document.activeElement &&
-        document.activeElement.tagName.toLowerCase() !== "canvas"
-      ) {
-        return;
+      const tag = document.activeElement?.tagName.toLowerCase();
+      if (tag === "input" || tag === "textarea") {
+        return; 
       }
       if (selectedElementIds.length > 0) {
         window.__sendWSMessage({
