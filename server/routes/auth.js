@@ -22,11 +22,8 @@ router.post(
     if (password !== confirmPassword) {
       throw new HttpError('Passwords do not match.', 400);
     }
-    if (await UserService.emailExists(email)) {
-      // 400 or 409 both are used in tests; we'll choose 400:
-      throw new HttpError('Email is already in use.', 400);
-    }
 
+    // We rely on UserService.createUser() to handle duplicates:
     const user = await UserService.createUser(name, email, password);
 
     const payload = AuthService.userPayload(user);
@@ -49,8 +46,6 @@ router.post(
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
 
-    // Remove the old "emailExists => 409" check:
-    // Instead, we do normal credential check:
     const user = await UserService.getByEmail(email);
     if (!user) {
       throw new HttpError('Invalid credentials.', 401);

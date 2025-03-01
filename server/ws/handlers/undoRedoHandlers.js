@@ -1,11 +1,8 @@
 // ./server/ws/handlers/undoRedoHandlers.js
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { broadcastElementState } from '../collabUtils.js';
+import { sessionGuard } from './handlerUtils.js';
 
-/**
- * A helper to push an action onto the undo stack,
- * clearing the redo stack and limiting size.
- */
 export function pushUndoAction(session, action) {
   session.redoStack = [];
   session.undoStack.push(action);
@@ -14,13 +11,9 @@ export function pushUndoAction(session, action) {
   }
 }
 
-export function handleUndo(session, data, ws) {
-  if (!session) return;
+export const handleUndo = sessionGuard((session, data, ws) => {
   const { userId } = data;
-
   finalizeAllPendingMovesForUser(session, userId);
-  // We no longer do finalizeAllPendingResizesForUser here — resizing is
-  // finalized by handleElementResizeEnd.
 
   if (session.undoStack.length === 0) {
     return;
@@ -28,10 +21,12 @@ export function handleUndo(session, data, ws) {
 
   const action = session.undoStack[session.undoStack.length - 1];
   if (!canApplyAction(session, action, userId)) {
-    ws.send(JSON.stringify({
-      type: MESSAGE_TYPES.UNDO_REDO_FAILED,
-      reason: 'Element locked by another user or concurrency issue.',
-    }));
+    ws.send(
+      JSON.stringify({
+        type: MESSAGE_TYPES.UNDO_REDO_FAILED,
+        reason: 'Element locked by another user or concurrency issue.',
+      })
+    );
     return;
   }
 
@@ -40,12 +35,10 @@ export function handleUndo(session, data, ws) {
   session.redoStack.push(action);
 
   broadcastElementState(session);
-}
+});
 
-export function handleRedo(session, data, ws) {
-  if (!session) return;
+export const handleRedo = sessionGuard((session, data, ws) => {
   const { userId } = data;
-
   finalizeAllPendingMovesForUser(session, userId);
 
   if (session.redoStack.length === 0) {
@@ -54,10 +47,12 @@ export function handleRedo(session, data, ws) {
 
   const action = session.redoStack[session.redoStack.length - 1];
   if (!canApplyAction(session, action, userId)) {
-    ws.send(JSON.stringify({
-      type: MESSAGE_TYPES.UNDO_REDO_FAILED,
-      reason: 'Element locked by another user or concurrency issue.',
-    }));
+    ws.send(
+      JSON.stringify({
+        type: MESSAGE_TYPES.UNDO_REDO_FAILED,
+        reason: 'Element locked by another user or concurrency issue.',
+      })
+    );
     return;
   }
 
@@ -66,7 +61,7 @@ export function handleRedo(session, data, ws) {
   session.undoStack.push(action);
 
   broadcastElementState(session);
-}
+});
 
 function finalizeAllPendingMovesForUser(session, userId) {
   if (!session.pendingMoves) {
@@ -108,7 +103,7 @@ function finalizeAllPendingMovesForUser(session, userId) {
           elementId,
           from: { x: oldX, y: oldY },
           to: { x: newX, y: newY },
-        }
+        },
       ],
     };
     pushUndoAction(session, action);
@@ -117,23 +112,20 @@ function finalizeAllPendingMovesForUser(session, userId) {
 
 function canApplyAction(session, action, userId) {
   if (!action?.diffs || !Array.isArray(action.diffs)) return true;
+  if (!['move','create','delete','resize'].includes(action.type)) return true;
 
-  if (['move','create','delete','resize'].includes(action.type)) {
-    for (const diff of action.diffs) {
-      const elId = action.type === 'delete' ? diff.id : diff.elementId;
-      const el = session.elements.find(e => e.id === elId);
-      if (!el) continue; // shape no longer exists => skip
-      if (el.lockedBy && el.lockedBy !== userId) {
-        return false;
-      }
+  for (const diff of action.diffs) {
+    const elId = action.type === 'delete' ? diff.id : diff.elementId;
+    const el = session.elements.find(e => e.id === elId);
+    if (!el) continue;
+    if (el.lockedBy && el.lockedBy !== userId) {
+      return false;
     }
   }
   return true;
 }
 
 function applyAction(session, action) {
-  if (!action?.type) return;
-
   switch (action.type) {
     case 'move':
       for (const diff of action.diffs) {
@@ -143,12 +135,9 @@ function applyAction(session, action) {
         el.y = diff.to.y;
       }
       break;
-
     case 'create':
-      // In the current code, we only store partial data for create. 
-      // Possibly expand if you need to fully re-create shapes on redo.
+      // Re-create not fully implemented; partial logic
       break;
-
     case 'delete':
       // Re-DELETE
       for (const d of action.diffs) {
@@ -158,7 +147,6 @@ function applyAction(session, action) {
         }
       }
       break;
-
     case 'resize':
       for (const diff of action.diffs) {
         const el = session.elements.find(e => e.id === diff.elementId);
@@ -169,15 +157,12 @@ function applyAction(session, action) {
         el.h = diff.to.h;
       }
       break;
-
     default:
       break;
   }
 }
 
 function revertAction(session, action) {
-  if (!action?.type) return;
-
   switch (action.type) {
     case 'move':
       for (const diff of action.diffs) {
@@ -187,9 +172,7 @@ function revertAction(session, action) {
         el.y = diff.from.y;
       }
       break;
-
     case 'create':
-      // Undo a create => remove the shape
       for (const diff of action.diffs) {
         const idx = session.elements.findIndex(e => e.id === diff.elementId);
         if (idx >= 0) {
@@ -197,7 +180,6 @@ function revertAction(session, action) {
         }
       }
       break;
-
     case 'delete':
       // Undo a delete => re-add them
       for (const d of action.diffs) {
@@ -215,7 +197,6 @@ function revertAction(session, action) {
         }
       }
       break;
-
     case 'resize':
       for (const diff of action.diffs) {
         const el = session.elements.find(e => e.id === diff.elementId);
@@ -226,7 +207,6 @@ function revertAction(session, action) {
         el.h = diff.from.h;
       }
       break;
-
     default:
       break;
   }

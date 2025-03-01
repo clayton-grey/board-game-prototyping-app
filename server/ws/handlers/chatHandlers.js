@@ -1,21 +1,13 @@
 // ./server/ws/handlers/chatHandlers.js
-// feat: ephemeral chat - store and broadcast chat messages
 
 import { broadcastToSession } from '../collabUtils.js';
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
-import { SessionService } from '../../services/SessionService.js';
+import { sessionGuard } from './handlerUtils.js';
 
-/**
- * handleChatMessage:
- *   - Store in ephemeral session.chatMessages
- *   - Broadcast the new message to the entire session
- */
-export function handleChatMessage(session, data, ws) {
-  if (!session) return;
+export const handleChatMessage = sessionGuard((session, data, ws) => {
   const { userId, text } = data;
   if (!text || !userId) return;
 
-  // Ensure there's a chatMessages array in the session
   if (!session.chatMessages) {
     session.chatMessages = [];
   }
@@ -28,9 +20,8 @@ export function handleChatMessage(session, data, ws) {
 
   session.chatMessages.push(msgObj);
 
-  // Broadcast the new chat message
   broadcastToSession(session, {
     type: MESSAGE_TYPES.CHAT_MESSAGE,
     message: msgObj,
   });
-}
+});

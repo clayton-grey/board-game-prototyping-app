@@ -2,11 +2,10 @@
 
 import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
 import { WebSocket } from 'ws';
+import { sessionGuard } from './handlerUtils.js';
 
-export function handleMakeEditor(session, data, ws) {
-  if (!session) return;
+export const handleMakeEditor = sessionGuard((session, data, ws) => {
   const { userId, targetUserId } = data;
-
   if (!session.canManage(userId)) {
     return;
   }
@@ -17,12 +16,10 @@ export function handleMakeEditor(session, data, ws) {
     session.setEditorRole(targetUserId, true);
     broadcastUserList(session);
   }
-}
+});
 
-export function handleRemoveEditor(session, data, ws) {
-  if (!session) return;
+export const handleRemoveEditor = sessionGuard((session, data, ws) => {
   const { userId, targetUserId } = data;
-
   if (!session.canManage(userId)) {
     return;
   }
@@ -33,12 +30,10 @@ export function handleRemoveEditor(session, data, ws) {
     session.setEditorRole(targetUserId, false);
     broadcastUserList(session);
   }
-}
+});
 
-export function handleKickUser(session, data, ws) {
-  if (!session) return;
+export const handleKickUser = sessionGuard((session, data, ws) => {
   const { userId, targetUserId } = data;
-
   const kickedUser = session.kickUser(userId, targetUserId);
   if (!kickedUser) {
     return;
@@ -54,4 +49,4 @@ export function handleKickUser(session, data, ws) {
   } else {
     kickedUser.socket?.close();
   }
-}
+});
