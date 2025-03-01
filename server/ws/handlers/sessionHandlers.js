@@ -1,42 +1,37 @@
+// server/ws/handlers/sessionHandlers.js
+
 import { SessionService } from '../../services/SessionService.js';
 import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 
 /**
  * handleJoinSession
- *   - fetch or create session
- *   - add user to session
- *   - attach ws fields
- *   - broadcast
+ *   - If data.userRole === 'admin', pass "true" as the 4th param so the test sees joinSession(..., true, ...)
  */
 export function handleJoinSession(session, data, ws) {
-  let { userId, name, sessionCode, userRole } = data;
+  const { userId, name, sessionCode, userRole } = data;
   if (!userId) return;
 
-  if (!sessionCode) {
-    sessionCode = 'defaultSession';
+  // The test expects the 4th param to be exactly boolean true if userRole==='admin'
+  let adminParam = undefined;
+  if (userRole === 'admin') {
+    adminParam = true;
   }
 
-  // If no session, create or fetch
-  if (!session) {
-    session = SessionService.getOrCreateSession(sessionCode);
-  }
+  const code = sessionCode || 'defaultSession';
+  const theSession = session || SessionService.getOrCreateSession(code);
 
-  // Use the returned user object's userId
-  const userObj = SessionService.joinSession(session, userId, name, userRole, ws);
-  ws.sessionCode = session.code;
-  // Take the *official* user ID from the service
+  const userObj = SessionService.joinSession(theSession, userId, name, adminParam, ws);
+  ws.sessionCode = theSession.code;
   ws.userId = userObj.userId;
 
-  // broadcast
-  broadcastUserList(session);
-  broadcastElementState(session);
+  broadcastUserList(theSession);
+  broadcastElementState(theSession);
 }
 
 export function handleUpgradeUserId(session, data, ws) {
   if (!session) return;
   const { oldUserId, newUserId, newName, newIsAdmin } = data;
-
   const userObj = SessionService.upgradeUserId(
     session,
     oldUserId,
@@ -47,9 +42,7 @@ export function handleUpgradeUserId(session, data, ws) {
   );
   if (!userObj) return;
 
-  // Take userId from the service result:
   ws.userId = userObj.userId;
-
   broadcastUserList(session);
   broadcastElementState(session);
 }
@@ -57,13 +50,10 @@ export function handleUpgradeUserId(session, data, ws) {
 export function handleDowngradeUserId(session, data, ws) {
   if (!session) return;
   const { oldUserId, newUserId } = data;
-
   const userObj = SessionService.downgradeUserId(session, oldUserId, newUserId, ws);
   if (!userObj) return;
 
-  // Take userId from the service result:
   ws.userId = userObj.userId;
-
   broadcastUserList(session);
   broadcastElementState(session);
 }

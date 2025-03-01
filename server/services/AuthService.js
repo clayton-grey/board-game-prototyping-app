@@ -1,4 +1,5 @@
 // server/services/AuthService.js
+
 import jwt from 'jsonwebtoken';
 import config from '../config.js';
 
@@ -9,14 +10,15 @@ import config from '../config.js';
 export class AuthService {
   /**
    * Returns the payload object you want to store in the token.
-   * For example, user ID, email, role, name, etc.
+   * We now include `role` and set `isAdmin` = true if role === 'admin'.
    */
   static userPayload(user) {
     return {
       id: user.id,
       email: user.email,
-      role: user.role,
+      role: user.role, 
       name: user.name,
+      isAdmin: user.role === 'admin'
     };
   }
 
@@ -29,7 +31,7 @@ export class AuthService {
 
   /**
    * Verify a JWT string. If invalid, this throws an error.
-   * On success, returns the decoded payload.
+   * On success, returns the decoded payload (including `isAdmin`).
    */
   static verifyToken(token) {
     return jwt.verify(token, config.JWT_SECRET);

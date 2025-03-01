@@ -83,6 +83,12 @@ describe('messageDispatcher.js - handleIncomingMessage', () => {
     expect(chatHandlers.handleChatMessage).toHaveBeenCalledWith(mockSession, data, mockWs);
   });
 
+  test('handles DOWNGRADE_USER_ID => handleDowngradeUserId', () => {
+    const data = { type: MESSAGE_TYPES.DOWNGRADE_USER_ID };
+    handleIncomingMessage(mockSession, data, mockWs);
+    expect(sessionHandlers.handleDowngradeUserId).toHaveBeenCalledWith(mockSession, data, mockWs);
+  });
+
   test('unknown message type => does nothing', () => {
     const data = { type: 'some-unsupported-type' };
     handleIncomingMessage(mockSession, data, mockWs);

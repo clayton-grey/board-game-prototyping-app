@@ -32,6 +32,7 @@ describe('AuthService', () => {
       email: 'user@example.com',
       role: 'admin',
       name: 'Alice',
+      isAdmin: true,
     });
   });
 

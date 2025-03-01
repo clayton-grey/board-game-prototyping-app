@@ -40,6 +40,15 @@ describe('collaboration.js - handleWebSocketConnection', () => {
     expect(mockWs.on).toHaveBeenCalledWith('close', expect.any(Function));
   });
 
+  test('if message is invalid JSON, it is ignored (no crash)', () => {
+    handleWebSocketConnection(mockWs, mockWss);
+
+    const [_, onMessage] = mockWs.on.mock.calls.find(call => call[0] === 'message');
+    // Simulate a malformed JSON string:
+    expect(() => onMessage('not valid json}')).not.toThrow();
+  });
+
+
   test('on close: if no sessionCode or userId, does nothing', () => {
     // Simulate ws.on('close', callback)
     handleWebSocketConnection(mockWs, mockWss);

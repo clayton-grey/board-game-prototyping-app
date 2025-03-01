@@ -44,6 +44,11 @@ router.post(
     if (!req.user || !req.user.id) {
       throw new HttpError("User ID is missing from request", 400);
     }
+
+    if (!req.body.name) {
+      return res.status(400).json({ error: 'Project name is required' });
+    }
+
     const project = await ProjectService.createProject(req.user.id, name, description);
     return res.status(201).json(project);
   })

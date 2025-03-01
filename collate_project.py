@@ -2,6 +2,7 @@ import os
 
 # File extensions to include
 INCLUDE_EXTENSIONS = [".js", ".json", ".html", ".css", ".md", ".sql", ".yml", ".yaml", ".env", ".test", ".cjs"]
+EXCLUDE = ["package-lock.json"]
 
 # Output file
 OUTPUT_FILE = "board-game-prototyping-app.txt"
@@ -14,6 +15,8 @@ def collate_project(output_file):
             dirs[:] = [d for d in dirs if not d.startswith(".") and d != "node_modules"]
 
             for file in files:
+                if file in EXCLUDE:
+                    continue
                 if any(file.endswith(ext) for ext in INCLUDE_EXTENSIONS):
                     file_path = os.path.join(root, file)
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:

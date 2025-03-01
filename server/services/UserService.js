@@ -15,11 +15,18 @@ export class UserService {
   }
 
   /**
+   * Check if an email is already used by some user.
+   */
+  static async emailExists(email) {
+    const existing = await this.getByEmail(email);
+    return !!existing;
+  }
+
+  /**
    * Hash the password and insert a new user row.
    * Throw HttpError if email is already in use.
    */
   static async createUser(name, email, plainPassword) {
-    // Check if user already exists
     const existing = await this.getByEmail(email);
     if (existing) {
       throw new HttpError('Email is already in use.', 400);

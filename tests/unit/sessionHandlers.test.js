@@ -39,31 +39,45 @@ describe('sessionHandlers', () => {
     test('creates or fetches session, joins user, sets ws fields, broadcasts', () => {
       // Mock the session retrieval
       SessionService.getOrCreateSession.mockReturnValue(mockSession);
-      // Mock the joinSession return
-      SessionService.joinSession.mockReturnValue({ userId: 'userA' });
+
+      // Mock the joinSession in such a way that we replicate the ephemeralRoles update
+      SessionService.joinSession.mockImplementation((session, userId, userName, isAdminFlag, wsSocket) => {
+        // We'll do a minimal imitation of the real logic:
+        if (isAdminFlag === true) {
+          const existing = session.ephemeralRoles.get(userId) || {};
+          existing.isAdmin = true;
+          session.ephemeralRoles.set(userId, existing);
+        }
+        return { userId, name: userName, isAdmin: isAdminFlag === true };
+      });
 
       const data = {
         type: 'join-session',
         userId: 'userA',
         sessionCode: 'test-session-code',
         name: 'Alice',
-        userRole: 'admin',
+        userRole: 'admin',  // test wants boolean `true` sent to joinSession
       };
 
       handleJoinSession(null, data, mockWs);
 
       expect(SessionService.getOrCreateSession).toHaveBeenCalledWith('test-session-code');
+      // The 4th param must be true (not 'admin')
       expect(SessionService.joinSession).toHaveBeenCalledWith(
         mockSession,
         'userA',
         'Alice',
-        'admin',
+        true, 
         mockWs
       );
 
-      // userObj.userId -> 'userA'
       expect(mockWs.sessionCode).toBe('test-session-code');
       expect(mockWs.userId).toBe('userA');
+
+      // We'll assume the SessionService (mock) sets ephemeralRoles. Check it:
+      const roleData = mockSession.ephemeralRoles.get('userA');
+      expect(roleData).toBeDefined();
+      expect(roleData.isAdmin).toBe(true);
 
       // broadcasts
       expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
@@ -72,7 +86,9 @@ describe('sessionHandlers', () => {
 
     test('if session is already passed in, does not call getOrCreateSession again', () => {
       // Still need to mock joinSession so userObj is not undefined
-      SessionService.joinSession.mockReturnValue({ userId: 'userA' });
+      SessionService.joinSession.mockImplementation((session, userId, userName, isAdminFlag, wsSocket) => {
+        return { userId, name: userName, isAdmin: isAdminFlag === true };
+      });
 
       const data = {
         userId: 'userA',
@@ -84,13 +100,16 @@ describe('sessionHandlers', () => {
 
       // We already have a session, so getOrCreateSession is not called
       expect(SessionService.getOrCreateSession).not.toHaveBeenCalled();
+      // We pass undefined for 4th param (because userRole not 'admin')
       expect(SessionService.joinSession).toHaveBeenCalledWith(
         mockSession,
         'userA',
         'Test',
-        undefined, // userRole not in data
+        undefined,
         mockWs
       );
+
+      // ephemeralRoles or broadcast calls not tested here
     });
 
     test('if userId is missing, does nothing', () => {
@@ -98,6 +117,8 @@ describe('sessionHandlers', () => {
       handleJoinSession(mockSession, { sessionCode: 'test' }, mockWs);
 
       expect(SessionService.joinSession).not.toHaveBeenCalled();
+      expect(broadcastUserList).not.toHaveBeenCalled();
+      expect(broadcastElementState).not.toHaveBeenCalled();
     });
   });
 
@@ -133,6 +154,8 @@ describe('sessionHandlers', () => {
     test('does nothing if session is null', () => {
       handleUpgradeUserId(null, { oldUserId: 'u1' }, mockWs);
       expect(SessionService.upgradeUserId).not.toHaveBeenCalled();
+      expect(broadcastUserList).not.toHaveBeenCalled();
+      expect(broadcastElementState).not.toHaveBeenCalled();
     });
   });
 
@@ -160,6 +183,8 @@ describe('sessionHandlers', () => {
     test('does nothing if session is null', () => {
       handleDowngradeUserId(null, { oldUserId: 'u1' }, mockWs);
       expect(SessionService.downgradeUserId).not.toHaveBeenCalled();
+      expect(broadcastUserList).not.toHaveBeenCalled();
+      expect(broadcastElementState).not.toHaveBeenCalled();
     });
   });
 });

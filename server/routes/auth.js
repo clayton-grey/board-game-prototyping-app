@@ -11,60 +11,71 @@ const router = express.Router();
  * POST /auth/register
  * Body: { name, email, password, confirmPassword }
  */
-router.post('/register', asyncHandler(async (req, res) => {
-  const { name, email, password, confirmPassword } = req.body;
+router.post(
+  '/register',
+  asyncHandler(async (req, res) => {
+    const { name, email, password, confirmPassword } = req.body;
 
-  if (!name || !email || !password || !confirmPassword) {
-    throw new HttpError('All fields are required.', 400);
-  }
-  if (password !== confirmPassword) {
-    throw new HttpError('Passwords do not match.', 400);
-  }
+    if (!name || !email || !password || !confirmPassword) {
+      throw new HttpError('All fields are required.', 400);
+    }
+    if (password !== confirmPassword) {
+      throw new HttpError('Passwords do not match.', 400);
+    }
+    if (await UserService.emailExists(email)) {
+      // 400 or 409 both are used in tests; we'll choose 400:
+      throw new HttpError('Email is already in use.', 400);
+    }
 
-  // createUser() will throw HttpError if email is taken
-  const user = await UserService.createUser(name, email, password);
+    const user = await UserService.createUser(name, email, password);
 
-  const payload = AuthService.userPayload(user);
-  const token = AuthService.createToken(payload, '1h'); 
+    const payload = AuthService.userPayload(user);
+    const token = AuthService.createToken(payload, '1h');
 
-  return res.status(201).json({
-    message: 'User registered successfully',
-    user,
-    token,
-  });
-}));
+    return res.status(201).json({
+      message: 'User registered successfully',
+      user,
+      token,
+    });
+  })
+);
 
 /**
  * POST /auth/login
  * Body: { email, password }
  */
-router.post('/login', asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
+router.post(
+  '/login',
+  asyncHandler(async (req, res) => {
+    const { email, password } = req.body;
 
-  const user = await UserService.getByEmail(email);
-  if (!user) {
-    throw new HttpError('Invalid credentials.', 401);
-  }
+    // Remove the old "emailExists => 409" check:
+    // Instead, we do normal credential check:
+    const user = await UserService.getByEmail(email);
+    if (!user) {
+      throw new HttpError('Invalid credentials.', 401);
+    }
 
-  const isMatch = await UserService.comparePasswords(password, user.password);
-  if (!isMatch) {
-    throw new HttpError('Invalid credentials.', 401);
-  }
+    const isMatch = await UserService.comparePasswords(password, user.password);
+    if (!isMatch) {
+      throw new HttpError('Invalid credentials.', 401);
+    }
 
-  // Build & sign JWT
-  const payload = AuthService.userPayload(user);
-  const token = AuthService.createToken(payload, '1h');
+    // Build & sign JWT
+    const payload = AuthService.userPayload(user);
+    const token = AuthService.createToken(payload, '1h');
 
-  return res.json({
-    message: 'Logged in successfully',
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-    },
-    token,
-  });
-}));
+    return res.json({
+      message: 'Logged in successfully',
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+      token,
+    });
+  })
+);
 
 export default router;

@@ -11,8 +11,8 @@ export const authenticateToken = (req, res, next) => {
   }
 
   try {
-    const user = AuthService.verifyToken(token); 
-    // If verify succeeds, user is the decoded payload
+    const user = AuthService.verifyToken(token);
+    // user now has { id, email, isAdmin, name } from the token
     req.user = user;
     next();
   } catch (err) {
@@ -21,8 +21,8 @@ export const authenticateToken = (req, res, next) => {
 };
 
 export const authorizeAdmin = (req, res, next) => {
-  // Simple admin check
-  if (req.user && req.user.role === "admin") {
+  // Now checking isAdmin instead of role==='admin'
+  if (req.user && req.user.isAdmin) {
     return next();
   }
   return res.status(403).json({ message: "Access denied. Admins only." });
