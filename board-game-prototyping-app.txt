@@ -372,12 +372,9 @@ describe('Dummy test suite', () => {
 // tests/unit/permissionHandlers.test.js
 
 import { handleMakeEditor, handleRemoveEditor, handleKickUser } from '../../server/ws/handlers/permissionHandlers.js';
-import { SessionService } from '../../server/services/SessionService.js';
 import { broadcastUserList, broadcastElementState, broadcastToSession } from '../../server/ws/collabUtils.js';
-import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 import { WebSocket } from 'ws';
 
-jest.mock('../../server/services/SessionService.js');
 jest.mock('../../server/ws/collabUtils.js', () => ({
   broadcastUserList: jest.fn(),
   broadcastElementState: jest.fn(),
@@ -394,7 +391,11 @@ describe('permissionHandlers', () => {
     mockSession = {
       code: 'test-permissions',
       users: new Map(),
-      elements: []
+      elements: [],
+      // We now have a direct method canManage, setEditorRole, kickUser, etc.
+      canManage: jest.fn(),
+      setEditorRole: jest.fn(),
+      kickUser: jest.fn(),
     };
   });
 
@@ -405,17 +406,18 @@ describe('permissionHandlers', () => {
     mockSession.users.set('user1', user1);
     mockSession.users.set('user2', user2);
 
-    SessionService.canManage.mockReturnValue(true);
+    mockSession.canManage.mockReturnValue(true);
 
     handleMakeEditor(mockSession, { userId: 'user1', targetUserId: 'user2' }, mockWs);
-    expect(SessionService.setEditorRole).toHaveBeenCalledWith(mockSession, 'user2', true);
+    expect(mockSession.setEditorRole).toHaveBeenCalledWith('user2', true);
     expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
   });
 
-  test('handleMakeEditor => does nothing if SessionService.canManage = false', () => {
-    SessionService.canManage.mockReturnValue(false);
+  test('handleMakeEditor => does nothing if session.canManage = false', () => {
+    mockSession.canManage.mockReturnValue(false);
     handleMakeEditor(mockSession, { userId: 'x', targetUserId: 'y' }, mockWs);
-    expect(SessionService.setEditorRole).not.toHaveBeenCalled();
+
+    expect(mockSession.setEditorRole).not.toHaveBeenCalled();
     expect(broadcastUserList).not.toHaveBeenCalled();
   });
 
@@ -425,40 +427,42 @@ describe('permissionHandlers', () => {
     mockSession.users.set('admin', adminUser);
     mockSession.users.set('u100', normalUser);
 
-    SessionService.canManage.mockReturnValue(true);
+    mockSession.canManage.mockReturnValue(true);
 
     handleRemoveEditor(mockSession, { userId: 'admin', targetUserId: 'u100' }, mockWs);
-    expect(SessionService.setEditorRole).toHaveBeenCalledWith(mockSession, 'u100', false);
+    expect(mockSession.setEditorRole).toHaveBeenCalledWith('u100', false);
     expect(broadcastUserList).toHaveBeenCalled();
   });
 
-  test('handleKickUser => calls SessionService.kickUser if can manage, broadcasts', () => {
+  test('handleKickUser => calls session.kickUser if can manage, broadcasts', () => {
     const userA = { userId: 'userA', isOwner: true };
     const userB = { userId: 'userB' };
     mockSession.users.set('userA', userA);
     mockSession.users.set('userB', userB);
 
-    SessionService.kickUser.mockReturnValue({
+    // We'll pretend it returns an object with userId plus a socket
+    mockSession.kickUser.mockReturnValue({
       userId: 'userB',
       socket: { send: jest.fn(), readyState: WebSocket.OPEN }
     });
 
     handleKickUser(mockSession, { userId: 'userA', targetUserId: 'userB' }, mockWs);
 
-    expect(SessionService.kickUser).toHaveBeenCalledWith(mockSession, 'userA', 'userB');
+    expect(mockSession.kickUser).toHaveBeenCalledWith('userA', 'userB');
     expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
     expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
 
-    // Also expect kicked user's socket to receive a "KICKED" message
-    const kickedUser = SessionService.kickUser.mock.results[0].value;
+    // Also expect kicked user's socket to receive a "kicked" message
+    const kickedUser = mockSession.kickUser.mock.results[0].value;
     expect(kickedUser.socket.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: MESSAGE_TYPES.KICKED }),
+      JSON.stringify({ type: 'kicked' }),
       expect.any(Function)
     );
   });
 
-  test('handleKickUser => no action if SessionService.kickUser returns null', () => {
-    SessionService.kickUser.mockReturnValue(null);
+  test('handleKickUser => no action if session.kickUser returns null', () => {
+    mockSession.kickUser.mockReturnValue(null);
+
     handleKickUser(mockSession, { userId: 'admin', targetUserId: 'somebody' }, mockWs);
     expect(broadcastUserList).not.toHaveBeenCalled();
     expect(broadcastElementState).not.toHaveBeenCalled();
@@ -585,6 +589,126 @@ describe('collabUtils', () => {
 });
 
 
+===== ./tests/unit/Session.test.js =====
+
+// tests/unit/Session.test.js
+import { Session } from '../../server/services/Session.js';
+
+describe('Session class', () => {
+  let session;
+
+  beforeEach(() => {
+    session = new Session('test-code');
+  });
+
+  test('constructor sets initial fields', () => {
+    expect(session.code).toBe('test-code');
+    expect(session.projectName).toBe('New Project');
+    expect(session.users.size).toBe(0);
+    expect(session.elements.length).toBe(2); // the default elements
+    expect(session.undoStack.length).toBe(0);
+    expect(session.redoStack.length).toBe(0);
+  });
+
+  test('addUser => first user becomes owner', () => {
+    const userObj = session.addUser('u1', 'Alice', false);
+    expect(session.users.size).toBe(1);
+    expect(userObj.userId).toBe('u1');
+    expect(userObj.isOwner).toBe(true);
+  });
+
+  test('addUser => second user is normal by default', () => {
+    session.addUser('u1', 'Owner');
+    const user2 = session.addUser('u2', 'Bob');
+    expect(user2.isOwner).toBe(false);
+    expect(user2.isAdmin).toBe(false);
+  });
+
+  test('addUser => can set isAdmin', () => {
+    const user3 = session.addUser('admin_1', 'AdminUser', true);
+    expect(user3.isAdmin).toBe(true);
+  });
+
+  test('removeUser => frees locks, reassigns owner if needed', () => {
+    const owner = session.addUser('owner1', 'Owner1');
+    const user2 = session.addUser('user2', 'Regular');
+    // lock something to user2
+    session.elements.push({ id: 99, lockedBy: 'user2' });
+
+    // remove user2 => free lock
+    session.removeUser('user2');
+    const lockedEl = session.elements.find(el => el.id === 99);
+    expect(lockedEl.lockedBy).toBe(null);
+    expect(session.users.size).toBe(1);
+
+    // remove owner => no owners => 0 users
+    session.removeUser('owner1');
+    expect(session.users.size).toBe(0);
+  });
+
+  test('kickUser => must be owner/admin, cannot kick owners/admins', () => {
+    const uOwner = session.addUser('owner1', 'Owner', false);
+    uOwner.isOwner = true;
+    const normal = session.addUser('u2', 'User2', false);
+
+    // Attempt to kick user2
+    const kicked = session.kickUser('owner1', 'u2');
+    expect(kicked.userId).toBe('u2');
+    expect(session.users.has('u2')).toBe(false);
+
+    // user2 is gone now
+    // re-add user2 as an admin
+    const user2Admin = session.addUser('u2', 'User2 again', true);
+
+    // Attempt to have owner1 kick admin => fails
+    const failKick = session.kickUser('owner1', 'u2');
+    expect(failKick).toBeNull();
+    expect(session.users.has('u2')).toBe(true);
+  });
+
+  test('upgradeUserId => merges old locks, preserves or sets new admin', () => {
+    const anon = session.addUser('anon_1', 'Anon', false);
+    anon.isEditor = true;
+
+    session.elements.push({ id: 101, lockedBy: 'anon_1' });
+
+    // upgrade => user_99
+    const upgraded = session.upgradeUserId('anon_1', 'user_99', 'RealName', true);
+    expect(upgraded.userId).toBe('user_99');
+    expect(upgraded.isAdmin).toBe(true);
+    expect(upgraded.isEditor).toBe(true);
+
+    const lockedEl = session.elements.find(el => el.id === 101);
+    expect(lockedEl.lockedBy).toBe('user_99');
+  });
+
+  test('downgradeUserId => user => anon, remove isOwner/isAdmin/isEditor', () => {
+    const user = session.addUser('u111', 'TestUser', true); // admin
+    user.isOwner = true;
+    user.isEditor = true;
+
+    session.elements.push({ id: 200, lockedBy: 'u111' });
+
+    const downgraded = session.downgradeUserId('u111', 'anon_99');
+    expect(downgraded.userId).toBe('anon_99');
+    expect(downgraded.isAdmin).toBe(false);
+    expect(downgraded.isOwner).toBe(false);
+    expect(downgraded.isEditor).toBe(false);
+
+    const lockedEl = session.elements.find(el => el.id === 200);
+    expect(lockedEl.lockedBy).toBe('anon_99');
+  });
+
+  test('setEditorRole => toggles isEditor on a user', () => {
+    const user = session.addUser('uX', 'UserX');
+    session.setEditorRole('uX', true);
+    expect(session.users.get('uX').isEditor).toBe(true);
+    session.setEditorRole('uX', false);
+    expect(session.users.get('uX').isEditor).toBe(false);
+  });
+});
+
+
 ===== ./tests/unit/UserService.test.js =====
 
 // tests/unit/UserService.test.js
@@ -684,9 +808,16 @@ describe('sessionHandlers', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+
     mockWs = { send: jest.fn(), sessionCode: undefined, userId: undefined };
+
+    // Our "session" object is the actual one passed to handlers. We'll provide
+    // mock methods where needed: addUser, upgradeUserId, etc.
     mockSession = {
       code: 'test-session-code',
+      addUser: jest.fn(),
+      upgradeUserId: jest.fn(),
+      downgradeUserId: jest.fn(),
       users: new Map(),
       elements: [
         { id: 1, lockedBy: null },
@@ -697,19 +828,14 @@ describe('sessionHandlers', () => {
 
   describe('handleJoinSession', () => {
     test('creates or fetches session, joins user, sets ws fields, broadcasts', () => {
-      // Mock the session retrieval
       SessionService.getOrCreateSession.mockReturnValue(mockSession);
 
-      // Mock joinSession to illustrate an admin user
-      SessionService.joinSession.mockImplementation(
-        (session, userId, userName, isAdminFlag, wsSocket) => {
-          return {
-            userId,
-            name: userName,
-            isAdmin: !!isAdminFlag,
-          };
-        }
-      );
+      // Mock addUser to illustrate returning some user object
+      mockSession.addUser.mockReturnValue({
+        userId: 'userA',
+        name: 'Alice',
+        isAdmin: true
+      });
 
       const data = {
         type: 'join-session',
@@ -722,24 +848,20 @@ describe('sessionHandlers', () => {
       handleJoinSession(null, data, mockWs);
 
       expect(SessionService.getOrCreateSession).toHaveBeenCalledWith('test-session-code');
-      expect(SessionService.joinSession).toHaveBeenCalledWith(
-        mockSession,
-        'userA',
-        'Alice',
-        true,
-        mockWs
-      );
+      expect(mockSession.addUser).toHaveBeenCalledWith('userA', 'Alice', true, mockWs);
+
       expect(mockWs.sessionCode).toBe('test-session-code');
       expect(mockWs.userId).toBe('userA');
 
-      // broadcasts
       expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
       expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
     });
 
     test('if session is already passed in, does not call getOrCreateSession again', () => {
-      SessionService.joinSession.mockImplementation((session, userId) => {
-        return { userId };
+      // We do NOT want SessionService.getOrCreateSession called
+      mockSession.addUser.mockReturnValue({
+        userId: 'userA',
+        name: 'TestUser'
       });
 
       const data = {
@@ -750,29 +872,28 @@ describe('sessionHandlers', () => {
 
       handleJoinSession(mockSession, data, mockWs);
 
-      // We already have a session, so getOrCreateSession is not called
+      // We already have a session => no fetch
       expect(SessionService.getOrCreateSession).not.toHaveBeenCalled();
-      expect(SessionService.joinSession).toHaveBeenCalledWith(
-        mockSession,
-        'userA',
-        'Test',
-        undefined,
-        mockWs
-      );
+
+      // We do expect addUser => third param is undefined if userRole not 'admin'
+      expect(mockSession.addUser).toHaveBeenCalledWith('userA', 'Test', undefined, mockWs);
+
+      expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
+      expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
     });
 
     test('if userId is missing, does nothing', () => {
       handleJoinSession(mockSession, { sessionCode: 'test' }, mockWs);
 
-      expect(SessionService.joinSession).not.toHaveBeenCalled();
+      expect(mockSession.addUser).not.toHaveBeenCalled();
       expect(broadcastUserList).not.toHaveBeenCalled();
       expect(broadcastElementState).not.toHaveBeenCalled();
     });
   });
 
   describe('handleUpgradeUserId', () => {
-    test('calls SessionService.upgradeUserId, reassigns ws.userId, then broadcasts', () => {
-      SessionService.upgradeUserId.mockReturnValue({ userId: 'newUid' });
+    test('calls session.upgradeUserId, reassigns ws.userId, then broadcasts', () => {
+      mockSession.upgradeUserId.mockReturnValue({ userId: 'newUid' });
 
       const data = {
         oldUserId: 'temp_1',
@@ -783,8 +904,7 @@ describe('sessionHandlers', () => {
 
       handleUpgradeUserId(mockSession, data, mockWs);
 
-      expect(SessionService.upgradeUserId).toHaveBeenCalledWith(
-        mockSession,
+      expect(mockSession.upgradeUserId).toHaveBeenCalledWith(
         'temp_1',
         'real_99',
         'Bob',
@@ -799,21 +919,20 @@ describe('sessionHandlers', () => {
 
     test('does nothing if session is null', () => {
       handleUpgradeUserId(null, { oldUserId: 'u1' }, mockWs);
-      expect(SessionService.upgradeUserId).not.toHaveBeenCalled();
+
       expect(broadcastUserList).not.toHaveBeenCalled();
       expect(broadcastElementState).not.toHaveBeenCalled();
     });
   });
 
   describe('handleDowngradeUserId', () => {
-    test('calls SessionService.downgradeUserId, reassigns ws.userId, then broadcasts', () => {
-      SessionService.downgradeUserId.mockReturnValue({ userId: 'anon_123' });
+    test('calls session.downgradeUserId, reassigns ws.userId, then broadcasts', () => {
+      mockSession.downgradeUserId.mockReturnValue({ userId: 'anon_123' });
 
       const data = { oldUserId: 'user_7', newUserId: 'anon_111' };
       handleDowngradeUserId(mockSession, data, mockWs);
 
-      expect(SessionService.downgradeUserId).toHaveBeenCalledWith(
-        mockSession,
+      expect(mockSession.downgradeUserId).toHaveBeenCalledWith(
         'user_7',
         'anon_111',
         mockWs
@@ -826,7 +945,7 @@ describe('sessionHandlers', () => {
 
     test('does nothing if session is null', () => {
       handleDowngradeUserId(null, { oldUserId: 'u1' }, mockWs);
-      expect(SessionService.downgradeUserId).not.toHaveBeenCalled();
+
       expect(broadcastUserList).not.toHaveBeenCalled();
       expect(broadcastElementState).not.toHaveBeenCalled();
     });
@@ -837,153 +956,33 @@ describe('sessionHandlers', () => {
 ===== ./tests/unit/SessionService.test.js =====
 
 // tests/unit/SessionService.test.js
-
 import { SessionService } from '../../server/services/SessionService.js';
+import { Session } from '../../server/services/Session.js';
 
 describe('SessionService', () => {
   beforeEach(() => {
-    // Clear all sessions between tests
-    for (const [code] of Array.from(SessionService['sessionMap'] || [])) {
-      SessionService.removeSession(code);
-    }
+    // Clear the sessionMap by removing known sessions
+    SessionService.removeSession('test-code-1');
+    SessionService.removeSession('test-code-2');
   });
 
-  test('getOrCreateSession creates a new session if none exists', () => {
-    const code = 'test-session-123';
-    let s = SessionService.getSession(code);
+  test('getOrCreateSession creates a new Session instance', () => {
+    const s = SessionService.getSession('test-code-1');
     expect(s).toBeNull();
 
-    const created = SessionService.getOrCreateSession(code);
-    expect(created).toBeDefined();
-    expect(created.code).toBe(code);
+    const created = SessionService.getOrCreateSession('test-code-1');
+    expect(created).toBeInstanceOf(Session);
 
-    s = SessionService.getSession(code);
-    expect(s).toBe(created);
+    const again = SessionService.getSession('test-code-1');
+    expect(again).toBe(created);
   });
 
-  test('removeSession deletes the stored session', () => {
-    const code = 'test-session-456';
-    SessionService.getOrCreateSession(code);
-    expect(SessionService.getSession(code)).not.toBeNull();
+  test('removeSession deletes from the map', () => {
+    const s = SessionService.getOrCreateSession('test-code-2');
+    expect(SessionService.getSession('test-code-2')).toBe(s);
 
-    SessionService.removeSession(code);
-    expect(SessionService.getSession(code)).toBeNull();
-  });
-
-  test('joinSession adds a user to a session, sets isAdmin if specified, sets first user as owner', () => {
-    const code = 'join-test';
-    const session = SessionService.getOrCreateSession(code);
-    expect(session.users.size).toBe(0);
-
-    // user_1 => admin
-    SessionService.joinSession(session, 'user_1', 'Alice', 'admin', null);
-    expect(session.users.size).toBe(1);
-
-    const user1 = session.users.get('user_1');
-    expect(user1).toBeDefined();
-    expect(user1.name).toBe('Alice');
-    expect(user1.isAdmin).toBe(true);
-    expect(user1.isOwner).toBe(true); // first user joined => owner
-  });
-
-  test('removeUser frees locks and reassigns owner if needed', () => {
-    const code = 'owner-test';
-    const s = SessionService.getOrCreateSession(code);
-    // user_1 => first join => automatically isOwner
-    const u1 = SessionService.joinSession(s, 'user_1', 'Owner1', '', null);
-    expect(u1.isOwner).toBe(true);
-
-    // user_2 => normal user
-    const u2 = SessionService.joinSession(s, 'user_2', 'User2', '', null);
-    expect(u2.isOwner).toBe(false);
-
-    // Lock an element
-    s.elements.push({ id: 10, x:0, y:0, w:50, h:50, lockedBy: 'user_2' });
-
-    // remove user_2 => should free lock
-    SessionService.removeUser(s, 'user_2');
-    expect(s.users.size).toBe(1);
-    expect(s.elements[s.elements.length - 1].lockedBy).toBe(null);
-
-    // remove user_1 => empty session => no owners
-    SessionService.removeUser(s, 'user_1');
-    expect(s.users.size).toBe(0);
-  });
-
-  test('upgradeUserId merges old user fields, locks, isAdmin/isEditor status, etc.', () => {
-    const code = 'upgrade-test';
-    const s = SessionService.getOrCreateSession(code);
-
-    // Suppose we have an "anon_999" user who isEditor
-    const anon = SessionService.joinSession(s, 'anon_999', 'AnonUser', '', null);
-    anon.isEditor = true;
-
-    // Lock an element
-    s.elements.push({ id: 20, x:10, y:10, w:30, h:30, lockedBy: 'anon_999' });
-
-    // Now upgrade => newUserId "user_5", newIsAdmin = true
-    const upgraded = SessionService.upgradeUserId(
-      s,
-      'anon_999',
-      'user_5',
-      'Bob',
-      true,
-      null
-    );
-    expect(upgraded).toBeDefined();
-    expect(upgraded.userId).toBe('user_5');
-    expect(upgraded.name).toBe('Bob');
-    expect(upgraded.isAdmin).toBe(true);
-    // preserve old isEditor
-    expect(upgraded.isEditor).toBe(true);
-
-    // The locked element should now have lockedBy 'user_5'
-    const lastEl = s.elements[s.elements.length - 1];
-    expect(lastEl.lockedBy).toBe('user_5');
-  });
-
-  test('downgradeUserId => user_5 => anon_123 => removes admin/editor/owner', () => {
-    const s = SessionService.getOrCreateSession('downgrade-test');
-    const u5 = SessionService.joinSession(s, 'user_5', 'Alice', 'admin', null);
-    expect(u5.isAdmin).toBe(true);
-
-    // Also mark her editor, or owner
-    u5.isEditor = true;
-    u5.isOwner = true;
-
-    // push a new element locked by user_5
-    s.elements.push({ id: 30, lockedBy: 'user_5' });
-
-    const downgraded = SessionService.downgradeUserId(
-      s,
-      'user_5',
-      'anon_111',
-      null
-    );
-    expect(downgraded.userId).toBe('anon_111');
-    expect(downgraded.isAdmin).toBe(false);
-    expect(downgraded.isOwner).toBe(false);
-    expect(downgraded.isEditor).toBe(false);
-
-    // The locked element should now be locked by 'anon_111'
-    const lastEl = s.elements[s.elements.length - 1];
-    expect(lastEl.lockedBy).toBe('anon_111');
-  });
-
-  test('setEditorRole toggles isEditor for a user', () => {
-    const s = SessionService.getOrCreateSession('editor-test');
-    const u1 = SessionService.joinSession(s, 'user_10', 'TestUser', '', null);
-    expect(u1.isEditor).toBe(false);
-
-    const success = SessionService.setEditorRole(s, 'user_10', true);
-    expect(success).toBe(true);
-
-    const check = s.users.get('user_10');
-    expect(check.isEditor).toBe(true);
-
-    // Remove editor
-    SessionService.setEditorRole(s, 'user_10', false);
-    expect(s.users.get('user_10').isEditor).toBe(false);
+    SessionService.removeSession('test-code-2');
+    expect(SessionService.getSession('test-code-2')).toBeNull();
   });
 });
 
@@ -1796,7 +1795,6 @@ import { SessionService } from '../../server/services/SessionService.js';
 import { broadcastUserList, broadcastElementState } from '../../server/ws/collabUtils.js';
 import { WebSocketServer } from 'ws';
 
-// We mock these modules so we can inspect calls
 jest.mock('../../server/services/SessionService.js');
 jest.mock('../../server/ws/collabUtils.js', () => ({
   broadcastUserList: jest.fn(),
@@ -1810,10 +1808,8 @@ describe('collaboration.js - handleWebSocketConnection', () => {
   beforeEach(() => {
     jest.clearAllMocks();
 
-    // A mock WebSocket server
     mockWss = new WebSocketServer({ noServer: true });
-    
-    // A mock WebSocket instance
+
     mockWs = {
       on: jest.fn(),
       send: jest.fn(),
@@ -1825,7 +1821,6 @@ describe('collaboration.js - handleWebSocketConnection', () => {
   test('attaches message and close handlers to the incoming ws', () => {
     handleWebSocketConnection(mockWs, mockWss);
 
-    // We expect two .on calls: one for 'message' and one for 'close'
     expect(mockWs.on).toHaveBeenCalledTimes(2);
     expect(mockWs.on).toHaveBeenCalledWith('message', expect.any(Function));
     expect(mockWs.on).toHaveBeenCalledWith('close', expect.any(Function));
@@ -1834,60 +1829,52 @@ describe('collaboration.js - handleWebSocketConnection', () => {
   test('if message is invalid JSON, it is ignored (no crash)', () => {
     handleWebSocketConnection(mockWs, mockWss);
 
-    const [_, onMessage] = mockWs.on.mock.calls.find(call => call[0] === 'message');
-    // Simulate a malformed JSON string:
-    expect(() => onMessage('not valid json}')).not.toThrow();
+    const onMessage = mockWs.on.mock.calls.find(([evt]) => evt === 'message')[1];
+    expect(() => onMessage('invalid json}')).not.toThrow();
   });
 
-
   test('on close: if no sessionCode or userId, does nothing', () => {
-    // Simulate ws.on('close', callback)
     handleWebSocketConnection(mockWs, mockWss);
-    
-    // Find the 'close' callback
-    const closeHandler = mockWs.on.mock.calls.find(
-      call => call[0] === 'close'
-    )[1];
-    
-    // Invoke it with ws.sessionCode = undefined
+
+    const closeHandler = mockWs.on.mock.calls.find(([evt]) => evt === 'close')[1];
     closeHandler();
-    
-    // SessionService should not be called
+
     expect(SessionService.getSession).not.toHaveBeenCalled();
-    expect(SessionService.removeUser).not.toHaveBeenCalled();
+    expect(broadcastUserList).not.toHaveBeenCalled();
+    expect(broadcastElementState).not.toHaveBeenCalled();
   });
 
   test('on close: if session found, remove user, broadcast, possibly remove session', () => {
-    // Suppose the ws gets a sessionCode/userId set at some point
     mockWs.sessionCode = 'test-session-code';
     mockWs.userId = 'test-user';
 
-    // The session object returned
     const mockSession = {
       code: 'test-session-code',
-      users: new Map([['test-user',{ userId:'test-user' }]]),
+      users: new Map([['test-user', { userId: 'test-user' }]]),
+      removeUser: jest.fn(),
+      // We'll fake the user map size as 1
+      usersSize: 1
     };
 
-    // Stubs
-    SessionService.getSession.mockReturnValue(mockSession);
-    SessionService.removeUser.mockImplementation((sess, uid) => {
-      sess.users.delete(uid);
+    // Suppose after removeUser is called, there are 0 users left:
+    mockSession.removeUser.mockImplementation((uid) => {
+      mockSession.users.delete(uid);
     });
-    
-    // handleWebSocketConnection => sets up 'close' 
+
+    SessionService.getSession.mockReturnValue(mockSession);
+
     handleWebSocketConnection(mockWs, mockWss);
 
-    // Grab the close handler
-    const closeHandler = mockWs.on.mock.calls.find(c => c[0] === 'close')[1];
-    
+    const closeHandler = mockWs.on.mock.calls.find(([evt]) => evt === 'close')[1];
     closeHandler();
-    
+
     expect(SessionService.getSession).toHaveBeenCalledWith('test-session-code');
-    expect(SessionService.removeUser).toHaveBeenCalledWith(mockSession, 'test-user');
-    // After removing user, we broadcast user list & element state
+    expect(mockSession.removeUser).toHaveBeenCalledWith('test-user');
+
     expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
     expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
-    // Then sees if session is empty => remove it
+
+    // Now that test-user is removed, the map is empty => session.users.size=0
     expect(SessionService.removeSession).toHaveBeenCalledWith('test-session-code');
   });
 });
@@ -2855,49 +2842,282 @@ export class UserService {
 }
 
 
-===== ./server/services/SessionService.js =====
+===== ./server/services/Session.js =====
 
-// server/services/SessionService.js
-import { WebSocket } from 'ws';
+// server/services/Session.js
 
-const sessionMap = new Map();
+export class Session {
+  constructor(code) {
+    this.code = code;
+    this.projectName = 'New Project';
 
-export class SessionService {
-  static getSession(code) {
-    return sessionMap.get(code) || null;
-  }
+    // In-memory users mapped by userId
+    this.users = new Map();
 
-  static getOrCreateSession(code) {
-    let session = sessionMap.get(code);
-    if (!session) {
-      session = {
-        code,
-        projectName: 'New Project',
-        elements: [
-          { id: 1, x: 100, y: 100, w: 50, h: 50, lockedBy: null },
-          { id: 2, x: 300, y: 200, w: 60, h: 80, lockedBy: null },
-        ],
-        linkedProjectId: null,
-        users: new Map(),
-        nextJoinOrder: 1,  // used for sorting and for reassigning an owner
-        undoStack: [],
-        redoStack: [],
-        pendingMoves: new Map(),
-        pendingResizes: new Map(),
-      };
-      sessionMap.set(code, session);
-    }
-    return session;
-  }
+    // Example default elements
+    this.elements = [
+      { id: 1, x: 100, y: 100, w: 50, h: 50, lockedBy: null },
+      { id: 2, x: 300, y: 200, w: 60, h: 80, lockedBy: null },
+    ];
 
-  static removeSession(code) {
-    sessionMap.delete(code);
+    this.nextJoinOrder = 1;
+    this.undoStack = [];
+    this.redoStack = [];
+
+    // Temporary structures for multi-move or multi-resize interactions
+    this.pendingMoves = new Map();
+    this.pendingResizes = new Map();
   }
 
   /**
-   * Generates a color from the userId by hashing it.
+   * Return true if the given userId is allowed to "manage" others
+   * (i.e., if the user is an owner or an admin).
    */
-  static colorFromUserId(userId) {
+  canManage(userId) {
+    const user = this.users.get(userId);
+    if (!user) return false;
+    return user.isOwner || user.isAdmin;
+  }
+
+  /**
+   * Add (or re-join) a user to this session. If isAdmin is true,
+   * userObj.isAdmin is set. The first user to join becomes isOwner.
+   */
+  addUser(userId, userName, isAdmin = false, wsSocket = null) {
+    let userObj = this.users.get(userId);
+
+    if (!userObj) {
+      userObj = {
+        userId,
+        name: userName || 'Anonymous',
+        color: this._colorFromUserId(userId),
+        isOwner: false,
+        isEditor: false,
+        isAdmin: false,
+        socket: wsSocket,
+        x: 0,  // ephemeral cursor pos
+        y: 0,
+        joinOrder: this.nextJoinOrder++,
+      };
+      this.users.set(userId, userObj);
+
+      // If no owner yet, assign this user as owner
+      if (![...this.users.values()].some(u => u.isOwner)) {
+        userObj.isOwner = true;
+      }
+    } else {
+      // Re-joining: update socket and name if provided
+      userObj.socket = wsSocket;
+      if (userName) {
+        userObj.name = userName;
+      }
+    }
+
+    if (isAdmin) {
+      userObj.isAdmin = true;
+    }
+
+    return userObj;
+  }
+
+  /**
+   * Removes a user from this session, freeing any locks they held,
+   * and possibly reassigning the owner if needed.
+   * Returns the removed user object or null if not found.
+   */
+  removeUser(userId) {
+    const user = this.users.get(userId);
+    if (!user) return null;
+
+    // Free any locks
+    for (const el of this.elements) {
+      if (el.lockedBy === userId) {
+        el.lockedBy = null;
+      }
+    }
+
+    const wasOwner = user.isOwner;
+    this.users.delete(userId);
+
+    // If the removed user was owner, reassign
+    if (wasOwner) {
+      this._reassignOwnerIfNeeded();
+    }
+    return user;
+  }
+
+  /**
+   * Kicks a target user if kicker is admin/owner, and target is neither admin nor owner.
+   * Returns the kicked user object or null if not allowed.
+   */
+  kickUser(kickerUserId, targetUserId) {
+    const kicker = this.users.get(kickerUserId);
+    const target = this.users.get(targetUserId);
+    if (!kicker || !target) return null;
+
+    // Must be owner or admin to kick
+    if (!kicker.isOwner && !kicker.isAdmin) return null;
+
+    // Cannot kick an admin or owner
+    if (target.isOwner || target.isAdmin) return null;
+
+    // Free locks
+    for (const el of this.elements) {
+      if (el.lockedBy === targetUserId) {
+        el.lockedBy = null;
+      }
+    }
+    this.users.delete(targetUserId);
+
+    if (target.isOwner) {
+      this._reassignOwnerIfNeeded();
+    }
+    return target;
+  }
+
+  /**
+   * Upgrades an existing ephemeral user from oldUserId => newUserId,
+   * merges locks, admin status, etc. If newIsAdmin is true, the user
+   * becomes admin. Returns the updated user object.
+   */
+  upgradeUserId(oldUserId, newUserId, newName, newIsAdmin, wsSocket) {
+    let oldUser = this.users.get(oldUserId);
+    if (!oldUser) {
+      // create a placeholder
+      oldUser = {
+        userId: oldUserId,
+        name: 'Anonymous',
+        color: this._colorFromUserId(oldUserId),
+        isOwner: false,
+        isEditor: false,
+        isAdmin: false,
+        socket: null,
+        joinOrder: this.nextJoinOrder++,
+      };
+      this.users.set(oldUserId, oldUser);
+    }
+
+    // re-lock elements
+    for (const el of this.elements) {
+      if (el.lockedBy === oldUserId) {
+        el.lockedBy = newUserId;
+      }
+    }
+
+    // preserve isOwner/isEditor/isAdmin, but override with newIsAdmin if requested
+    const wasOwner = oldUser.isOwner;
+    const wasEditor = oldUser.isEditor;
+    let finalIsAdmin = oldUser.isAdmin;
+
+    if (newIsAdmin === true || newIsAdmin === 'admin') {
+      finalIsAdmin = true;
+    }
+
+    // remove old reference
+    this.users.delete(oldUserId);
+
+    oldUser.userId = newUserId;
+    oldUser.name = newName || oldUser.name;
+    oldUser.isOwner = wasOwner;
+    oldUser.isEditor = wasEditor;
+    oldUser.isAdmin = finalIsAdmin;
+    if (wsSocket) {
+      oldUser.socket = wsSocket;
+    }
+
+    this.users.set(newUserId, oldUser);
+    return oldUser;
+  }
+
+  /**
+   * Downgrades a user => ephemeral "anon" user. Clears admin/owner/editor,
+   * merges locks, etc. Returns the new user object.
+   */
+  downgradeUserId(oldUserId, newUserId, wsSocket) {
+    let oldUser = this.users.get(oldUserId);
+    if (!oldUser) {
+      oldUser = {
+        userId: oldUserId,
+        name: 'Anonymous',
+        color: this._colorFromUserId(oldUserId),
+        isOwner: false,
+        isEditor: false,
+        isAdmin: false,
+        socket: null,
+        joinOrder: this.nextJoinOrder++,
+      };
+      this.users.set(oldUserId, oldUser);
+    }
+
+    for (const el of this.elements) {
+      if (el.lockedBy === oldUserId) {
+        el.lockedBy = newUserId;
+      }
+    }
+
+    const wasOwner = oldUser.isOwner;
+    this.users.delete(oldUserId);
+
+    oldUser.userId = newUserId;
+    oldUser.name = 'Anonymous';
+    oldUser.isOwner = false;
+    oldUser.isAdmin = false;
+    oldUser.isEditor = false;
+    oldUser.joinOrder = this.nextJoinOrder++;
+
+    if (wsSocket) {
+      oldUser.socket = wsSocket;
+    }
+    this.users.set(newUserId, oldUser);
+
+    if (wasOwner) {
+      this._reassignOwnerIfNeeded(newUserId);
+    }
+    return oldUser;
+  }
+
+  /**
+   * Set or unset a user’s editor status.
+   */
+  setEditorRole(targetUserId, isEditor) {
+    const user = this.users.get(targetUserId);
+    if (!user) return false;
+    user.isEditor = !!isEditor;
+    return true;
+  }
+
+  /**
+   * Clear undo/redo stacks for this session.
+   */
+  clearUndoRedo() {
+    this.undoStack = [];
+    this.redoStack = [];
+  }
+
+  /**
+   * (Private) If there are no owners left, pick the earliest joinOrder user
+   * and make them owner.
+   */
+  _reassignOwnerIfNeeded(excludeUserId = null) {
+    const owners = [...this.users.values()].filter(u => u.isOwner);
+    if (owners.length > 0) return;
+
+    const candidates = excludeUserId
+      ? [...this.users.values()].filter(u => u.userId !== excludeUserId)
+      : [...this.users.values()];
+
+    if (candidates.length === 0) {
+      return; // no one left
+    }
+
+    candidates.sort((a, b) => a.joinOrder - b.joinOrder);
+    candidates[0].isOwner = true;
+  }
+
+  /**
+   * Utility: generate a color from userId
+   */
+  _colorFromUserId(userId) {
     let hash = 0;
     for (let i = 0; i < userId.length; i++) {
       hash = userId.charCodeAt(i) + ((hash << 5) - hash);
@@ -2907,249 +3127,32 @@ export class SessionService {
     const b = hash & 0xff;
     return `rgb(${r},${g},${b})`;
   }
+}
 
-  /**
-   * Checks if a user can "manage" roles — must be an owner or an admin.
-   */
-  static canManage(session, userId) {
-    const user = session.users.get(userId);
-    if (!user) return false;
-    return user.isOwner || user.isAdmin;
+
+===== ./server/services/SessionService.js =====
+
+// server/services/SessionService.js
+import { Session } from './Session.js';
+
+const sessionMap = new Map();
+
+export class SessionService {
+  static getSession(code) {
+    return sessionMap.get(code) || null;
   }
 
-  /**
-   * Assign or remove `isEditor` from a target user (only modifies the user object).
-   */
-  static setEditorRole(session, targetUserId, isEditor) {
-    const tgtUser = session.users.get(targetUserId);
-    if (!tgtUser) return false;
-    tgtUser.isEditor = !!isEditor;
-    return true;
+  static getOrCreateSession(code) {
+    let session = this.getSession(code);
+    if (!session) {
+      session = new Session(code);
+      sessionMap.set(code, session);
+    }
+    return session;
   }
 
-  /**
-   * joinSession:
-   *  - If isAdminOrRole === 'admin' or true, sets userObj.isAdmin = true.
-   */
-  static joinSession(session, userId, userName, isAdminOrRole, wsSocket) {
-    let isAdmin = false;
-    if (isAdminOrRole === true || isAdminOrRole === 'admin') {
-      isAdmin = true;
-    }
-
-    let userObj = session.users.get(userId);
-    if (!userObj) {
-      userObj = {
-        userId,
-        name: userName || 'Anonymous',
-        color: this.colorFromUserId(userId),
-        isOwner: false,
-        isEditor: false,
-        isAdmin: false,
-        socket: wsSocket,
-        x: 0,
-        y: 0,
-        joinOrder: session.nextJoinOrder++,
-      };
-      session.users.set(userId, userObj);
-
-      // If no owner yet, this user becomes owner
-      const anyOwner = [...session.users.values()].some(u => u.isOwner);
-      if (!anyOwner) {
-        userObj.isOwner = true;
-      }
-    } else {
-      // Rejoining: update socket and name if needed
-      userObj.socket = wsSocket;
-      if (userName) userObj.name = userName;
-    }
-
-    // If admin => mark userObj
-    if (isAdmin) {
-      userObj.isAdmin = true;
-    }
-    return userObj;
-  }
-
-  /**
-   * Merge oldUser => newUserId; preserve locks, isAdmin/isEditor, etc.
-   */
-  static upgradeUserId(session, oldUserId, newUserId, newName, newIsAdmin, wsSocket) {
-    let oldUser = session.users.get(oldUserId);
-    if (!oldUser) {
-      // create a temporary placeholder if it wasn't found
-      oldUser = {
-        userId: oldUserId,
-        name: 'Anonymous',
-        color: this.colorFromUserId(oldUserId),
-        isOwner: false,
-        isEditor: false,
-        isAdmin: false,
-        socket: null,
-        joinOrder: session.nextJoinOrder++,
-      };
-      session.users.set(oldUserId, oldUser);
-    }
-
-    // Re-lock elements
-    for (const el of session.elements) {
-      if (el.lockedBy === oldUserId) {
-        el.lockedBy = newUserId;
-      }
-    }
-
-    // pick up old user flags
-    const wasOwner = oldUser.isOwner;
-    const wasEditor = oldUser.isEditor;
-    const wasAdmin = oldUser.isAdmin;
-
-    // Overwrite user object with new userId/Name
-    oldUser.userId = newUserId;
-    if (newName) oldUser.name = newName;
-
-    let finalIsAdmin = wasAdmin;
-    if (newIsAdmin === true || newIsAdmin === 'admin') {
-      finalIsAdmin = true;
-    }
-    oldUser.isAdmin = finalIsAdmin;
-    oldUser.isEditor = wasEditor;
-    oldUser.isOwner = wasOwner;
-
-    if (wsSocket) {
-      oldUser.socket = wsSocket;
-    }
-
-    // Remove old from session, add new
-    session.users.delete(oldUserId);
-    session.users.set(newUserId, oldUser);
-
-    return oldUser;
-  }
-
-  static downgradeUserId(session, oldUserId, newUserId, wsSocket) {
-    let oldUser = session.users.get(oldUserId);
-    if (!oldUser) {
-      oldUser = {
-        userId: oldUserId,
-        name: 'Anonymous',
-        color: this.colorFromUserId(oldUserId),
-        isOwner: false,
-        isEditor: false,
-        isAdmin: false,
-        socket: null,
-        joinOrder: session.nextJoinOrder++,
-      };
-      session.users.set(oldUserId, oldUser);
-    }
-
-    // Re-lock elements
-    for (const el of session.elements) {
-      if (el.lockedBy === oldUserId) {
-        el.lockedBy = newUserId;
-      }
-    }
-
-    const wasOwner = oldUser.isOwner;
-
-    session.users.delete(oldUserId);
-
-    // The user becomes an anonymous user with no privileges
-    oldUser.userId = newUserId;
-    oldUser.name = 'Anonymous';
-    oldUser.isAdmin = false;
-    oldUser.isEditor = false;
-    oldUser.isOwner = false;
-    oldUser.joinOrder = session.nextJoinOrder++;
-
-    if (wsSocket) {
-      oldUser.socket = wsSocket;
-    }
-
-    session.users.set(newUserId, oldUser);
-
-    if (wasOwner) {
-      this.reassignOwnerIfNeeded(session, newUserId);
-    }
-    return oldUser;
-  }
-
-  /**
-   * Remove a user from the session, freeing locks, possibly reassigning owner.
-   */
-  static removeUser(session, userId) {
-    const user = session.users.get(userId);
-    if (!user) return null;
-
-    // free locks
-    for (const el of session.elements) {
-      if (el.lockedBy === userId) {
-        el.lockedBy = null;
-      }
-    }
-    const wasOwner = user.isOwner;
-    session.users.delete(userId);
-
-    if (wasOwner) {
-      this.reassignOwnerIfNeeded(session);
-    }
-    return user;
-  }
-
-  /**
-   * Kick user: only if kicker is admin or owner, and the target is neither admin nor owner.
-   */
-  static kickUser(session, kickerUserId, targetUserId) {
-    const reqUser = session.users.get(kickerUserId);
-    const tgtUser = session.users.get(targetUserId);
-    if (!reqUser || !tgtUser) return null;
-
-    if (!reqUser.isOwner && !reqUser.isAdmin) return null;
-    if (tgtUser.isAdmin || tgtUser.isOwner) return null;
-
-    // free locks
-    for (const el of session.elements) {
-      if (el.lockedBy === targetUserId) {
-        el.lockedBy = null;
-      }
-    }
-    session.users.delete(targetUserId);
-
-    if (tgtUser.isOwner) {
-      this.reassignOwnerIfNeeded(session);
-    }
-    return tgtUser;
-  }
-
-  /**
-   * If no owners remain, pick the earliest joinOrder user and make them owner.
-   */
-  static reassignOwnerIfNeeded(session, excludeUserId = null) {
-    const owners = [...session.users.values()].filter(u => u.isOwner);
-    if (owners.length > 0) return;
-
-    const arr = [...session.users.values()];
-    if (arr.length === 0) {
-      return;
-    }
-
-    const potentialOwners = excludeUserId
-      ? arr.filter(u => u.userId !== excludeUserId)
-      : arr;
-
-    if (potentialOwners.length === 0) {
-      return;
-    }
-
-    potentialOwners.sort((a, b) => a.joinOrder - b.joinOrder);
-    potentialOwners[0].isOwner = true;
-  }
-
-  /**
-   * Clears the session's undo/redo stacks.
-   */
-  static clearUndoRedo(session) {
-    session.undoStack = [];
-    session.redoStack = [];
+  static removeSession(code) {
+    sessionMap.delete(code);
   }
 }
 
@@ -3536,7 +3539,7 @@ export function handleWebSocketConnection(ws, wss) {
     if (!session) return;
 
     // Remove user => frees locks, etc.
-    SessionService.removeUser(session, userId);
+    session.removeUser(userId);
 
     // Now broadcast updated user list & element state so
     // other clients see the freed locks & updated session users
@@ -4132,25 +4135,22 @@ export function handleChatMessage(session, data, ws) {
 ===== ./server/ws/handlers/permissionHandlers.js =====
 
 // server/ws/handlers/permissionHandlers.js
+
 import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { WebSocket } from 'ws';
-import { SessionService } from '../../services/SessionService.js';
 
 export function handleMakeEditor(session, data, ws) {
   if (!session) return;
   const { userId, targetUserId } = data;
 
-  // Only an owner or admin can manage ephemeral roles
-  if (!SessionService.canManage(session, userId)) {
+  if (!session.canManage(userId)) {
     return;
   }
   const tgtUser = session.users.get(targetUserId);
   if (!tgtUser) return;
 
-  // Prevent toggling an owner/admin
   if (!tgtUser.isOwner && !tgtUser.isAdmin) {
-    SessionService.setEditorRole(session, targetUserId, true);
+    session.setEditorRole(targetUserId, true);
     broadcastUserList(session);
   }
 }
@@ -4159,36 +4159,32 @@ export function handleRemoveEditor(session, data, ws) {
   if (!session) return;
   const { userId, targetUserId } = data;
 
-  if (!SessionService.canManage(session, userId)) {
+  if (!session.canManage(userId)) {
     return;
   }
   const tgtUser = session.users.get(targetUserId);
   if (!tgtUser) return;
 
   if (tgtUser.isEditor) {
-    SessionService.setEditorRole(session, targetUserId, false);
+    session.setEditorRole(targetUserId, false);
     broadcastUserList(session);
   }
 }
 
-/**
- * KICK_USER => forcibly remove them from the session
- */
 export function handleKickUser(session, data, ws) {
   if (!session) return;
   const { userId, targetUserId } = data;
 
-  const kickedUser = SessionService.kickUser(session, userId, targetUserId);
+  const kickedUser = session.kickUser(userId, targetUserId);
   if (!kickedUser) {
-    return; // not authorized or user is admin/owner => no action
+    return;
   }
 
   broadcastUserList(session);
   broadcastElementState(session);
 
-  // If the kicked user is still connected, notify them
   if (kickedUser.socket && kickedUser.socket.readyState === WebSocket.OPEN) {
-    kickedUser.socket.send(JSON.stringify({ type: MESSAGE_TYPES.KICKED }), () => {
+    kickedUser.socket.send(JSON.stringify({ type: 'kicked' }), () => {
       setTimeout(() => kickedUser.socket.close(), 50);
     });
   } else {
@@ -4231,30 +4227,27 @@ export function handleCursorUpdate(session, data, ws) {
 
 ===== ./server/ws/handlers/sessionHandlers.js =====
 
-// server/ws/handlers/sessionHandlers.js
+// server/ws/sessionHandlers.js
 
 import { SessionService } from '../../services/SessionService.js';
 import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 
 /**
  * handleJoinSession
- *   - If data.userRole === 'admin', pass "true" as the 4th param so the test sees joinSession(..., true, ...)
  */
 export function handleJoinSession(session, data, ws) {
   const { userId, name, sessionCode, userRole } = data;
   if (!userId) return;
 
-  // The test expects the 4th param to be exactly boolean true if userRole==='admin'
-  let adminParam = undefined;
+  // If userRole === 'admin', isAdmin = true, else undefined (not false)
+  let isAdmin;
   if (userRole === 'admin') {
-    adminParam = true;
+    isAdmin = true;
   }
 
-  const code = sessionCode || 'defaultSession';
-  const theSession = session || SessionService.getOrCreateSession(code);
+  const theSession = session || SessionService.getOrCreateSession(sessionCode || 'defaultSession');
+  const userObj = theSession.addUser(userId, name, isAdmin, ws);
 
-  const userObj = SessionService.joinSession(theSession, userId, name, adminParam, ws);
   ws.sessionCode = theSession.code;
   ws.userId = userObj.userId;
 
@@ -4262,11 +4255,14 @@ export function handleJoinSession(session, data, ws) {
   broadcastElementState(theSession);
 }
 
+/**
+ * handleUpgradeUserId
+ */
 export function handleUpgradeUserId(session, data, ws) {
   if (!session) return;
   const { oldUserId, newUserId, newName, newIsAdmin } = data;
-  const userObj = SessionService.upgradeUserId(
-    session,
+
+  const userObj = session.upgradeUserId(
     oldUserId,
     newUserId,
     newName,
@@ -4280,10 +4276,14 @@ export function handleUpgradeUserId(session, data, ws) {
   broadcastElementState(session);
 }
 
+/**
+ * handleDowngradeUserId
+ */
 export function handleDowngradeUserId(session, data, ws) {
   if (!session) return;
   const { oldUserId, newUserId } = data;
-  const userObj = SessionService.downgradeUserId(session, oldUserId, newUserId, ws);
+
+  const userObj = session.downgradeUserId(oldUserId, newUserId, ws);
   if (!userObj) return;
 
   ws.userId = userObj.userId;

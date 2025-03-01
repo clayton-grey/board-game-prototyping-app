@@ -1,27 +1,24 @@
-// server/ws/handlers/sessionHandlers.js
+// server/ws/sessionHandlers.js
 
 import { SessionService } from '../../services/SessionService.js';
 import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 
 /**
  * handleJoinSession
- *   - If data.userRole === 'admin', pass "true" as the 4th param so the test sees joinSession(..., true, ...)
  */
 export function handleJoinSession(session, data, ws) {
   const { userId, name, sessionCode, userRole } = data;
   if (!userId) return;
 
-  // The test expects the 4th param to be exactly boolean true if userRole==='admin'
-  let adminParam = undefined;
+  // If userRole === 'admin', isAdmin = true, else undefined (not false)
+  let isAdmin;
   if (userRole === 'admin') {
-    adminParam = true;
+    isAdmin = true;
   }
 
-  const code = sessionCode || 'defaultSession';
-  const theSession = session || SessionService.getOrCreateSession(code);
+  const theSession = session || SessionService.getOrCreateSession(sessionCode || 'defaultSession');
+  const userObj = theSession.addUser(userId, name, isAdmin, ws);
 
-  const userObj = SessionService.joinSession(theSession, userId, name, adminParam, ws);
   ws.sessionCode = theSession.code;
   ws.userId = userObj.userId;
 
@@ -29,11 +26,14 @@ export function handleJoinSession(session, data, ws) {
   broadcastElementState(theSession);
 }
 
+/**
+ * handleUpgradeUserId
+ */
 export function handleUpgradeUserId(session, data, ws) {
   if (!session) return;
   const { oldUserId, newUserId, newName, newIsAdmin } = data;
-  const userObj = SessionService.upgradeUserId(
-    session,
+
+  const userObj = session.upgradeUserId(
     oldUserId,
     newUserId,
     newName,
@@ -47,10 +47,14 @@ export function handleUpgradeUserId(session, data, ws) {
   broadcastElementState(session);
 }
 
+/**
+ * handleDowngradeUserId
+ */
 export function handleDowngradeUserId(session, data, ws) {
   if (!session) return;
   const { oldUserId, newUserId } = data;
-  const userObj = SessionService.downgradeUserId(session, oldUserId, newUserId, ws);
+
+  const userObj = session.downgradeUserId(oldUserId, newUserId, ws);
   if (!userObj) return;
 
   ws.userId = userObj.userId;

@@ -31,7 +31,7 @@ export function handleWebSocketConnection(ws, wss) {
     if (!session) return;
 
     // Remove user => frees locks, etc.
-    SessionService.removeUser(session, userId);
+    session.removeUser(userId);
 
     // Now broadcast updated user list & element state so
     // other clients see the freed locks & updated session users

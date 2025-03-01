@@ -1,12 +1,9 @@
 // tests/unit/permissionHandlers.test.js
 
 import { handleMakeEditor, handleRemoveEditor, handleKickUser } from '../../server/ws/handlers/permissionHandlers.js';
-import { SessionService } from '../../server/services/SessionService.js';
 import { broadcastUserList, broadcastElementState, broadcastToSession } from '../../server/ws/collabUtils.js';
-import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 import { WebSocket } from 'ws';
 
-jest.mock('../../server/services/SessionService.js');
 jest.mock('../../server/ws/collabUtils.js', () => ({
   broadcastUserList: jest.fn(),
   broadcastElementState: jest.fn(),
@@ -23,7 +20,11 @@ describe('permissionHandlers', () => {
     mockSession = {
       code: 'test-permissions',
       users: new Map(),
-      elements: []
+      elements: [],
+      // We now have a direct method canManage, setEditorRole, kickUser, etc.
+      canManage: jest.fn(),
+      setEditorRole: jest.fn(),
+      kickUser: jest.fn(),
     };
   });
 
@@ -34,17 +35,18 @@ describe('permissionHandlers', () => {
     mockSession.users.set('user1', user1);
     mockSession.users.set('user2', user2);
 
-    SessionService.canManage.mockReturnValue(true);
+    mockSession.canManage.mockReturnValue(true);
 
     handleMakeEditor(mockSession, { userId: 'user1', targetUserId: 'user2' }, mockWs);
-    expect(SessionService.setEditorRole).toHaveBeenCalledWith(mockSession, 'user2', true);
+    expect(mockSession.setEditorRole).toHaveBeenCalledWith('user2', true);
     expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
   });
 
-  test('handleMakeEditor => does nothing if SessionService.canManage = false', () => {
-    SessionService.canManage.mockReturnValue(false);
+  test('handleMakeEditor => does nothing if session.canManage = false', () => {
+    mockSession.canManage.mockReturnValue(false);
     handleMakeEditor(mockSession, { userId: 'x', targetUserId: 'y' }, mockWs);
-    expect(SessionService.setEditorRole).not.toHaveBeenCalled();
+
+    expect(mockSession.setEditorRole).not.toHaveBeenCalled();
     expect(broadcastUserList).not.toHaveBeenCalled();
   });
 
@@ -54,40 +56,42 @@ describe('permissionHandlers', () => {
     mockSession.users.set('admin', adminUser);
     mockSession.users.set('u100', normalUser);
 
-    SessionService.canManage.mockReturnValue(true);
+    mockSession.canManage.mockReturnValue(true);
 
     handleRemoveEditor(mockSession, { userId: 'admin', targetUserId: 'u100' }, mockWs);
-    expect(SessionService.setEditorRole).toHaveBeenCalledWith(mockSession, 'u100', false);
+    expect(mockSession.setEditorRole).toHaveBeenCalledWith('u100', false);
     expect(broadcastUserList).toHaveBeenCalled();
   });
 
-  test('handleKickUser => calls SessionService.kickUser if can manage, broadcasts', () => {
+  test('handleKickUser => calls session.kickUser if can manage, broadcasts', () => {
     const userA = { userId: 'userA', isOwner: true };
     const userB = { userId: 'userB' };
     mockSession.users.set('userA', userA);
     mockSession.users.set('userB', userB);
 
-    SessionService.kickUser.mockReturnValue({
+    // We'll pretend it returns an object with userId plus a socket
+    mockSession.kickUser.mockReturnValue({
       userId: 'userB',
       socket: { send: jest.fn(), readyState: WebSocket.OPEN }
     });
 
     handleKickUser(mockSession, { userId: 'userA', targetUserId: 'userB' }, mockWs);
 
-    expect(SessionService.kickUser).toHaveBeenCalledWith(mockSession, 'userA', 'userB');
+    expect(mockSession.kickUser).toHaveBeenCalledWith('userA', 'userB');
     expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
     expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
 
-    // Also expect kicked user's socket to receive a "KICKED" message
-    const kickedUser = SessionService.kickUser.mock.results[0].value;
+    // Also expect kicked user's socket to receive a "kicked" message
+    const kickedUser = mockSession.kickUser.mock.results[0].value;
     expect(kickedUser.socket.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: MESSAGE_TYPES.KICKED }),
+      JSON.stringify({ type: 'kicked' }),
       expect.any(Function)
     );
   });
 
-  test('handleKickUser => no action if SessionService.kickUser returns null', () => {
-    SessionService.kickUser.mockReturnValue(null);
+  test('handleKickUser => no action if session.kickUser returns null', () => {
+    mockSession.kickUser.mockReturnValue(null);
+
     handleKickUser(mockSession, { userId: 'admin', targetUserId: 'somebody' }, mockWs);
     expect(broadcastUserList).not.toHaveBeenCalled();
     expect(broadcastElementState).not.toHaveBeenCalled();
