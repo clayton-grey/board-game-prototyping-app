@@ -35,20 +35,20 @@ let creationState = null; // { active, tool, startWX, startWY, curWX, curWY }
 // SHIFT key
 let shiftDown = false;
 
-/* ------------------------------------------------------------------
-   RESIZING STATE
------------------------------------------------------------------- */
-let isResizing = false;
-let activeHandle = null; // 'left','right','top','bottom','top-left','top-right','bottom-left','bottom-right'
-let boundingBoxAtDragStart = { x: 0, y: 0, w: 0, h: 0 };
-let shapesSnapshot = [];
-
 /** Helper to clamp the scale to [minScale, maxScale]. */
 function clampScale(value) {
   return Math.max(minScale, Math.min(maxScale, value));
 }
 
-/** Restore transform cursor styles. */
+/* ------------------------------------------------------------------
+   RESIZING STATE
+------------------------------------------------------------------ */
+let isResizing = false;
+let activeHandle = null; // 'top-left','bottom-right', etc.
+let boundingBoxAtDragStart = { x: 0, y: 0, w: 0, h: 0 };
+let shapesSnapshot = [];
+
+/** Returns the appropriate cursor for a given resize handle name. */
 function getCursorForHandle(handle) {
   // corners
   if (handle === "top-left" || handle === "bottom-right") {
@@ -67,7 +67,7 @@ function getCursorForHandle(handle) {
   return "default";
 }
 
-/** Initialize canvas pointer events, etc. */
+/** Initialize the canvas, pointer events, zoom controls, etc. */
 export function initCanvas(initialUserId) {
   localUserId = initialUserId;
 
@@ -102,10 +102,10 @@ export function initCanvas(initialUserId) {
   // ESC => cancel creation or resizing or deselect
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (creationState && creationState.active) {
+      if (creationState?.active) {
         creationState.active = false;
       } else if (isResizing) {
-        endResizing(true); // force finalize
+        endResizing(true);
       } else {
         deselectAll();
       }
@@ -116,12 +116,7 @@ export function initCanvas(initialUserId) {
 
   // Delete key => remove selected shapes
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Delete" || e.key === "Backspace") {
-      // Skip if a text field is focused
-      const tag = document.activeElement?.tagName.toLowerCase();
-      if (tag === "input" || tag === "textarea") {
-        return; 
-      }
+    if ((e.key === "Delete" || e.key === "Backspace") && noTextInputFocused()) {
       if (selectedElementIds.length > 0) {
         window.__sendWSMessage({
           type: MESSAGE_TYPES.ELEMENT_DELETE,
@@ -136,21 +131,23 @@ export function initCanvas(initialUserId) {
   requestAnimationFrame(render);
 }
 
-/** SHIFT key tracking */
+/** Return true if the active element is not an input or textarea (so we can safely intercept Backspace). */
+function noTextInputFocused() {
+  const tag = document.activeElement?.tagName?.toLowerCase();
+  return (tag !== "input" && tag !== "textarea");
+}
+
+/** SHIFT key tracking. */
 function setupKeyListeners() {
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Shift") {
-      shiftDown = true;
-    }
+    if (e.key === "Shift") shiftDown = true;
   });
   window.addEventListener("keyup", (e) => {
-    if (e.key === "Shift") {
-      shiftDown = false;
-    }
+    if (e.key === "Shift") shiftDown = false;
   });
 }
 
-/** If the user ID changes (login/out), update local. */
+/** If the user ID changes (login/out), update local references. */
 export function updateCanvasUserId(newId) {
   localUserId = newId;
 }
@@ -190,6 +187,7 @@ export function handleCanvasMessage(data, myUserId) {
       break;
 
     case MESSAGE_TYPES.CURSOR_UPDATES:
+      // aggregate (not used frequently, but we keep it)
       for (const [uId, pos] of Object.entries(data.cursors)) {
         remoteCursors.set(uId, pos);
       }
@@ -210,7 +208,7 @@ export function handleUserColorUpdate(userId, name, color) {
   userInfoMap.set(userId, { color, name });
 }
 
-/** If server updates project name, store it. */
+/** If server updates project name, store it locally. */
 export function setProjectNameFromServer(newName) {
   currentProjectName = newName;
 }
@@ -241,7 +239,7 @@ function initToolsPalette() {
 }
 
 /* ------------------------------------------------------------------
-   POINTER EVENTS
+   POINTER EVENTS (down/move/up)
 ------------------------------------------------------------------ */
 let lastMouseX = 0, lastMouseY = 0;
 
@@ -249,8 +247,8 @@ function onPointerDown(e) {
   const canvas = e.currentTarget;
   canvas.setPointerCapture(e.pointerId);
 
+  // Right or middle => panning
   if (e.button === 1 || e.button === 2) {
-    // Right or middle => panning
     isPanning = true;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
@@ -258,6 +256,7 @@ function onPointerDown(e) {
     return;
   }
 
+  // Left button => either resizing, selecting, or shape creation
   if (e.button === 0) {
     // Check if user clicked a resize handle first
     if (currentTool === "select" && selectedElementIds.length > 0) {
@@ -268,7 +267,7 @@ function onPointerDown(e) {
       }
     }
 
-    // Otherwise standard select or shape creation
+    // Otherwise handle select or creation
     if (currentTool === "select") {
       handleSelectPointerDown(e);
     } else {
@@ -293,7 +292,7 @@ function onPointerMove(e) {
   else if (isResizing && (e.buttons & 1)) {
     updateResizing(e);
   }
-  // Drag selected shapes
+  // Dragging
   else if (isDragging && (e.buttons & 1)) {
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
@@ -303,7 +302,7 @@ function onPointerMove(e) {
 
     for (const id of selectedElementIds) {
       const el = elements.find(ele => ele.id === id);
-      if (el && el.lockedBy === localUserId) {
+      if (el?.lockedBy === localUserId) {
         const off = lockedOffsets[id];
         if (off) {
           const nx = wx - off.dx;
@@ -314,7 +313,7 @@ function onPointerMove(e) {
     }
   }
   // Shape creation
-  else if (creationState && creationState.active && (e.buttons & 1)) {
+  else if (creationState?.active && (e.buttons & 1)) {
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
@@ -360,7 +359,6 @@ function onPointerMove(e) {
 
 function onPointerUp(e) {
   const canvas = e.currentTarget;
-
   // End panning
   if (isPanning && (e.button === 1 || e.button === 2)) {
     isPanning = false;
@@ -381,7 +379,7 @@ function onPointerUp(e) {
   }
 
   // End shape creation
-  if (creationState && creationState.active && e.button === 0) {
+  if (creationState?.active && e.button === 0) {
     finalizeShapeCreation();
     return;
   }
@@ -398,10 +396,8 @@ function onPointerUp(e) {
 
     const newlySelected = [];
     for (const el of elements) {
-      // Skip if locked by another user
-      if (el.lockedBy && el.lockedBy !== localUserId) {
-        continue;
-      }
+      // skip if locked by another user
+      if (el.lockedBy && el.lockedBy !== localUserId) continue;
       const ex2 = el.x + el.w, ey2 = el.y + el.h;
       if (boxesOverlap(rminX, rminY, rmaxX, rmaxY, el.x, el.y, ex2, ey2)) {
         newlySelected.push(el.id);
@@ -432,11 +428,10 @@ function handleSelectPointerDown(e) {
 
   const clicked = findTopmostElementAt(wx, wy);
   if (clicked) {
-    // If locked by another user, skip selection
+    // If locked by another user, skip
     if (clicked.lockedBy && clicked.lockedBy !== localUserId) {
       return;
     }
-
     // SHIFT => toggle
     if (e.shiftKey) {
       if (selectedElementIds.includes(clicked.id)) {
@@ -455,7 +450,6 @@ function handleSelectPointerDown(e) {
         selectedElementIds.push(clicked.id);
       }
     }
-
     // If selected, prepare dragging
     if (selectedElementIds.includes(clicked.id)) {
       for (const id of selectedElementIds) {
@@ -555,14 +549,12 @@ function finalizeShapeCreation() {
     const TEXT_DEFAULT_HEIGHT = 30;
     h = TEXT_DEFAULT_HEIGHT;
   }
-  if (w < 2 && h < 2) {
-    return;
-  }
+  if (w < 2 && h < 2) return;
+
   // Deselect existing
   if (selectedElementIds.length > 0) {
     deselectAll();
   }
-
   x = Math.round(x);
   y = Math.round(y);
   w = Math.round(w);
@@ -641,9 +633,7 @@ function getSelectionBoundingBox() {
 }
 
 function drawSelectionBoundingBox(ctx) {
-  if (!canTransformSelection()) {
-    return;
-  }
+  if (!canTransformSelection()) return;
 
   const bb = getSelectionBoundingBox();
   if (!bb) return;
@@ -678,6 +668,7 @@ function hitTestResizeHandles(e) {
   if (!canTransformSelection()) return null;
 
   const rect = e.currentTarget.getBoundingClientRect();
+  // correct for devicePixelRatio when using e.clientX / e.clientY
   const sx = (e.clientX - rect.left) / (1 / devicePixelRatio);
   const sy = (e.clientY - rect.top) / (1 / devicePixelRatio);
 
@@ -706,39 +697,19 @@ function hitTestResizeHandles(e) {
   // edges => small tolerance
   const edgeTol = 6 / scale;
   // top
-  if (
-    wy >= bb.y - edgeTol &&
-    wy <= bb.y + edgeTol &&
-    wx >= bb.x &&
-    wx <= bb.x + bb.w
-  ) {
+  if (wy >= bb.y - edgeTol && wy <= bb.y + edgeTol && wx >= bb.x && wx <= bb.x + bb.w) {
     return "top";
   }
   // bottom
-  if (
-    wy >= bb.y + bb.h - edgeTol &&
-    wy <= bb.y + bb.h + edgeTol &&
-    wx >= bb.x &&
-    wx <= bb.x + bb.w
-  ) {
+  if (wy >= (bb.y + bb.h - edgeTol) && wy <= (bb.y + bb.h + edgeTol) && wx >= bb.x && wx <= bb.x + bb.w) {
     return "bottom";
   }
   // left
-  if (
-    wx >= bb.x - edgeTol &&
-    wx <= bb.x + edgeTol &&
-    wy >= bb.y &&
-    wy <= bb.y + bb.h
-  ) {
+  if (wx >= bb.x - edgeTol && wx <= bb.x + edgeTol && wy >= bb.y && wy <= bb.y + bb.h) {
     return "left";
   }
   // right
-  if (
-    wx >= bb.x + bb.w - edgeTol &&
-    wx <= bb.x + bb.w + edgeTol &&
-    wy >= bb.y &&
-    wy <= bb.y + bb.h
-  ) {
+  if (wx >= (bb.x + bb.w - edgeTol) && wx <= (bb.x + bb.w + edgeTol) && wy >= bb.y && wy <= bb.y + bb.h) {
     return "right";
   }
 
@@ -813,7 +784,6 @@ function updateResizing(e) {
     if (newRatio > originalRatio) {
       const wFactor = bb.w / boundingBoxAtDragStart.w;
       bb.h = boundingBoxAtDragStart.h * wFactor;
-
       if (activeHandle.includes("top")) {
         bb.y = boundingBoxAtDragStart.y + boundingBoxAtDragStart.h - bb.h;
       }
@@ -823,7 +793,6 @@ function updateResizing(e) {
     } else {
       const hFactor = bb.h / boundingBoxAtDragStart.h;
       bb.w = boundingBoxAtDragStart.w * hFactor;
-
       if (activeHandle.includes("top")) {
         bb.y = boundingBoxAtDragStart.y + boundingBoxAtDragStart.h - bb.h;
       }
@@ -837,7 +806,7 @@ function updateResizing(e) {
   const scaleY = bb.h / boundingBoxAtDragStart.h;
 
   for (const snap of shapesSnapshot) {
-    const el = elements.find((x) => x.id === snap.id);
+    const el = elements.find(x => x.id === snap.id);
     if (!el) continue;
 
     let newX = el.x,
@@ -846,22 +815,14 @@ function updateResizing(e) {
       newH = el.h;
 
     // horizontal
-    if (
-      activeHandle.includes("left") ||
-      activeHandle.includes("right") ||
-      activeHandle.includes("top-") ||
-      activeHandle.includes("bottom-")
-    ) {
+    if (activeHandle.includes("left") || activeHandle.includes("right") ||
+        activeHandle.includes("top-") || activeHandle.includes("bottom-")) {
       newX = bb.x + snap.relX * scaleX;
       newW = snap.w * scaleX;
     }
     // vertical
-    if (
-      activeHandle.includes("top") ||
-      activeHandle.includes("bottom") ||
-      activeHandle.includes("left-") ||
-      activeHandle.includes("right-")
-    ) {
+    if (activeHandle.includes("top") || activeHandle.includes("bottom") ||
+        activeHandle.includes("left-") || activeHandle.includes("right-")) {
       newY = bb.y + snap.relY * scaleY;
       newH = snap.h * scaleY;
     }
@@ -875,22 +836,17 @@ function updateResizing(e) {
   }
 }
 
-/**
- * Called when the user finishes resizing by releasing the mouse or pressing ESC.
- * If 'forceFinalize' is true, finalize the transform even if user didn't do pointerUp.
- */
+/** Called when the user finishes resizing by releasing the mouse or pressing ESC. */
 function endResizing(forceFinalize) {
   isResizing = false;
   activeHandle = null;
   shapesSnapshot = [];
 
   if (selectedElementIds.length > 0) {
-    // In all cases, finalize a single group transform with these shapes
     sendElementResizeEnd(selectedElementIds);
   }
 }
 
-/** Tells the server to finalize the pending multi-element transform. */
 function sendElementResizeEnd(ids) {
   window.__sendWSMessage({
     type: MESSAGE_TYPES.ELEMENT_RESIZE_END,
@@ -898,8 +854,6 @@ function sendElementResizeEnd(ids) {
     elementIds: ids,
   });
 }
-
-/** Sends incremental update for each shape. */
 function sendResizeElement(elementId, x, y, w, h) {
   window.__sendWSMessage({
     type: MESSAGE_TYPES.ELEMENT_RESIZE,
@@ -973,7 +927,6 @@ function render() {
   if (selectedElementIds.length > 0 && currentTool === "select") {
     drawSelectionBoundingBox(ctx);
   }
-
   ctx.restore();
 
   // Marquee
@@ -982,7 +935,7 @@ function render() {
   }
 
   // Ephemeral shape
-  if (creationState && creationState.active) {
+  if (creationState?.active) {
     drawEphemeralShape(ctx);
   }
 
@@ -1137,12 +1090,7 @@ function findTopmostElementAt(wx, wy) {
         return el;
       }
     } else {
-      if (
-        wx >= el.x &&
-        wx <= el.x + el.w &&
-        wy >= el.y &&
-        wy <= el.y + el.h
-      ) {
+      if (wx >= el.x && wx <= el.x + el.w && wy >= el.y && wy <= el.y + el.h) {
         return el;
       }
     }
@@ -1169,18 +1117,18 @@ function onWheel(e) {
 
 function zoomAroundCenter(step) {
   const canvas = document.getElementById("gameCanvas");
-  const cw = canvas.clientWidth,
-    ch = canvas.clientHeight;
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
   zoomAroundPoint(scale + step, cw / 2, ch / 2);
 }
 
 function zoomAroundPoint(newScale, anchorX, anchorY) {
   const oldScale = scale;
-  scale = clampScale(newScale);
-  if (scale === oldScale) return;
-
+  newScale = clampScale(newScale);
+  if (newScale === oldScale) return;
   const wx = camX + anchorX / oldScale;
   const wy = camY + anchorY / oldScale;
+  scale = newScale;
   camX = wx - anchorX / scale;
   camY = wy - anchorY / scale;
   updateZoomUI();
@@ -1188,23 +1136,19 @@ function zoomAroundPoint(newScale, anchorX, anchorY) {
 
 function frameAllElements() {
   if (!elements.length) return;
-  let minX = Infinity,
-    maxX = -Infinity;
-  let minY = Infinity,
-    maxY = -Infinity;
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
   for (const el of elements) {
     minX = Math.min(minX, el.x);
     maxX = Math.max(maxX, el.x + el.w);
     minY = Math.min(minY, el.y);
     maxY = Math.max(maxY, el.y + el.h);
   }
-  const w = maxX - minX,
-    h = maxY - minY;
+  const w = maxX - minX, h = maxY - minY;
   if (w <= 0 || h <= 0) return;
 
   const canvas = document.getElementById("gameCanvas");
-  const cw = canvas.clientWidth,
-    ch = canvas.clientHeight;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
   const margin = 50;
   const scaleX = (cw - margin * 2) / w;
   const scaleY = (ch - margin * 2) / h;

@@ -3,77 +3,67 @@ import { broadcastElementState } from '../collabUtils.js';
 import { pushUndoAction } from './undoRedoHandlers.js';
 
 /**
- * A helper that checks if the element is locked by someone else; 
- * if yes, returns false so the caller can skip. 
- * Otherwise, if it's unlocked and `autoLock` is true, lock it to `userId`.
- * Return true if the caller can proceed, false otherwise.
+ * Helper to check if element is locked by another user.
  */
-function ensureLockOrSkip(el, userId, { autoLock = true } = {}) {
-  // If locked by another user, skip
-  if (el.lockedBy && el.lockedBy !== userId) {
-    return false;
-  }
-  // If unlocked and autoLock is allowed, lock it
-  if (!el.lockedBy && autoLock) {
-    el.lockedBy = userId;
-  }
-  return true;
+function isElementLockedByOthers(element, userId) {
+  return element.lockedBy && element.lockedBy !== userId;
 }
 
 /**
- * Helper: get or create the user-specific sub-map under session[key]. 
- * Example usage: const userMap = getOrCreateUserMap(session, 'pendingResizes', userId);
+ * handleElementGrab => locks element if not locked or locked by self.
  */
-function getOrCreateUserMap(session, key, userId) {
-  if (!session[key]) {
-    session[key] = new Map();
-  }
-  let userMap = session[key].get(userId);
-  if (!userMap) {
-    userMap = new Map();
-    session[key].set(userId, userMap);
-  }
-  return userMap;
-}
-
 export function handleElementGrab(session, data, ws) {
   if (!session) return;
   const { userId, elementId } = data;
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  if (!ensureLockOrSkip(el, userId)) {
+  // If locked by someone else, do nothing
+  if (isElementLockedByOthers(el, userId)) {
     return;
   }
+  // Otherwise, lock it to me
+  el.lockedBy = userId;
   broadcastElementState(session);
 }
 
+/**
+ * handleElementMove => moves the element if locked by user.
+ */
 export function handleElementMove(session, data, ws) {
   if (!session) return;
   const { userId, elementId, x, y } = data;
+
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  if (!ensureLockOrSkip(el, userId)) {
-    return;
+  // Must be locked by this user
+  if (el.lockedBy === userId) {
+    el.x = x;
+    el.y = y;
+    broadcastElementState(session);
   }
-  el.x = x;
-  el.y = y;
-  broadcastElementState(session);
 }
 
+/**
+ * handleElementRelease => does nothing except broadcast if locked by same user.
+ * (Could be used to finalize a move, but not mandatory.)
+ */
 export function handleElementRelease(session, data, ws) {
   if (!session) return;
   const { userId, elementId } = data;
+
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  // We only broadcast if it was indeed locked by userId.
   if (el.lockedBy === userId) {
     broadcastElementState(session);
   }
 }
 
+/**
+ * handleElementDeselect => unlocks elements if locked by user.
+ */
 export function handleElementDeselect(session, data, ws) {
   if (!session) return;
   const { userId, elementIds } = data;
@@ -81,13 +71,17 @@ export function handleElementDeselect(session, data, ws) {
 
   for (const elementId of elementIds) {
     const el = session.elements.find(e => e.id === elementId);
-    if (el && el.lockedBy === userId) {
+    if (!el) continue;
+    if (el.lockedBy === userId) {
       el.lockedBy = null;
     }
   }
   broadcastElementState(session);
 }
 
+/**
+ * handleElementCreate => pushes a new element locked by user, calls pushUndoAction.
+ */
 export function handleElementCreate(session, data, ws) {
   if (!session) return;
   const { userId, shape, x, y, w, h } = data;
@@ -103,18 +97,26 @@ export function handleElementCreate(session, data, ws) {
     id: newId,
     shape,
     x, y, w, h,
-    lockedBy: userId, // automatically lock to creator
+    lockedBy: userId, // automatically lock to the creator
   };
   session.elements.push(newElement);
 
   const action = {
     type: 'create',
-    diffs: [{ elementId: newId }],
+    diffs: [
+      {
+        elementId: newId,
+      },
+    ],
   };
   pushUndoAction(session, action);
+
   broadcastElementState(session);
 }
 
+/**
+ * handleElementDelete => removes elements locked by user, creates undo action.
+ */
 export function handleElementDelete(session, data, ws) {
   if (!session) return;
   const { userId, elementIds } = data;
@@ -123,17 +125,15 @@ export function handleElementDelete(session, data, ws) {
   const toDelete = [];
   for (const id of elementIds) {
     const idx = session.elements.findIndex(e => e.id === id);
-    if (idx < 0) continue;
-
-    const el = session.elements[idx];
-    // For deletion, we skip if locked by another user, 
-    // but do NOT forcibly lock if it's free => autoLock: false
-    if (!ensureLockOrSkip(el, userId, { autoLock: false })) {
-      continue;
+    if (idx >= 0) {
+      const el = session.elements[idx];
+      // skip if locked by someone else
+      if (isElementLockedByOthers(el, userId)) {
+        continue;
+      }
+      toDelete.push({ ...el });
+      session.elements.splice(idx, 1);
     }
-    // Remove from array
-    toDelete.push({ ...el });
-    session.elements.splice(idx, 1);
   }
 
   if (toDelete.length === 0) {
@@ -154,33 +154,59 @@ export function handleElementDelete(session, data, ws) {
     })),
   };
   pushUndoAction(session, action);
+
   broadcastElementState(session);
 }
 
+/**
+ * handleElementResize => if not locked, auto-lock, store original pos in session.pendingResizes, updates element.
+ */
 export function handleElementResize(session, data, ws) {
   if (!session) return;
   const { userId, elementId, x, y, w, h } = data;
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  // Must ensure we lock it or skip
-  if (!ensureLockOrSkip(el, userId)) {
+  // If locked by someone else, do nothing
+  if (isElementLockedByOthers(el, userId)) {
     return;
   }
-
-  // Store original pos in user’s pendingResizes if not present
-  const userMap = getOrCreateUserMap(session, 'pendingResizes', userId);
-  if (!userMap.has(elementId)) {
-    userMap.set(elementId, { x: el.x, y: el.y, w: el.w, h: el.h });
+  // If not locked, auto-lock it
+  if (!el.lockedBy) {
+    el.lockedBy = userId;
   }
 
+  // store original position if not already stored
+  if (!session.pendingResizes) {
+    session.pendingResizes = new Map();
+  }
+  let userMap = session.pendingResizes.get(userId);
+  if (!userMap) {
+    userMap = new Map();
+    session.pendingResizes.set(userId, userMap);
+  }
+  if (!userMap.has(elementId)) {
+    userMap.set(elementId, {
+      x: el.x,
+      y: el.y,
+      w: el.w,
+      h: el.h,
+    });
+  }
+
+  // update shape
   el.x = x;
   el.y = y;
   el.w = w;
   el.h = h;
+
   broadcastElementState(session);
 }
 
+/**
+ * handleElementResizeEnd => finalize multi-element transform. We gather all shapes that
+ * user was resizing, check diffs, push a single 'resize' action, then clear them.
+ */
 export function handleElementResizeEnd(session, data, ws) {
   if (!session) return;
   const { userId, elementIds } = data;
@@ -190,18 +216,20 @@ export function handleElementResizeEnd(session, data, ws) {
     broadcastElementState(session);
     return;
   }
-
   const userMap = session.pendingResizes.get(userId);
   const diffs = [];
 
   for (const elementId of elementIds) {
     const el = session.elements.find(e => e.id === elementId);
     if (!el) continue;
+    // must be locked by user
     if (el.lockedBy !== userId) continue;
 
     const original = userMap.get(elementId);
-    if (!original) continue;
-
+    if (!original) {
+      continue; // no original stored => no diff
+    }
+    // check if there's an actual change
     if (
       el.x !== original.x ||
       el.y !== original.y ||
@@ -217,13 +245,19 @@ export function handleElementResizeEnd(session, data, ws) {
     userMap.delete(elementId);
   }
 
+  // if userMap is empty, remove it
   if (userMap.size === 0) {
     session.pendingResizes.delete(userId);
   }
 
+  // if changes, push a single 'resize' undo action
   if (diffs.length > 0) {
-    const action = { type: 'resize', diffs };
+    const action = {
+      type: 'resize',
+      diffs,
+    };
     pushUndoAction(session, action);
   }
+
   broadcastElementState(session);
 }
