@@ -14,7 +14,7 @@ export function handleJoinSession(session, data, ws) {
   if (!userId) return;
 
   if (!sessionCode) {
-    sessionCode = "defaultSession";
+    sessionCode = 'defaultSession';
   }
 
   // If no session, create or fetch
@@ -22,9 +22,11 @@ export function handleJoinSession(session, data, ws) {
     session = SessionService.getOrCreateSession(sessionCode);
   }
 
+  // Use the returned user object's userId
   const userObj = SessionService.joinSession(session, userId, name, userRole, ws);
   ws.sessionCode = session.code;
-  ws.userId = userId;
+  // Take the *official* user ID from the service
+  ws.userId = userObj.userId;
 
   // broadcast
   broadcastUserList(session);
@@ -35,10 +37,19 @@ export function handleUpgradeUserId(session, data, ws) {
   if (!session) return;
   const { oldUserId, newUserId, newName, newIsAdmin } = data;
 
-  const userObj = SessionService.upgradeUserId(session, oldUserId, newUserId, newName, newIsAdmin, ws);
+  const userObj = SessionService.upgradeUserId(
+    session,
+    oldUserId,
+    newUserId,
+    newName,
+    newIsAdmin,
+    ws
+  );
   if (!userObj) return;
 
-  ws.userId = newUserId;
+  // Take userId from the service result:
+  ws.userId = userObj.userId;
+
   broadcastUserList(session);
   broadcastElementState(session);
 }
@@ -50,7 +61,9 @@ export function handleDowngradeUserId(session, data, ws) {
   const userObj = SessionService.downgradeUserId(session, oldUserId, newUserId, ws);
   if (!userObj) return;
 
-  ws.userId = newUserId;
+  // Take userId from the service result:
+  ws.userId = userObj.userId;
+
   broadcastUserList(session);
   broadcastElementState(session);
 }

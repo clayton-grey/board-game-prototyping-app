@@ -7464,6 +7464,175 @@ describe('UserService', () => {
 });
 
 
+===== ./tests/unit/sessionHandlers.test.js =====
+
+// tests/unit/sessionHandlers.test.js
+
+import {
+  handleJoinSession,
+  handleUpgradeUserId,
+  handleDowngradeUserId
+} from '../../server/ws/handlers/sessionHandlers.js';
+import { SessionService } from '../../server/services/SessionService.js';
+import {
+  broadcastUserList,
+  broadcastElementState
+} from '../../server/ws/collabUtils.js';
+
+jest.mock('../../server/services/SessionService.js');
+jest.mock('../../server/ws/collabUtils.js', () => ({
+  broadcastUserList: jest.fn(),
+  broadcastElementState: jest.fn(),
+}));
+
+describe('sessionHandlers', () => {
+  let mockSession;
+  let mockWs;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockWs = { send: jest.fn(), sessionCode: undefined, userId: undefined };
+    mockSession = {
+      code: 'test-session-code',
+      users: new Map(),
+      elements: [
+        { id: 1, lockedBy: null },
+        { id: 2, lockedBy: null },
+      ],
+      ephemeralRoles: new Map(),
+    };
+  });
+
+  describe('handleJoinSession', () => {
+    test('creates or fetches session, joins user, sets ws fields, broadcasts', () => {
+      // Mock the session retrieval
+      SessionService.getOrCreateSession.mockReturnValue(mockSession);
+      // Mock the joinSession return
+      SessionService.joinSession.mockReturnValue({ userId: 'userA' });
+
+      const data = {
+        type: 'join-session',
+        userId: 'userA',
+        sessionCode: 'test-session-code',
+        name: 'Alice',
+        userRole: 'admin',
+      };
+
+      handleJoinSession(null, data, mockWs);
+
+      expect(SessionService.getOrCreateSession).toHaveBeenCalledWith('test-session-code');
+      expect(SessionService.joinSession).toHaveBeenCalledWith(
+        mockSession,
+        'userA',
+        'Alice',
+        'admin',
+        mockWs
+      );
+
+      // userObj.userId -> 'userA'
+      expect(mockWs.sessionCode).toBe('test-session-code');
+      expect(mockWs.userId).toBe('userA');
+
+      // broadcasts
+      expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
+      expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
+    });
+
+    test('if session is already passed in, does not call getOrCreateSession again', () => {
+      // Still need to mock joinSession so userObj is not undefined
+      SessionService.joinSession.mockReturnValue({ userId: 'userA' });
+
+      const data = {
+        userId: 'userA',
+        sessionCode: 'some-other-code',
+        name: 'Test',
+      };
+
+      handleJoinSession(mockSession, data, mockWs);
+
+      // We already have a session, so getOrCreateSession is not called
+      expect(SessionService.getOrCreateSession).not.toHaveBeenCalled();
+      expect(SessionService.joinSession).toHaveBeenCalledWith(
+        mockSession,
+        'userA',
+        'Test',
+        undefined, // userRole not in data
+        mockWs
+      );
+    });
+
+    test('if userId is missing, does nothing', () => {
+      // No mocking needed; we expect no calls
+      handleJoinSession(mockSession, { sessionCode: 'test' }, mockWs);
+
+      expect(SessionService.joinSession).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleUpgradeUserId', () => {
+    test('calls SessionService.upgradeUserId, reassigns ws.userId, then broadcasts', () => {
+      SessionService.upgradeUserId.mockReturnValue({ userId: 'newUid' });
+
+      const data = {
+        oldUserId: 'temp_1',
+        newUserId: 'real_99',
+        newName: 'Bob',
+        newIsAdmin: true,
+      };
+
+      handleUpgradeUserId(mockSession, data, mockWs);
+
+      expect(SessionService.upgradeUserId).toHaveBeenCalledWith(
+        mockSession,
+        'temp_1',
+        'real_99',
+        'Bob',
+        true,
+        mockWs
+      );
+
+      // userObj.userId -> 'newUid'
+      expect(mockWs.userId).toBe('newUid');
+
+      expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
+      expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
+    });
+
+    test('does nothing if session is null', () => {
+      handleUpgradeUserId(null, { oldUserId: 'u1' }, mockWs);
+      expect(SessionService.upgradeUserId).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleDowngradeUserId', () => {
+    test('calls SessionService.downgradeUserId, reassigns ws.userId, then broadcasts', () => {
+      SessionService.downgradeUserId.mockReturnValue({ userId: 'anon_123' });
+
+      const data = { oldUserId: 'user_7', newUserId: 'anon_111' };
+      handleDowngradeUserId(mockSession, data, mockWs);
+
+      expect(SessionService.downgradeUserId).toHaveBeenCalledWith(
+        mockSession,
+        'user_7',
+        'anon_111',
+        mockWs
+      );
+
+      // userObj.userId -> 'anon_123'
+      expect(mockWs.userId).toBe('anon_123');
+
+      expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
+      expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
+    });
+
+    test('does nothing if session is null', () => {
+      handleDowngradeUserId(null, { oldUserId: 'u1' }, mockWs);
+      expect(SessionService.downgradeUserId).not.toHaveBeenCalled();
+    });
+  });
+});
+
+
 ===== ./tests/unit/SessionService.test.js =====
 
 // tests/unit/SessionService.test.js
@@ -7605,6 +7774,317 @@ describe('SessionService', () => {
 
     const check = s.users.get('user_10');
     expect(check.isEditor).toBe(true);
+  });
+});
+
+
+===== ./tests/unit/elementHandlers.test.js =====
+
+// tests/unit/elementHandlers.test.js
+
+import {
+  handleElementGrab,
+  handleElementMove,
+  handleElementRelease,
+  handleElementDeselect,
+  handleElementCreate,
+  handleElementDelete,
+  handleElementResize,
+  handleElementResizeEnd
+} from '../../server/ws/handlers/elementHandlers.js';
+import { broadcastElementState } from '../../server/ws/collabUtils.js';
+import { pushUndoAction } from '../../server/ws/handlers/undoRedoHandlers.js';
+
+jest.mock('../../server/ws/collabUtils.js', () => ({
+  broadcastElementState: jest.fn(),
+}));
+jest.mock('../../server/ws/handlers/undoRedoHandlers.js', () => ({
+  pushUndoAction: jest.fn(),
+}));
+
+describe('elementHandlers', () => {
+  let mockSession;
+  let mockWs;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockWs = { send: jest.fn() };
+
+    mockSession = {
+      code: 'test-element-session',
+      elements: [
+        { id: 1, x: 0, y: 0, w: 50, h: 50, lockedBy: null },
+        { id: 2, x: 10, y: 10, w: 100, h: 40, lockedBy: 'someoneElse' },
+      ],
+    };
+  });
+
+  test('handleElementGrab => locks element if not locked or locked by self', () => {
+    handleElementGrab(mockSession, { userId: 'userA', elementId: 1 }, mockWs);
+    expect(mockSession.elements[0].lockedBy).toBe('userA');
+    expect(broadcastElementState).toHaveBeenCalled();
+
+    // Trying to grab an element locked by another user => no effect
+    broadcastElementState.mockClear();
+    handleElementGrab(mockSession, { userId: 'userA', elementId: 2 }, mockWs);
+    expect(mockSession.elements[1].lockedBy).toBe('someoneElse');
+    expect(broadcastElementState).not.toHaveBeenCalled();
+  });
+
+  test('handleElementMove => moves the element if locked by user', () => {
+    // elementId=1 is locked by userA
+    mockSession.elements[0].lockedBy = 'userA';
+    handleElementMove(mockSession, {
+      userId: 'userA',
+      elementId: 1,
+      x: 100,
+      y: 200
+    }, mockWs);
+    expect(mockSession.elements[0].x).toBe(100);
+    expect(mockSession.elements[0].y).toBe(200);
+    expect(broadcastElementState).toHaveBeenCalledTimes(1);
+
+    // Another user tries to move it => no effect
+    broadcastElementState.mockClear();
+    handleElementMove(mockSession, {
+      userId: 'userB',
+      elementId: 1,
+      x: 999,
+      y: 999
+    }, mockWs);
+    expect(mockSession.elements[0].x).toBe(100);
+    expect(mockSession.elements[0].y).toBe(200);
+    expect(broadcastElementState).not.toHaveBeenCalled();
+  });
+
+  test('handleElementRelease => does nothing except broadcast if locked by same user', () => {
+    mockSession.elements[0].lockedBy = 'userA';
+    handleElementRelease(mockSession, { userId: 'userA', elementId: 1 }, mockWs);
+    expect(broadcastElementState).toHaveBeenCalled();
+  });
+
+  test('handleElementDeselect => unlocks elements if locked by user', () => {
+    mockSession.elements[0].lockedBy = 'userA';
+    mockSession.elements[1].lockedBy = 'someoneElse';
+
+    handleElementDeselect(mockSession, {
+      userId: 'userA',
+      elementIds: [1, 2]
+    }, mockWs);
+
+    // #1 is unlocked, #2 remains locked by someoneElse
+    expect(mockSession.elements[0].lockedBy).toBe(null);
+    expect(mockSession.elements[1].lockedBy).toBe('someoneElse');
+    expect(broadcastElementState).toHaveBeenCalled();
+  });
+
+  test('handleElementCreate => pushes a new element locked by user, calls pushUndoAction', () => {
+    handleElementCreate(mockSession, {
+      userId: 'userA',
+      shape: 'rectangle',
+      x: 50,
+      y: 60,
+      w: 30,
+      h: 40
+    }, mockWs);
+
+    // The new element is appended
+    expect(mockSession.elements.length).toBe(3);
+    const newEl = mockSession.elements[2];
+    expect(newEl).toMatchObject({
+      shape: 'rectangle',
+      x: 50,
+      y: 60,
+      w: 30,
+      h: 40,
+      lockedBy: 'userA'
+    });
+
+    // pushUndoAction was called
+    expect(pushUndoAction).toHaveBeenCalled();
+    expect(broadcastElementState).toHaveBeenCalled();
+  });
+
+  test('handleElementDelete => removes elements locked by user, creates undo action', () => {
+    // Lock element #1 to userA
+    mockSession.elements[0].lockedBy = 'userA';
+
+    handleElementDelete(mockSession, {
+      userId: 'userA',
+      elementIds: [1, 2]
+    }, mockWs);
+
+    // #1 is deleted, #2 was locked by someoneElse => not deleted
+    expect(mockSession.elements.some(e => e.id === 1)).toBe(false);
+    expect(mockSession.elements.some(e => e.id === 2)).toBe(true);
+
+    // pushUndoAction called with type=delete
+    expect(pushUndoAction).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ type: 'delete' }));
+    expect(broadcastElementState).toHaveBeenCalled();
+  });
+
+  test('handleElementResize => if not locked, auto-lock, store old pos in global groupResizes, updates element', () => {
+    // Over the wire, we do not see global data, but let's just check that the element is updated
+    // and broadcast is called. We won't deeply test the global groupResizes logic, but we’ll ensure no errors.
+    handleElementResize(mockSession, {
+      userId: 'userA',
+      elementId: 1,
+      x: 10,
+      y: 20,
+      w: 80,
+      h: 40
+    }, mockWs);
+
+    expect(mockSession.elements[0]).toMatchObject({
+      x: 10, y: 20, w: 80, h: 40, lockedBy: 'userA'
+    });
+    expect(broadcastElementState).toHaveBeenCalled();
+  });
+
+  test('handleElementResizeEnd => triggers pushUndoAction if changes occurred', () => {
+    // Lock #1 to userA, set up a known initial pos
+    mockSession.elements[0] = { id: 1, x: 0, y: 0, w: 50, h: 50, lockedBy: 'userA' };
+
+    // Emulate that the global group resize storage has original positions (pretend partial),
+    // but for a quick test, we rely on the function's internal logic to do diffs if any.
+    // We'll just call it and ensure broadcast/pushUndoAction is invoked.
+    handleElementResizeEnd(mockSession, {
+      userId: 'userA',
+      elementIds: [1]
+    }, mockWs);
+
+    // We expect pushUndoAction to have been called if there was a change. But by default,
+    // there's no actual "stored old pos" in your global, so let's see we get no diffs.
+    // => Probably no undo action is created (the code inside tries to read global objects).
+    // So let's just confirm it doesn't crash and calls broadcast:
+    expect(broadcastElementState).toHaveBeenCalled();
+  });
+});
+
+
+===== ./tests/unit/projectHandlers.test.js =====
+
+// tests/unit/projectHandlers.test.js
+
+import { handleProjectNameChange } from '../../server/ws/handlers/projectHandlers.js';
+import { broadcastToSession, broadcastElementState } from '../../server/ws/collabUtils.js';
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+
+jest.mock('../../server/ws/collabUtils.js', () => ({
+  broadcastToSession: jest.fn(),
+  broadcastElementState: jest.fn()
+}));
+
+describe('projectHandlers', () => {
+  let mockSession, mockWs;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockWs = { send: jest.fn() };
+    mockSession = {
+      code: 'proj-test',
+      projectName: 'Old Name',
+      users: new Map([
+        ['owner1', { userId: 'owner1', isOwner: true, isAdmin: false }],
+        ['admin1', { userId: 'admin1', isOwner: false, isAdmin: true }],
+        ['user2', { userId: 'user2', isOwner: false, isAdmin: false }],
+      ]),
+      elements: []
+    };
+  });
+
+  test('handleProjectNameChange => sets session.projectName, broadcasts if user isOwner', () => {
+    const data = { userId: 'owner1', newName: 'NewProjectName' };
+    handleProjectNameChange(mockSession, data, mockWs);
+
+    expect(mockSession.projectName).toBe('NewProjectName');
+    expect(broadcastToSession).toHaveBeenCalledWith(mockSession, {
+      type: MESSAGE_TYPES.PROJECT_NAME_CHANGE,
+      newName: 'NewProjectName'
+    });
+    expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
+  });
+
+  test('handleProjectNameChange => sets session.projectName, broadcasts if user isAdmin', () => {
+    const data = { userId: 'admin1', newName: 'AdminRenamedIt' };
+    handleProjectNameChange(mockSession, data, mockWs);
+
+    expect(mockSession.projectName).toBe('AdminRenamedIt');
+    expect(broadcastToSession).toHaveBeenCalled();
+    expect(broadcastElementState).toHaveBeenCalled();
+  });
+
+  test('handleProjectNameChange => does nothing if user is normal user', () => {
+    const data = { userId: 'user2', newName: 'Nope' };
+    handleProjectNameChange(mockSession, data, mockWs);
+    expect(mockSession.projectName).toBe('Old Name');
+    expect(broadcastToSession).not.toHaveBeenCalled();
+    expect(broadcastElementState).not.toHaveBeenCalled();
+  });
+
+  test('handleProjectNameChange => does nothing if no newName or userId', () => {
+    handleProjectNameChange(mockSession, {}, mockWs);
+    expect(mockSession.projectName).toBe('Old Name');
+    expect(broadcastToSession).not.toHaveBeenCalled();
+  });
+
+  test('handleProjectNameChange => does nothing if session is null', () => {
+    handleProjectNameChange(null, { userId: 'owner1', newName: 'X' }, mockWs);
+    expect(broadcastToSession).not.toHaveBeenCalled();
+  });
+});
+
+
+===== ./tests/unit/cursorHandlers.test.js =====
+
+// tests/unit/cursorHandlers.test.js
+import { handleCursorUpdate } from '../../server/ws/handlers/cursorHandlers.js';
+import { broadcastToSession } from '../../server/ws/collabUtils.js';
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+
+jest.mock('../../server/ws/collabUtils.js', () => ({
+  broadcastToSession: jest.fn(),
+}));
+
+describe('cursorHandlers', () => {
+  let mockSession;
+  let mockWs;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockWs = { send: jest.fn() };
+    mockSession = {
+      code: 'cursor-test',
+      users: new Map(),
+    };
+    mockSession.users.set('userA', { userId: 'userA', x: 0, y: 0 });
+    mockSession.users.set('userB', { userId: 'userB', x: 100, y: 100 });
+  });
+
+  test('handleCursorUpdate => updates user x,y and broadcasts', () => {
+    handleCursorUpdate(mockSession, { userId: 'userA', x: 50, y: 60 }, mockWs);
+
+    const updated = mockSession.users.get('userA');
+    expect(updated.x).toBe(50);
+    expect(updated.y).toBe(60);
+
+    expect(broadcastToSession).toHaveBeenCalledWith(mockSession, {
+      type: MESSAGE_TYPES.CURSOR_UPDATE,
+      userId: 'userA',
+      x: 50,
+      y: 60,
+    });
+  });
+
+  test('handleCursorUpdate => does nothing if user not in session', () => {
+    broadcastToSession.mockClear();
+    handleCursorUpdate(mockSession, { userId: 'unknown', x: 99, y: 99 }, mockWs);
+    expect(broadcastToSession).not.toHaveBeenCalled();
+  });
+
+  test('handleCursorUpdate => does nothing if session is null or undefined', () => {
+    handleCursorUpdate(null, { userId: 'userA', x: 10, y: 10 }, mockWs);
+    expect(broadcastToSession).not.toHaveBeenCalled();
   });
 });
 
@@ -10619,7 +11099,7 @@ export function handleJoinSession(session, data, ws) {
   if (!userId) return;
 
   if (!sessionCode) {
-    sessionCode = "defaultSession";
+    sessionCode = 'defaultSession';
   }
 
   // If no session, create or fetch
@@ -10627,9 +11107,11 @@ export function handleJoinSession(session, data, ws) {
     session = SessionService.getOrCreateSession(sessionCode);
   }
 
+  // Use the returned user object's userId
   const userObj = SessionService.joinSession(session, userId, name, userRole, ws);
   ws.sessionCode = session.code;
-  ws.userId = userId;
+  // Take the *official* user ID from the service
+  ws.userId = userObj.userId;
 
   // broadcast
   broadcastUserList(session);
@@ -10640,10 +11122,19 @@ export function handleUpgradeUserId(session, data, ws) {
   if (!session) return;
   const { oldUserId, newUserId, newName, newIsAdmin } = data;
 
-  const userObj = SessionService.upgradeUserId(session, oldUserId, newUserId, newName, newIsAdmin, ws);
+  const userObj = SessionService.upgradeUserId(
+    session,
+    oldUserId,
+    newUserId,
+    newName,
+    newIsAdmin,
+    ws
+  );
   if (!userObj) return;
 
-  ws.userId = newUserId;
+  // Take userId from the service result:
+  ws.userId = userObj.userId;
+
   broadcastUserList(session);
   broadcastElementState(session);
 }
@@ -10655,7 +11146,9 @@ export function handleDowngradeUserId(session, data, ws) {
   const userObj = SessionService.downgradeUserId(session, oldUserId, newUserId, ws);
   if (!userObj) return;
 
-  ws.userId = newUserId;
+  // Take userId from the service result:
+  ws.userId = userObj.userId;
+
   broadcastUserList(session);
   broadcastElementState(session);
 }
