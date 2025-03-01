@@ -3,31 +3,22 @@ import { broadcastElementState } from '../collabUtils.js';
 import { pushUndoAction } from './undoRedoHandlers.js';
 
 /**
- * In this refactored approach, we use session.pendingResizes (similar to pendingMoves)
- * for multi-shape resizing. When the user first calls ELEMENT_RESIZE for a shape,
- * we store its original (x,y,w,h) if not already stored. We continuously update the shape.
- * Then, on ELEMENT_RESIZE_END, we finalize a single group action for all changed shapes.
- *
- * We thus avoid any global __groupResizes. Everything is in session-based data.
+ * A small helper that:
+ * 1) If the element is locked by someone else, returns false (do nothing).
+ * 2) If not locked, locks it to `userId`.
+ * 3) If already locked by the same user, leaves it as-is.
+ * Returns true if the caller can proceed, false otherwise.
  */
-
-/** Ensures session.pendingResizes is ready. */
-function ensurePendingResizes(session) {
-  if (!session.pendingResizes) {
-    // userId -> { elementId -> { x, y, w, h } }
-    session.pendingResizes = new Map();
+function lockIfPossible(el, userId) {
+  if (el.lockedBy && el.lockedBy !== userId) {
+    // Locked by another user => skip
+    return false;
   }
-}
-
-/** Return (and possibly create) the map for a given user’s pending resizes. */
-function getUserResizeMap(session, userId) {
-  ensurePendingResizes(session);
-  let userMap = session.pendingResizes.get(userId);
-  if (!userMap) {
-    userMap = new Map();
-    session.pendingResizes.set(userId, userMap);
+  if (!el.lockedBy) {
+    // Auto-lock to the caller
+    el.lockedBy = userId;
   }
-  return userMap;
+  return true;
 }
 
 export function handleElementGrab(session, data, ws) {
@@ -36,13 +27,10 @@ export function handleElementGrab(session, data, ws) {
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  // If locked by someone else, do nothing
-  if (el.lockedBy && el.lockedBy !== userId) {
+  // Attempt to lock or skip
+  if (!lockIfPossible(el, userId)) {
     return;
   }
-  // Otherwise, lock it to me
-  el.lockedBy = userId;
-
   broadcastElementState(session);
 }
 
@@ -53,24 +41,24 @@ export function handleElementMove(session, data, ws) {
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  // Must be locked by this user
-  if (el.lockedBy === userId) {
-    el.x = x;
-    el.y = y;
-    broadcastElementState(session);
+  // Same lock check as handleElementGrab
+  if (!lockIfPossible(el, userId)) {
+    return;
   }
+  el.x = x;
+  el.y = y;
+  broadcastElementState(session);
 }
 
 export function handleElementRelease(session, data, ws) {
   if (!session) return;
   const { userId, elementId } = data;
-
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
+  // We only broadcast if it was locked by the same user
   if (el.lockedBy === userId) {
-    // (No special finalize logic for simple moves in this code,
-    //  but you could create an undo action here if you prefer.)
+    // (We do not automatically unlock it here, per the original logic.)
     broadcastElementState(session);
   }
 }
@@ -83,11 +71,11 @@ export function handleElementDeselect(session, data, ws) {
   for (const elementId of elementIds) {
     const el = session.elements.find(e => e.id === elementId);
     if (!el) continue;
+    // Unlock only if this user had it locked
     if (el.lockedBy === userId) {
       el.lockedBy = null;
     }
   }
-
   broadcastElementState(session);
 }
 
@@ -106,7 +94,7 @@ export function handleElementCreate(session, data, ws) {
     id: newId,
     shape,
     x, y, w, h,
-    lockedBy: userId, // automatically lock to the creator
+    lockedBy: userId, // automatically lock to creator
   };
   session.elements.push(newElement);
 
@@ -119,7 +107,6 @@ export function handleElementCreate(session, data, ws) {
     ],
   };
   pushUndoAction(session, action);
-
   broadcastElementState(session);
 }
 
@@ -133,8 +120,9 @@ export function handleElementDelete(session, data, ws) {
     const idx = session.elements.findIndex(e => e.id === id);
     if (idx >= 0) {
       const el = session.elements[idx];
+      // If locked by someone else => skip (no auto-lock for delete)
       if (el.lockedBy && el.lockedBy !== userId) {
-        continue; // locked by someone else => skip
+        continue;
       }
       toDelete.push({ ...el });
       session.elements.splice(idx, 1);
@@ -159,14 +147,13 @@ export function handleElementDelete(session, data, ws) {
     })),
   };
   pushUndoAction(session, action);
-
   broadcastElementState(session);
 }
 
 /**
- * handleElementResize => user is dragging a shape corner/edge.
- * If shape is not locked, auto-lock it. Then store the shape’s original (x,y,w,h)
- * in session.pendingResizes if not already stored. Update the shape, broadcast.
+ * handleElementResize => if locked by someone else, skip;
+ * if unlocked, lock to me. Then store original pos in session.pendingResizes
+ * if not present. Update the shape & broadcast.
  */
 export function handleElementResize(session, data, ws) {
   if (!session) return;
@@ -174,24 +161,24 @@ export function handleElementResize(session, data, ws) {
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
-  // If locked by someone else, do nothing
-  if (el.lockedBy && el.lockedBy !== userId) {
+  if (!lockIfPossible(el, userId)) {
     return;
   }
-  // If not locked, auto-lock it to this user
-  if (!el.lockedBy) {
-    el.lockedBy = userId;
-  }
 
-  // Store original position if not already in pendingResizes
-  const userMap = getUserResizeMap(session, userId);
+  // If not present, store original pos in pendingResizes
+  if (!session.pendingResizes) {
+    session.pendingResizes = new Map();
+  }
+  let userMap = session.pendingResizes.get(userId);
+  if (!userMap) {
+    userMap = new Map();
+    session.pendingResizes.set(userId, userMap);
+  }
   if (!userMap.has(elementId)) {
-    userMap.set(elementId, {
-      x: el.x, y: el.y, w: el.w, h: el.h,
-    });
+    userMap.set(elementId, { x: el.x, y: el.y, w: el.w, h: el.h });
   }
 
-  // Update the shape
+  // Update
   el.x = x;
   el.y = y;
   el.w = w;
@@ -201,9 +188,8 @@ export function handleElementResize(session, data, ws) {
 }
 
 /**
- * handleElementResizeEnd => finalize multi-element transform. We gather all shapes that
- * user was resizing, see which ones actually changed, push a single 'resize' undo action,
- * and then clear them from session.pendingResizes.
+ * handleElementResizeEnd => finalize multi-element transform for all shapes
+ * that the user was resizing, push a single 'resize' action if changes occurred.
  */
 export function handleElementResizeEnd(session, data, ws) {
   if (!session) return;
@@ -214,7 +200,6 @@ export function handleElementResizeEnd(session, data, ws) {
     broadcastElementState(session);
     return;
   }
-
   const userMap = session.pendingResizes.get(userId);
   const diffs = [];
 
@@ -224,10 +209,8 @@ export function handleElementResizeEnd(session, data, ws) {
     if (el.lockedBy !== userId) continue;
 
     const original = userMap.get(elementId);
-    if (!original) {
-      continue; // no original stored => no diff
-    }
-    // Check if there's an actual change
+    if (!original) continue;
+
     if (
       el.x !== original.x ||
       el.y !== original.y ||
@@ -240,24 +223,17 @@ export function handleElementResizeEnd(session, data, ws) {
         to: { x: el.x, y: el.y, w: el.w, h: el.h },
       });
     }
-
-    // Clean up the stored pending data
+    // Clean up
     userMap.delete(elementId);
   }
 
-  // If userMap is now empty, remove it from session
   if (userMap.size === 0) {
     session.pendingResizes.delete(userId);
   }
 
-  // If any changes, push a single group 'resize' action
   if (diffs.length > 0) {
-    const action = {
-      type: 'resize',
-      diffs,
-    };
+    const action = { type: 'resize', diffs };
     pushUndoAction(session, action);
   }
-
   broadcastElementState(session);
 }
