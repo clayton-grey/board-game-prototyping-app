@@ -118,11 +118,9 @@ export function initCanvas(initialUserId) {
   window.addEventListener("keydown", (e) => {
     if (e.key === "Delete" || e.key === "Backspace") {
       // Skip if a text field is focused
-      if (
-        document.activeElement &&
-        document.activeElement.tagName.toLowerCase() !== "canvas"
-      ) {
-        return;
+      const tag = document.activeElement?.tagName.toLowerCase();
+      if (tag === "input" || tag === "textarea") {
+        return; 
       }
       if (selectedElementIds.length > 0) {
         window.__sendWSMessage({
