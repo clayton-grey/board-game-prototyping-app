@@ -692,7 +692,6 @@ describe('sessionHandlers', () => {
         { id: 1, lockedBy: null },
         { id: 2, lockedBy: null },
       ],
-      ephemeralRoles: new Map(),
     };
   });
 
@@ -701,44 +700,37 @@ describe('sessionHandlers', () => {
       // Mock the session retrieval
       SessionService.getOrCreateSession.mockReturnValue(mockSession);
 
-      // Mock the joinSession in such a way that we replicate the ephemeralRoles update
-      SessionService.joinSession.mockImplementation((session, userId, userName, isAdminFlag, wsSocket) => {
-        // We'll do a minimal imitation of the real logic:
-        if (isAdminFlag === true) {
-          const existing = session.ephemeralRoles.get(userId) || {};
-          existing.isAdmin = true;
-          session.ephemeralRoles.set(userId, existing);
+      // Mock joinSession to illustrate an admin user
+      SessionService.joinSession.mockImplementation(
+        (session, userId, userName, isAdminFlag, wsSocket) => {
+          return {
+            userId,
+            name: userName,
+            isAdmin: !!isAdminFlag,
+          };
         }
-        return { userId, name: userName, isAdmin: isAdminFlag === true };
-      });
+      );
 
       const data = {
         type: 'join-session',
         userId: 'userA',
         sessionCode: 'test-session-code',
         name: 'Alice',
-        userRole: 'admin',  // test wants boolean `true` sent to joinSession
+        userRole: 'admin',
       };
 
       handleJoinSession(null, data, mockWs);
 
       expect(SessionService.getOrCreateSession).toHaveBeenCalledWith('test-session-code');
-      // The 4th param must be true (not 'admin')
       expect(SessionService.joinSession).toHaveBeenCalledWith(
         mockSession,
         'userA',
         'Alice',
-        true, 
+        true,
         mockWs
       );
-
       expect(mockWs.sessionCode).toBe('test-session-code');
       expect(mockWs.userId).toBe('userA');
-
-      // We'll assume the SessionService (mock) sets ephemeralRoles. Check it:
-      const roleData = mockSession.ephemeralRoles.get('userA');
-      expect(roleData).toBeDefined();
-      expect(roleData.isAdmin).toBe(true);
 
       // broadcasts
       expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
@@ -746,9 +738,8 @@ describe('sessionHandlers', () => {
     });
 
     test('if session is already passed in, does not call getOrCreateSession again', () => {
-      // Still need to mock joinSession so userObj is not undefined
-      SessionService.joinSession.mockImplementation((session, userId, userName, isAdminFlag, wsSocket) => {
-        return { userId, name: userName, isAdmin: isAdminFlag === true };
+      SessionService.joinSession.mockImplementation((session, userId) => {
+        return { userId };
       });
 
       const data = {
@@ -761,7 +752,6 @@ describe('sessionHandlers', () => {
 
       // We already have a session, so getOrCreateSession is not called
       expect(SessionService.getOrCreateSession).not.toHaveBeenCalled();
-      // We pass undefined for 4th param (because userRole not 'admin')
       expect(SessionService.joinSession).toHaveBeenCalledWith(
         mockSession,
         'userA',
@@ -769,12 +759,9 @@ describe('sessionHandlers', () => {
         undefined,
         mockWs
       );
-
-      // ephemeralRoles or broadcast calls not tested here
     });
 
     test('if userId is missing, does nothing', () => {
-      // No mocking needed; we expect no calls
       handleJoinSession(mockSession, { sessionCode: 'test' }, mockWs);
 
       expect(SessionService.joinSession).not.toHaveBeenCalled();
@@ -804,8 +791,6 @@ describe('sessionHandlers', () => {
         true,
         mockWs
       );
-
-      // userObj.userId -> 'newUid'
       expect(mockWs.userId).toBe('newUid');
 
       expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
@@ -833,8 +818,6 @@ describe('sessionHandlers', () => {
         'anon_111',
         mockWs
       );
-
-      // userObj.userId -> 'anon_123'
       expect(mockWs.userId).toBe('anon_123');
 
       expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
@@ -887,18 +870,20 @@ describe('SessionService', () => {
     expect(SessionService.getSession(code)).toBeNull();
   });
 
-  test('joinSession adds a user to a session', () => {
+  test('joinSession adds a user to a session, sets isAdmin if specified, sets first user as owner', () => {
     const code = 'join-test';
     const session = SessionService.getOrCreateSession(code);
     expect(session.users.size).toBe(0);
 
+    // user_1 => admin
     SessionService.joinSession(session, 'user_1', 'Alice', 'admin', null);
     expect(session.users.size).toBe(1);
 
-    const user = session.users.get('user_1');
-    expect(user).toBeDefined();
-    expect(user.name).toBe('Alice');
-    expect(user.isAdmin).toBe(true);
+    const user1 = session.users.get('user_1');
+    expect(user1).toBeDefined();
+    expect(user1.name).toBe('Alice');
+    expect(user1.isAdmin).toBe(true);
+    expect(user1.isOwner).toBe(true); // first user joined => owner
   });
 
   test('removeUser frees locks and reassigns owner if needed', () => {
@@ -918,30 +903,25 @@ describe('SessionService', () => {
     // remove user_2 => should free lock
     SessionService.removeUser(s, 'user_2');
     expect(s.users.size).toBe(1);
-    expect(s.elements[s.elements.length - 1].lockedBy).toBe(null); // the newly pushed element is index 2
+    expect(s.elements[s.elements.length - 1].lockedBy).toBe(null);
 
     // remove user_1 => empty session => no owners
     SessionService.removeUser(s, 'user_1');
     expect(s.users.size).toBe(0);
   });
 
-  /**
-   * The main fix is here: we now check elements[2].lockedBy,
-   * because elements[0] and elements[1] are the two default placeholders.
-   */
-  test('upgradeUserId merges locks and ephemeral roles', () => {
+  test('upgradeUserId merges old user fields, locks, isAdmin/isEditor status, etc.', () => {
     const code = 'upgrade-test';
     const s = SessionService.getOrCreateSession(code);
 
-    SessionService.joinSession(s, 'anon_999', 'AnonUser', '', null);
+    // Suppose we have an "anon_999" user who isEditor
+    const anon = SessionService.joinSession(s, 'anon_999', 'AnonUser', '', null);
+    anon.isEditor = true;
 
-    // Lock an element with anon_999
+    // Lock an element
     s.elements.push({ id: 20, x:10, y:10, w:30, h:30, lockedBy: 'anon_999' });
 
-    // Store ephemeral role for anon_999
-    s.ephemeralRoles.set('anon_999', { isEditor: true });
-
-    // Upgrade => merges oldUserId to newUserId
+    // Now upgrade => newUserId "user_5", newIsAdmin = true
     const upgraded = SessionService.upgradeUserId(
       s,
       'anon_999',
@@ -954,18 +934,24 @@ describe('SessionService', () => {
     expect(upgraded.userId).toBe('user_5');
     expect(upgraded.name).toBe('Bob');
     expect(upgraded.isAdmin).toBe(true);
+    // preserve old isEditor
     expect(upgraded.isEditor).toBe(true);
 
-    // The locked element is at index 2, so lockedBy should now be 'user_5'
-    expect(s.elements[2].lockedBy).toBe('user_5');
+    // The locked element should now have lockedBy 'user_5'
+    const lastEl = s.elements[s.elements.length - 1];
+    expect(lastEl.lockedBy).toBe('user_5');
   });
 
-  test('downgradeUserId => user_5 => anon_123', () => {
+  test('downgradeUserId => user_5 => anon_123 => removes admin/editor/owner', () => {
     const s = SessionService.getOrCreateSession('downgrade-test');
     const u5 = SessionService.joinSession(s, 'user_5', 'Alice', 'admin', null);
     expect(u5.isAdmin).toBe(true);
 
-    // Push a new element, note that s already has 2 default elements
+    // Also mark her editor, or owner
+    u5.isEditor = true;
+    u5.isOwner = true;
+
+    // push a new element locked by user_5
     s.elements.push({ id: 30, lockedBy: 'user_5' });
 
     const downgraded = SessionService.downgradeUserId(
@@ -977,9 +963,11 @@ describe('SessionService', () => {
     expect(downgraded.userId).toBe('anon_111');
     expect(downgraded.isAdmin).toBe(false);
     expect(downgraded.isOwner).toBe(false);
+    expect(downgraded.isEditor).toBe(false);
 
-    // The new element is index 2 (after the 2 defaults)
-    expect(s.elements[2].lockedBy).toBe('anon_111');
+    // The locked element should now be locked by 'anon_111'
+    const lastEl = s.elements[s.elements.length - 1];
+    expect(lastEl.lockedBy).toBe('anon_111');
   });
 
   test('setEditorRole toggles isEditor for a user', () => {
@@ -992,6 +980,10 @@ describe('SessionService', () => {
 
     const check = s.users.get('user_10');
     expect(check.isEditor).toBe(true);
+
+    // Remove editor
+    SessionService.setEditorRole(s, 'user_10', false);
+    expect(s.users.get('user_10').isEditor).toBe(false);
   });
 });
 
@@ -2887,12 +2879,6 @@ export class SessionService {
         ],
         linkedProjectId: null,
         users: new Map(),
-        /**
-         * ephemeralRoles is used in tests to verify merging.
-         * We'll keep it but unify any role changes so that
-         * userObj.isAdmin/isEditor stays in sync.
-         */
-        ephemeralRoles: new Map(),
         nextJoinOrder: 1,  // used for sorting and for reassigning an owner
         undoStack: [],
         redoStack: [],
@@ -2932,25 +2918,18 @@ export class SessionService {
   }
 
   /**
-   * Sets/unsets isEditor for a target user, and ensures ephemeralRoles is also updated.
+   * Assign or remove `isEditor` from a target user (only modifies the user object).
    */
   static setEditorRole(session, targetUserId, isEditor) {
-    // always store in ephemeralRoles
-    const existing = session.ephemeralRoles.get(targetUserId) || {};
-    existing.isEditor = isEditor;
-    session.ephemeralRoles.set(targetUserId, existing);
-
-    // also store on user object
     const tgtUser = session.users.get(targetUserId);
-    if (tgtUser) {
-      tgtUser.isEditor = isEditor;
-    }
+    if (!tgtUser) return false;
+    tgtUser.isEditor = !!isEditor;
     return true;
   }
 
   /**
    * joinSession:
-   *  - We unify ephemeral roles: if userRole === 'admin', set isAdmin in both ephemeral and user object.
+   *  - If isAdminOrRole === 'admin' or true, sets userObj.isAdmin = true.
    */
   static joinSession(session, userId, userName, isAdminOrRole, wsSocket) {
     let isAdmin = false;
@@ -2985,31 +2964,15 @@ export class SessionService {
       if (userName) userObj.name = userName;
     }
 
-    // If admin => mark ephemeral and userObj
+    // If admin => mark userObj
     if (isAdmin) {
       userObj.isAdmin = true;
-      const stored = session.ephemeralRoles.get(userId) || {};
-      stored.isAdmin = true;
-      session.ephemeralRoles.set(userId, stored);
     }
-
-    // Re-apply ephemeral editor role if stored
-    const storedRoles = session.ephemeralRoles.get(userId);
-    if (storedRoles) {
-      if (typeof storedRoles.isEditor === 'boolean') {
-        userObj.isEditor = storedRoles.isEditor;
-      }
-      if (typeof storedRoles.isAdmin === 'boolean') {
-        userObj.isAdmin = storedRoles.isAdmin;
-      }
-    }
-
     return userObj;
   }
 
   /**
-   * Merge the old user data into the new userId, re-locking elements, etc.
-   * We unify ephemeral roles and also unify them with the user object.
+   * Merge oldUser => newUserId; preserve locks, isAdmin/isEditor, etc.
    */
   static upgradeUserId(session, oldUserId, newUserId, newName, newIsAdmin, wsSocket) {
     let oldUser = session.users.get(oldUserId);
@@ -3035,35 +2998,28 @@ export class SessionService {
       }
     }
 
-    // Merge ephemeral roles
-    const oldEphemeral = session.ephemeralRoles.get(oldUserId) || {};
-    const newEphemeral = session.ephemeralRoles.get(newUserId) || {};
-    // pick up existing flags
-    const mergedIsEditor = (oldUser.isEditor || oldEphemeral.isEditor) || newEphemeral.isEditor;
-    let newIsAdminVal = false;
-    if (newIsAdmin === true || newIsAdmin === 'admin') {
-      newIsAdminVal = true;
-    }
-    const mergedIsAdmin = newIsAdminVal || oldUser.isAdmin || oldEphemeral.isAdmin;
+    // pick up old user flags
+    const wasOwner = oldUser.isOwner;
+    const wasEditor = oldUser.isEditor;
+    const wasAdmin = oldUser.isAdmin;
 
-    // Move everything into oldUser object
+    // Overwrite user object with new userId/Name
     oldUser.userId = newUserId;
     if (newName) oldUser.name = newName;
-    oldUser.isAdmin = mergedIsAdmin;
-    oldUser.isEditor = mergedIsEditor;
+
+    let finalIsAdmin = wasAdmin;
+    if (newIsAdmin === true || newIsAdmin === 'admin') {
+      finalIsAdmin = true;
+    }
+    oldUser.isAdmin = finalIsAdmin;
+    oldUser.isEditor = wasEditor;
+    oldUser.isOwner = wasOwner;
 
     if (wsSocket) {
       oldUser.socket = wsSocket;
     }
 
-    // Store ephemeral
-    session.ephemeralRoles.set(newUserId, {
-      isEditor: mergedIsEditor,
-      isAdmin: mergedIsAdmin,
-    });
-    session.ephemeralRoles.delete(oldUserId);
-
-    // Remove old from session, add the new
+    // Remove old from session, add new
     session.users.delete(oldUserId);
     session.users.set(newUserId, oldUser);
 
@@ -3109,8 +3065,6 @@ export class SessionService {
       oldUser.socket = wsSocket;
     }
 
-    // ephemeral also becomes blank
-    session.ephemeralRoles.set(newUserId, { isEditor: false, isAdmin: false });
     session.users.set(newUserId, oldUser);
 
     if (wasOwner) {
@@ -4178,7 +4132,7 @@ export function handleChatMessage(session, data, ws) {
 ===== ./server/ws/handlers/permissionHandlers.js =====
 
 // server/ws/handlers/permissionHandlers.js
-import { broadcastUserList, broadcastElementState, broadcastToSession } from '../collabUtils.js';
+import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { WebSocket } from 'ws';
 import { SessionService } from '../../services/SessionService.js';
@@ -4226,11 +4180,9 @@ export function handleKickUser(session, data, ws) {
 
   const kickedUser = SessionService.kickUser(session, userId, targetUserId);
   if (!kickedUser) {
-    // Means either not authorized or user is admin/owner => no action
-    return;
+    return; // not authorized or user is admin/owner => no action
   }
 
-  // Now that they're removed, broadcast user changes
   broadcastUserList(session);
   broadcastElementState(session);
 

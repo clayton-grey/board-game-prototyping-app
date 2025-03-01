@@ -31,7 +31,6 @@ describe('sessionHandlers', () => {
         { id: 1, lockedBy: null },
         { id: 2, lockedBy: null },
       ],
-      ephemeralRoles: new Map(),
     };
   });
 
@@ -40,44 +39,37 @@ describe('sessionHandlers', () => {
       // Mock the session retrieval
       SessionService.getOrCreateSession.mockReturnValue(mockSession);
 
-      // Mock the joinSession in such a way that we replicate the ephemeralRoles update
-      SessionService.joinSession.mockImplementation((session, userId, userName, isAdminFlag, wsSocket) => {
-        // We'll do a minimal imitation of the real logic:
-        if (isAdminFlag === true) {
-          const existing = session.ephemeralRoles.get(userId) || {};
-          existing.isAdmin = true;
-          session.ephemeralRoles.set(userId, existing);
+      // Mock joinSession to illustrate an admin user
+      SessionService.joinSession.mockImplementation(
+        (session, userId, userName, isAdminFlag, wsSocket) => {
+          return {
+            userId,
+            name: userName,
+            isAdmin: !!isAdminFlag,
+          };
         }
-        return { userId, name: userName, isAdmin: isAdminFlag === true };
-      });
+      );
 
       const data = {
         type: 'join-session',
         userId: 'userA',
         sessionCode: 'test-session-code',
         name: 'Alice',
-        userRole: 'admin',  // test wants boolean `true` sent to joinSession
+        userRole: 'admin',
       };
 
       handleJoinSession(null, data, mockWs);
 
       expect(SessionService.getOrCreateSession).toHaveBeenCalledWith('test-session-code');
-      // The 4th param must be true (not 'admin')
       expect(SessionService.joinSession).toHaveBeenCalledWith(
         mockSession,
         'userA',
         'Alice',
-        true, 
+        true,
         mockWs
       );
-
       expect(mockWs.sessionCode).toBe('test-session-code');
       expect(mockWs.userId).toBe('userA');
-
-      // We'll assume the SessionService (mock) sets ephemeralRoles. Check it:
-      const roleData = mockSession.ephemeralRoles.get('userA');
-      expect(roleData).toBeDefined();
-      expect(roleData.isAdmin).toBe(true);
 
       // broadcasts
       expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
@@ -85,9 +77,8 @@ describe('sessionHandlers', () => {
     });
 
     test('if session is already passed in, does not call getOrCreateSession again', () => {
-      // Still need to mock joinSession so userObj is not undefined
-      SessionService.joinSession.mockImplementation((session, userId, userName, isAdminFlag, wsSocket) => {
-        return { userId, name: userName, isAdmin: isAdminFlag === true };
+      SessionService.joinSession.mockImplementation((session, userId) => {
+        return { userId };
       });
 
       const data = {
@@ -100,7 +91,6 @@ describe('sessionHandlers', () => {
 
       // We already have a session, so getOrCreateSession is not called
       expect(SessionService.getOrCreateSession).not.toHaveBeenCalled();
-      // We pass undefined for 4th param (because userRole not 'admin')
       expect(SessionService.joinSession).toHaveBeenCalledWith(
         mockSession,
         'userA',
@@ -108,12 +98,9 @@ describe('sessionHandlers', () => {
         undefined,
         mockWs
       );
-
-      // ephemeralRoles or broadcast calls not tested here
     });
 
     test('if userId is missing, does nothing', () => {
-      // No mocking needed; we expect no calls
       handleJoinSession(mockSession, { sessionCode: 'test' }, mockWs);
 
       expect(SessionService.joinSession).not.toHaveBeenCalled();
@@ -143,8 +130,6 @@ describe('sessionHandlers', () => {
         true,
         mockWs
       );
-
-      // userObj.userId -> 'newUid'
       expect(mockWs.userId).toBe('newUid');
 
       expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
@@ -172,8 +157,6 @@ describe('sessionHandlers', () => {
         'anon_111',
         mockWs
       );
-
-      // userObj.userId -> 'anon_123'
       expect(mockWs.userId).toBe('anon_123');
 
       expect(broadcastUserList).toHaveBeenCalledWith(mockSession);

@@ -32,18 +32,20 @@ describe('SessionService', () => {
     expect(SessionService.getSession(code)).toBeNull();
   });
 
-  test('joinSession adds a user to a session', () => {
+  test('joinSession adds a user to a session, sets isAdmin if specified, sets first user as owner', () => {
     const code = 'join-test';
     const session = SessionService.getOrCreateSession(code);
     expect(session.users.size).toBe(0);
 
+    // user_1 => admin
     SessionService.joinSession(session, 'user_1', 'Alice', 'admin', null);
     expect(session.users.size).toBe(1);
 
-    const user = session.users.get('user_1');
-    expect(user).toBeDefined();
-    expect(user.name).toBe('Alice');
-    expect(user.isAdmin).toBe(true);
+    const user1 = session.users.get('user_1');
+    expect(user1).toBeDefined();
+    expect(user1.name).toBe('Alice');
+    expect(user1.isAdmin).toBe(true);
+    expect(user1.isOwner).toBe(true); // first user joined => owner
   });
 
   test('removeUser frees locks and reassigns owner if needed', () => {
@@ -63,30 +65,25 @@ describe('SessionService', () => {
     // remove user_2 => should free lock
     SessionService.removeUser(s, 'user_2');
     expect(s.users.size).toBe(1);
-    expect(s.elements[s.elements.length - 1].lockedBy).toBe(null); // the newly pushed element is index 2
+    expect(s.elements[s.elements.length - 1].lockedBy).toBe(null);
 
     // remove user_1 => empty session => no owners
     SessionService.removeUser(s, 'user_1');
     expect(s.users.size).toBe(0);
   });
 
-  /**
-   * The main fix is here: we now check elements[2].lockedBy,
-   * because elements[0] and elements[1] are the two default placeholders.
-   */
-  test('upgradeUserId merges locks and ephemeral roles', () => {
+  test('upgradeUserId merges old user fields, locks, isAdmin/isEditor status, etc.', () => {
     const code = 'upgrade-test';
     const s = SessionService.getOrCreateSession(code);
 
-    SessionService.joinSession(s, 'anon_999', 'AnonUser', '', null);
+    // Suppose we have an "anon_999" user who isEditor
+    const anon = SessionService.joinSession(s, 'anon_999', 'AnonUser', '', null);
+    anon.isEditor = true;
 
-    // Lock an element with anon_999
+    // Lock an element
     s.elements.push({ id: 20, x:10, y:10, w:30, h:30, lockedBy: 'anon_999' });
 
-    // Store ephemeral role for anon_999
-    s.ephemeralRoles.set('anon_999', { isEditor: true });
-
-    // Upgrade => merges oldUserId to newUserId
+    // Now upgrade => newUserId "user_5", newIsAdmin = true
     const upgraded = SessionService.upgradeUserId(
       s,
       'anon_999',
@@ -99,18 +96,24 @@ describe('SessionService', () => {
     expect(upgraded.userId).toBe('user_5');
     expect(upgraded.name).toBe('Bob');
     expect(upgraded.isAdmin).toBe(true);
+    // preserve old isEditor
     expect(upgraded.isEditor).toBe(true);
 
-    // The locked element is at index 2, so lockedBy should now be 'user_5'
-    expect(s.elements[2].lockedBy).toBe('user_5');
+    // The locked element should now have lockedBy 'user_5'
+    const lastEl = s.elements[s.elements.length - 1];
+    expect(lastEl.lockedBy).toBe('user_5');
   });
 
-  test('downgradeUserId => user_5 => anon_123', () => {
+  test('downgradeUserId => user_5 => anon_123 => removes admin/editor/owner', () => {
     const s = SessionService.getOrCreateSession('downgrade-test');
     const u5 = SessionService.joinSession(s, 'user_5', 'Alice', 'admin', null);
     expect(u5.isAdmin).toBe(true);
 
-    // Push a new element, note that s already has 2 default elements
+    // Also mark her editor, or owner
+    u5.isEditor = true;
+    u5.isOwner = true;
+
+    // push a new element locked by user_5
     s.elements.push({ id: 30, lockedBy: 'user_5' });
 
     const downgraded = SessionService.downgradeUserId(
@@ -122,9 +125,11 @@ describe('SessionService', () => {
     expect(downgraded.userId).toBe('anon_111');
     expect(downgraded.isAdmin).toBe(false);
     expect(downgraded.isOwner).toBe(false);
+    expect(downgraded.isEditor).toBe(false);
 
-    // The new element is index 2 (after the 2 defaults)
-    expect(s.elements[2].lockedBy).toBe('anon_111');
+    // The locked element should now be locked by 'anon_111'
+    const lastEl = s.elements[s.elements.length - 1];
+    expect(lastEl.lockedBy).toBe('anon_111');
   });
 
   test('setEditorRole toggles isEditor for a user', () => {
@@ -137,5 +142,9 @@ describe('SessionService', () => {
 
     const check = s.users.get('user_10');
     expect(check.isEditor).toBe(true);
+
+    // Remove editor
+    SessionService.setEditorRole(s, 'user_10', false);
+    expect(s.users.get('user_10').isEditor).toBe(false);
   });
 });

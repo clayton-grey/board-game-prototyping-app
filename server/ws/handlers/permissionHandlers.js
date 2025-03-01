@@ -1,5 +1,5 @@
 // server/ws/handlers/permissionHandlers.js
-import { broadcastUserList, broadcastElementState, broadcastToSession } from '../collabUtils.js';
+import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { WebSocket } from 'ws';
 import { SessionService } from '../../services/SessionService.js';
@@ -47,11 +47,9 @@ export function handleKickUser(session, data, ws) {
 
   const kickedUser = SessionService.kickUser(session, userId, targetUserId);
   if (!kickedUser) {
-    // Means either not authorized or user is admin/owner => no action
-    return;
+    return; // not authorized or user is admin/owner => no action
   }
 
-  // Now that they're removed, broadcast user changes
   broadcastUserList(session);
   broadcastElementState(session);
 

@@ -20,12 +20,6 @@ export class SessionService {
         ],
         linkedProjectId: null,
         users: new Map(),
-        /**
-         * ephemeralRoles is used in tests to verify merging.
-         * We'll keep it but unify any role changes so that
-         * userObj.isAdmin/isEditor stays in sync.
-         */
-        ephemeralRoles: new Map(),
         nextJoinOrder: 1,  // used for sorting and for reassigning an owner
         undoStack: [],
         redoStack: [],
@@ -65,25 +59,18 @@ export class SessionService {
   }
 
   /**
-   * Sets/unsets isEditor for a target user, and ensures ephemeralRoles is also updated.
+   * Assign or remove `isEditor` from a target user (only modifies the user object).
    */
   static setEditorRole(session, targetUserId, isEditor) {
-    // always store in ephemeralRoles
-    const existing = session.ephemeralRoles.get(targetUserId) || {};
-    existing.isEditor = isEditor;
-    session.ephemeralRoles.set(targetUserId, existing);
-
-    // also store on user object
     const tgtUser = session.users.get(targetUserId);
-    if (tgtUser) {
-      tgtUser.isEditor = isEditor;
-    }
+    if (!tgtUser) return false;
+    tgtUser.isEditor = !!isEditor;
     return true;
   }
 
   /**
    * joinSession:
-   *  - We unify ephemeral roles: if userRole === 'admin', set isAdmin in both ephemeral and user object.
+   *  - If isAdminOrRole === 'admin' or true, sets userObj.isAdmin = true.
    */
   static joinSession(session, userId, userName, isAdminOrRole, wsSocket) {
     let isAdmin = false;
@@ -118,31 +105,15 @@ export class SessionService {
       if (userName) userObj.name = userName;
     }
 
-    // If admin => mark ephemeral and userObj
+    // If admin => mark userObj
     if (isAdmin) {
       userObj.isAdmin = true;
-      const stored = session.ephemeralRoles.get(userId) || {};
-      stored.isAdmin = true;
-      session.ephemeralRoles.set(userId, stored);
     }
-
-    // Re-apply ephemeral editor role if stored
-    const storedRoles = session.ephemeralRoles.get(userId);
-    if (storedRoles) {
-      if (typeof storedRoles.isEditor === 'boolean') {
-        userObj.isEditor = storedRoles.isEditor;
-      }
-      if (typeof storedRoles.isAdmin === 'boolean') {
-        userObj.isAdmin = storedRoles.isAdmin;
-      }
-    }
-
     return userObj;
   }
 
   /**
-   * Merge the old user data into the new userId, re-locking elements, etc.
-   * We unify ephemeral roles and also unify them with the user object.
+   * Merge oldUser => newUserId; preserve locks, isAdmin/isEditor, etc.
    */
   static upgradeUserId(session, oldUserId, newUserId, newName, newIsAdmin, wsSocket) {
     let oldUser = session.users.get(oldUserId);
@@ -168,35 +139,28 @@ export class SessionService {
       }
     }
 
-    // Merge ephemeral roles
-    const oldEphemeral = session.ephemeralRoles.get(oldUserId) || {};
-    const newEphemeral = session.ephemeralRoles.get(newUserId) || {};
-    // pick up existing flags
-    const mergedIsEditor = (oldUser.isEditor || oldEphemeral.isEditor) || newEphemeral.isEditor;
-    let newIsAdminVal = false;
-    if (newIsAdmin === true || newIsAdmin === 'admin') {
-      newIsAdminVal = true;
-    }
-    const mergedIsAdmin = newIsAdminVal || oldUser.isAdmin || oldEphemeral.isAdmin;
+    // pick up old user flags
+    const wasOwner = oldUser.isOwner;
+    const wasEditor = oldUser.isEditor;
+    const wasAdmin = oldUser.isAdmin;
 
-    // Move everything into oldUser object
+    // Overwrite user object with new userId/Name
     oldUser.userId = newUserId;
     if (newName) oldUser.name = newName;
-    oldUser.isAdmin = mergedIsAdmin;
-    oldUser.isEditor = mergedIsEditor;
+
+    let finalIsAdmin = wasAdmin;
+    if (newIsAdmin === true || newIsAdmin === 'admin') {
+      finalIsAdmin = true;
+    }
+    oldUser.isAdmin = finalIsAdmin;
+    oldUser.isEditor = wasEditor;
+    oldUser.isOwner = wasOwner;
 
     if (wsSocket) {
       oldUser.socket = wsSocket;
     }
 
-    // Store ephemeral
-    session.ephemeralRoles.set(newUserId, {
-      isEditor: mergedIsEditor,
-      isAdmin: mergedIsAdmin,
-    });
-    session.ephemeralRoles.delete(oldUserId);
-
-    // Remove old from session, add the new
+    // Remove old from session, add new
     session.users.delete(oldUserId);
     session.users.set(newUserId, oldUser);
 
@@ -242,8 +206,6 @@ export class SessionService {
       oldUser.socket = wsSocket;
     }
 
-    // ephemeral also becomes blank
-    session.ephemeralRoles.set(newUserId, { isEditor: false, isAdmin: false });
     session.users.set(newUserId, oldUser);
 
     if (wasOwner) {
