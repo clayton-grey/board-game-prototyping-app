@@ -3,7 +3,6 @@ import { broadcastToSession, broadcastElementState, broadcastUserList } from '..
 import { WebSocket } from 'ws';
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 
-// We’ll mock out the actual WebSocket send method
 jest.mock('ws', () => {
   const MockWebSocket = jest.fn().mockImplementation(() => ({
     readyState: 1,
@@ -11,10 +10,7 @@ jest.mock('ws', () => {
       if (cb) cb(); // mimic behavior
     })
   }));
-
-  // Provide the “OPEN” constant
   MockWebSocket.OPEN = 1;
-
   return { WebSocket: MockWebSocket };
 });
 
@@ -30,23 +26,32 @@ describe('collabUtils', () => {
       ],
       users: new Map(),
     };
-    // Create a few fake user objects with mock sockets
     const user1Socket = new WebSocket();
     const user2Socket = new WebSocket();
+    // user1 => 'owner', user2 => 'viewer'
     mockSession.users.set('user1', {
       userId: 'user1',
-      socket: user1Socket
+      socket: user1Socket,
+      name: 'UserOne',
+      color: '#123',
+      sessionRole: 'owner',
+      globalRole: 'user',
+      joinOrder: 1
     });
     mockSession.users.set('user2', {
       userId: 'user2',
-      socket: user2Socket
+      socket: user2Socket,
+      name: 'UserTwo',
+      color: '#456',
+      sessionRole: 'viewer',
+      globalRole: 'admin',
+      joinOrder: 2
     });
   });
 
   test('broadcastToSession sends stringified data to all connected user sockets', () => {
     broadcastToSession(mockSession, { type: 'TEST_MESSAGE', hello: 'world' });
 
-    // For each user, confirm `socket.send` was called
     for (const user of mockSession.users.values()) {
       expect(user.socket.send).toHaveBeenCalledTimes(1);
       const sentMsg = user.socket.send.mock.calls[0][0];
@@ -69,43 +74,40 @@ describe('collabUtils', () => {
     }
   });
 
-  test('broadcastUserList sends SESSION_USERS with sorted user array & ownerUserId', () => {
-    // Let’s mark user1 as owner
-    mockSession.users.get('user1').isOwner = true;
-    // Mark user2 as admin, just as an example
-    mockSession.users.get('user2').isAdmin = true;
-
+  test('broadcastUserList sends SESSION_USERS array with sessionRole & globalRole, no ownerUserId', () => {
     broadcastUserList(mockSession);
 
     for (const user of mockSession.users.values()) {
       expect(user.socket.send).toHaveBeenCalledTimes(1);
       const msg = JSON.parse(user.socket.send.mock.calls[0][0]);
       expect(msg.type).toBe(MESSAGE_TYPES.SESSION_USERS);
+
       expect(Array.isArray(msg.users)).toBe(true);
-      // We expect two
       expect(msg.users.length).toBe(2);
 
-      // user1 is the owner
-      const foundOwner = msg.users.find(u => u.userId === 'user1');
-      expect(foundOwner.isOwner).toBe(true);
-      expect(msg.ownerUserId).toBe('user1');
+      // user1 => sessionRole='owner'
+      const u1 = msg.users.find(u => u.userId === 'user1');
+      expect(u1.sessionRole).toBe('owner');
+      expect(u1.globalRole).toBe('user');
 
-      // user2 is admin
-      const foundAdmin = msg.users.find(u => u.userId === 'user2');
-      expect(foundAdmin.isAdmin).toBe(true);
+      // user2 => sessionRole='viewer', globalRole='admin'
+      const u2 = msg.users.find(u => u.userId === 'user2');
+      expect(u2.sessionRole).toBe('viewer');
+      expect(u2.globalRole).toBe('admin');
+
+      // We do NOT send an 'ownerUserId' property anymore
+      expect(msg).not.toHaveProperty('ownerUserId');
     }
   });
 
   test('broadcastToSession does nothing if user socket is missing or not open', () => {
-    // Remove socket for user2
+    // user2 => no socket
     mockSession.users.get('user2').socket = null;
+    // user1 => closed
+    mockSession.users.get('user1').socket.readyState = 3; // CLOSED
 
-    // Mark user1’s socket as closed
-    mockSession.users.get('user1').socket.readyState = 3; // WebSocket.CLOSED is often 3
+    broadcastToSession(mockSession, { type: 'ANY' });
 
-    broadcastToSession(mockSession, { type: 'ANY', data: 1 });
-
-    // No calls for a closed or null socket
     for (const user of mockSession.users.values()) {
       if (!user.socket) continue;
       expect(user.socket.send).not.toHaveBeenCalled();

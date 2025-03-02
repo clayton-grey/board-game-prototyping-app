@@ -3,16 +3,22 @@
 import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
 import { WebSocket } from 'ws';
 import { sessionGuard } from './handlerUtils.js';
+import { canManageOthers, canKickUser } from '../../utils/Permissions.js';
 
 export const handleMakeEditor = sessionGuard((session, data, ws) => {
   const { userId, targetUserId } = data;
-  if (!session.canManage(userId)) {
+  const manager = session.users.get(userId);
+  const target = session.users.get(targetUserId);
+  if (!manager || !target) return;
+
+  if (!canManageOthers(manager)) {
     return;
   }
-  const tgtUser = session.users.get(targetUserId);
-  if (!tgtUser) return;
 
-  if (!tgtUser.isOwner && !tgtUser.isAdmin) {
+  // set sessionRole='editor' if target isn't already 'owner' or 'admin' 
+  // (though admin is global, we could allow an admin to also be an 'editor', 
+  // but that may be redundant).
+  if (target.sessionRole !== 'owner') {
     session.setEditorRole(targetUserId, true);
     broadcastUserList(session);
   }
@@ -20,13 +26,15 @@ export const handleMakeEditor = sessionGuard((session, data, ws) => {
 
 export const handleRemoveEditor = sessionGuard((session, data, ws) => {
   const { userId, targetUserId } = data;
-  if (!session.canManage(userId)) {
+  const manager = session.users.get(userId);
+  const target = session.users.get(targetUserId);
+  if (!manager || !target) return;
+
+  if (!canManageOthers(manager)) {
     return;
   }
-  const tgtUser = session.users.get(targetUserId);
-  if (!tgtUser) return;
 
-  if (tgtUser.isEditor) {
+  if (target.sessionRole === 'editor') {
     session.setEditorRole(targetUserId, false);
     broadcastUserList(session);
   }
@@ -34,6 +42,14 @@ export const handleRemoveEditor = sessionGuard((session, data, ws) => {
 
 export const handleKickUser = sessionGuard((session, data, ws) => {
   const { userId, targetUserId } = data;
+  const kicker = session.users.get(userId);
+  const target = session.users.get(targetUserId);
+  if (!kicker || !target) return;
+
+  if (!canKickUser(kicker, target)) {
+    return;
+  }
+
   const kickedUser = session.kickUser(userId, targetUserId);
   if (!kickedUser) {
     return;

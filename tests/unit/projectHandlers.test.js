@@ -1,5 +1,4 @@
 // tests/unit/projectHandlers.test.js
-
 import { handleProjectNameChange } from '../../server/ws/handlers/projectHandlers.js';
 import { broadcastToSession, broadcastElementState } from '../../server/ws/collabUtils.js';
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
@@ -18,16 +17,16 @@ describe('projectHandlers', () => {
     mockSession = {
       code: 'proj-test',
       projectName: 'Old Name',
-      users: new Map([
-        ['owner1', { userId: 'owner1', isOwner: true, isAdmin: false }],
-        ['admin1', { userId: 'admin1', isOwner: false, isAdmin: true }],
-        ['user2', { userId: 'user2', isOwner: false, isAdmin: false }],
-      ]),
+      users: new Map(),
       elements: []
     };
   });
 
   test('handleProjectNameChange => sets session.projectName, broadcasts if user isOwner', () => {
+    // previously had: user = { userId: 'owner1', isOwner: true }
+    const user = { userId: 'owner1', sessionRole: 'owner', globalRole: 'user' };
+    mockSession.users.set('owner1', user);
+
     const data = { userId: 'owner1', newName: 'NewProjectName' };
     handleProjectNameChange(mockSession, data, mockWs);
 
@@ -40,6 +39,10 @@ describe('projectHandlers', () => {
   });
 
   test('handleProjectNameChange => sets session.projectName, broadcasts if user isAdmin', () => {
+    // previously had: user = { userId: 'admin1', isAdmin: true }
+    const adminUser = { userId: 'admin1', sessionRole: 'viewer', globalRole: 'admin' };
+    mockSession.users.set('admin1', adminUser);
+
     const data = { userId: 'admin1', newName: 'AdminRenamedIt' };
     handleProjectNameChange(mockSession, data, mockWs);
 
@@ -49,8 +52,12 @@ describe('projectHandlers', () => {
   });
 
   test('handleProjectNameChange => does nothing if user is normal user', () => {
+    const user2 = { userId: 'user2', sessionRole: 'viewer', globalRole: 'user' };
+    mockSession.users.set('user2', user2);
+
     const data = { userId: 'user2', newName: 'Nope' };
     handleProjectNameChange(mockSession, data, mockWs);
+
     expect(mockSession.projectName).toBe('Old Name');
     expect(broadcastToSession).not.toHaveBeenCalled();
     expect(broadcastElementState).not.toHaveBeenCalled();

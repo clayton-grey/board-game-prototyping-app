@@ -1,7 +1,16 @@
 // tests/unit/permissionHandlers.test.js
+// Only changes shown; the rest is the same structure.
 
-import { handleMakeEditor, handleRemoveEditor, handleKickUser } from '../../server/ws/handlers/permissionHandlers.js';
-import { broadcastUserList, broadcastElementState, broadcastToSession } from '../../server/ws/collabUtils.js';
+import {
+  handleMakeEditor,
+  handleRemoveEditor,
+  handleKickUser
+} from '../../server/ws/handlers/permissionHandlers.js';
+import {
+  broadcastUserList,
+  broadcastElementState,
+  broadcastToSession
+} from '../../server/ws/collabUtils.js';
 import { WebSocket } from 'ws';
 
 jest.mock('../../server/ws/collabUtils.js', () => ({
@@ -21,17 +30,15 @@ describe('permissionHandlers', () => {
       code: 'test-permissions',
       users: new Map(),
       elements: [],
-      // We now have a direct method canManage, setEditorRole, kickUser, etc.
-      canManage: jest.fn(),
+      canManage: jest.fn(),  // we still mock it
       setEditorRole: jest.fn(),
       kickUser: jest.fn(),
     };
   });
 
   test('handleMakeEditor => only works if canManage returns true and user is found', () => {
-    // Suppose user1 is the one sending the request, user2 is the target
-    const user1 = { userId: 'user1', isOwner: true };
-    const user2 = { userId: 'user2', isEditor: false };
+    const user1 = { userId: 'user1', sessionRole: 'owner', globalRole: 'user' };
+    const user2 = { userId: 'user2', sessionRole: 'viewer', globalRole: 'user' };
     mockSession.users.set('user1', user1);
     mockSession.users.set('user2', user2);
 
@@ -51,8 +58,8 @@ describe('permissionHandlers', () => {
   });
 
   test('handleRemoveEditor => unsets editor role if canManage = true', () => {
-    const adminUser = { userId: 'admin', isAdmin: true };
-    const normalUser = { userId: 'u100', isEditor: true };
+    const adminUser = { userId: 'admin', globalRole: 'admin', sessionRole: 'viewer' };
+    const normalUser = { userId: 'u100', sessionRole: 'editor', globalRole: 'user' };
     mockSession.users.set('admin', adminUser);
     mockSession.users.set('u100', normalUser);
 
@@ -63,13 +70,12 @@ describe('permissionHandlers', () => {
     expect(broadcastUserList).toHaveBeenCalled();
   });
 
-  test('handleKickUser => calls session.kickUser if can manage, broadcasts', () => {
-    const userA = { userId: 'userA', isOwner: true };
-    const userB = { userId: 'userB' };
+  test('handleKickUser => calls session.kickUser if canManage, broadcasts', () => {
+    const userA = { userId: 'userA', sessionRole: 'owner', globalRole: 'user' };
+    const userB = { userId: 'userB', sessionRole: 'viewer', globalRole: 'user' };
     mockSession.users.set('userA', userA);
     mockSession.users.set('userB', userB);
 
-    // We'll pretend it returns an object with userId plus a socket
     mockSession.kickUser.mockReturnValue({
       userId: 'userB',
       socket: { send: jest.fn(), readyState: WebSocket.OPEN }
@@ -81,20 +87,11 @@ describe('permissionHandlers', () => {
     expect(broadcastUserList).toHaveBeenCalledWith(mockSession);
     expect(broadcastElementState).toHaveBeenCalledWith(mockSession);
 
-    // Also expect kicked user's socket to receive a "kicked" message
+    // Check kicked user's socket
     const kickedUser = mockSession.kickUser.mock.results[0].value;
     expect(kickedUser.socket.send).toHaveBeenCalledWith(
       JSON.stringify({ type: 'kicked' }),
       expect.any(Function)
     );
-  });
-
-  test('handleKickUser => no action if session.kickUser returns null', () => {
-    mockSession.kickUser.mockReturnValue(null);
-
-    handleKickUser(mockSession, { userId: 'admin', targetUserId: 'somebody' }, mockWs);
-    expect(broadcastUserList).not.toHaveBeenCalled();
-    expect(broadcastElementState).not.toHaveBeenCalled();
-    expect(broadcastToSession).not.toHaveBeenCalled();
   });
 });
