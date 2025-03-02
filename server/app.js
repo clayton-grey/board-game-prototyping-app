@@ -40,6 +40,13 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(ROOT_DIR, 'client', 'index.html'));
 });
 
+// near the bottom, before your global error handler:
+if (process.env.NODE_ENV === 'test') {
+  app.get('/test/throw-error', (req, res) => {
+    throw new Error('Test forced error');
+  });
+}
+
 // Global error handler
 app.use((err, req, res, next) => {
   console.error('Global Error Handler:', err.stack || err);

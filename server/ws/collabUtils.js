@@ -1,5 +1,6 @@
-// ./server/ws/collabUtils.js
-
+/**
+ * ./server/ws/collabUtils.js
+ */
 import { WebSocket } from 'ws';
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 
@@ -17,6 +18,7 @@ export function broadcastToSession(session, data) {
 
 /**
  * Broadcast the current element state (elements array + projectName) to all in the session.
+ * (Logging removed for cleanliness. If you want logs, you can add them here.)
  */
 export function broadcastElementState(session) {
   broadcastToSession(session, {
@@ -28,19 +30,16 @@ export function broadcastElementState(session) {
 
 /**
  * Broadcast the current user list, sorted by joinOrder.
- * We unify ephemeral roles => client sees {sessionRole, globalRole}, no more booleans.
- * We have removed 'ownerUserId' entirely.
  */
 export function broadcastUserList(session) {
   const sorted = [...session.users.values()].sort((a, b) => a.joinOrder - b.joinOrder);
 
-  // Convert to a minimal object
   const userList = sorted.map(u => ({
     userId: u.userId,
     name: u.name,
     color: u.color,
-    sessionRole: u.sessionRole,  // 'owner' | 'editor' | 'viewer'
-    globalRole: u.globalRole     // 'admin' | 'user'
+    sessionRole: u.sessionRole,
+    globalRole: u.globalRole
   }));
 
   broadcastToSession(session, {
