@@ -1,5 +1,5 @@
 // ./client/js/canvas.js
-import { MESSAGE_TYPES } from "/shared/wsMessageTypes.js";
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 
 let selectedElementIds = [];
 let localUserId = null;
