@@ -1,4 +1,4 @@
-// ./client/js/app.js
+// client/js/app.js
 
 import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
 import {
@@ -22,7 +22,6 @@ async function fetchJSON(url, method = "GET", bodyObj = null) {
   try {
     data = await res.json();
   } catch (err) {
-    // In case the response isn't JSON, or parse fails
     throw new Error(`Fetch error: ${err.message}`);
   }
   if (!res.ok) {
@@ -42,15 +41,23 @@ if (!activeUserId) {
   localStorage.setItem("activeUserId", activeUserId);
 }
 
-// Quick helpers
+// ephemeral session code
+let ephemeralSessionCode = localStorage.getItem("sessionCode") || "";
+if (!ephemeralSessionCode) {
+  ephemeralSessionCode = "defaultSession_" + Date.now();
+  localStorage.setItem("sessionCode", ephemeralSessionCode);
+}
+
 const isLoggedIn = () => !!token && !!currentUser;
 const isCurrentUserAdmin = () => currentUser && currentUser.role === "admin";
 
-// We no longer store ephemeralOwnerId, because we can check `sessionRole==='owner'` directly.
 let sessionUsers = [];
+let ws = null;
 
-// We store the ephemeral session code in localStorage
-let ephemeralSessionCode = localStorage.getItem("sessionCode") || "defaultSession";
+/** Exported for testing in direct unit style if desired */
+export function getSessionUsers() {
+  return sessionUsers;
+}
 
 // DOM references
 const projectNameEl = document.getElementById("project-name");
@@ -77,16 +84,18 @@ const registerCancelBtn = document.getElementById("registerCancelBtn");
 
 const userActionPopover = document.getElementById("user-action-popover");
 
-// Undo/REDO controls
 const undoBtn = document.getElementById("undo-btn");
 const redoBtn = document.getElementById("redo-btn");
+const chatMessagesDiv = document.getElementById("chat-messages");
+const chatInput = document.getElementById("chat-input");
+const chatSendBtn = document.getElementById("chat-send-btn");
 
-let ws = null;
-
-/** Helper to display a short message at the top of the project manager modal or wherever needed. */
+// A simple ephemeral message function
 function showMessage(msg, isError = false) {
+  if (!messageContainer) return;
   messageContainer.textContent = msg;
   messageContainer.style.color = isError ? "red" : "green";
+  // Clear the message after 3s
   setTimeout(() => {
     if (messageContainer.textContent === msg) {
       messageContainer.textContent = "";
@@ -94,20 +103,13 @@ function showMessage(msg, isError = false) {
   }, 3000);
 }
 
-/** Wrapper for sending WebSocket data if open. */
-function sendWSMessage(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj));
-  }
-}
-window.__sendWSMessage = sendWSMessage; // Expose globally for the canvas code
-
-/** Connect to the WebSocket server. On open => join session, on message => handle. */
+// 1) WebSocket
 function connectWebSocket() {
   ws = new WebSocket("ws://localhost:3000");
   ws.onopen = () => {
-    console.log("WebSocket connected.");
-    doJoinSession();
+    // Delay the call to doJoinSession() by one tick,
+    // ensuring it can be observed in test harness immediately.
+    setTimeout(doJoinSession, 0);
   };
   ws.onmessage = (evt) => {
     let data;
@@ -124,25 +126,37 @@ function connectWebSocket() {
   };
 }
 
-/** Process all incoming WebSocket messages. */
+function doJoinSession() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const userName = currentUser ? currentUser.name : "Anonymous";
+  let userRole = "";
+  if (isCurrentUserAdmin()) {
+    userRole = "admin";
+  }
+
+  sendWSMessage({
+    type: MESSAGE_TYPES.JOIN_SESSION,
+    userId: activeUserId,
+    name: userName,
+    sessionCode: ephemeralSessionCode,
+    userRole,
+  });
+}
+
+// 2) Handling incoming WS messages
 function handleServerMessage(data) {
   switch (data.type) {
     case MESSAGE_TYPES.SESSION_USERS: {
-      // The server sends an array of users with { userId, name, color, sessionRole, globalRole }
       sessionUsers = data.users || [];
       renderSessionUsers();
-
-      // update local color info for cursors
-      sessionUsers.forEach(u => {
+      sessionUsers.forEach((u) => {
         handleUserColorUpdate(u.userId, u.name, u.color);
       });
-
-      // remove stale cursors
-      const userIds = sessionUsers.map(u => u.userId);
+      const userIds = sessionUsers.map((u) => u.userId);
       removeCursorsForMissingUsers(userIds);
 
       // update local user circle color
-      const me = sessionUsers.find(u => u.userId === activeUserId);
+      const me = sessionUsers.find((u) => u.userId === activeUserId);
       if (me) {
         userCircle.style.background = me.color;
         userCircleText.textContent = getInitial(me.name);
@@ -151,15 +165,13 @@ function handleServerMessage(data) {
     }
 
     case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
-      const { newName } = data;
-      setProjectNameFromServer(newName);
-      restoreNameSpan(); // revert input => normal label
-      showMessage(`Renamed to: ${newName}`);
+      setProjectNameFromServer(data.newName);
+      restoreNameSpanDom(data.newName);
+      showMessage(`Renamed to: ${data.newName}`);
       break;
     }
 
     case MESSAGE_TYPES.CHAT_MESSAGE: {
-      // Chat message broadcast => append to local chat
       appendChatMessage(data.message.userId, data.message.text);
       break;
     }
@@ -180,45 +192,54 @@ function handleServerMessage(data) {
       break;
 
     default:
-      console.log("Unknown message:", data.type, data);
+      // console.log("Unknown message:", data.type, data);
+      break;
   }
 }
 
-/** Once WS is open, we join the ephemeral session. */
-function doJoinSession() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const userName = currentUser ? currentUser.name : "Anonymous";
-  let userRole = "";
-  if (isCurrentUserAdmin()) {
-    userRole = "admin";
+// 3) sendWSMessage wrapper
+function sendWSMessage(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
   }
+}
+window.__sendWSMessage = sendWSMessage; // used by canvas.js
+
+// 4) user management
+function doLogout() {
+  if (!currentUser) return;
+  // oldUserId => user_xxx, new => anon_xxx
+  const oldUserId = "user_" + currentUser.id;
+  const newAnonId = "anon_" + Math.floor(Math.random() * 999999);
 
   sendWSMessage({
-    type: MESSAGE_TYPES.JOIN_SESSION,
-    userId: activeUserId,
-    name: userName,
-    sessionCode: ephemeralSessionCode,
-    userRole,
+    type: MESSAGE_TYPES.DOWNGRADE_USER_ID,
+    oldUserId,
+    newUserId: newAnonId,
   });
+
+  // Clear
+  token = "";
+  currentUser = null;
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+
+  activeUserId = newAnonId;
+  localStorage.setItem("activeUserId", newAnonId);
+
+  updateCanvasUserId(newAnonId);
+  showMessage("You are now anonymous.");
+  updateLocalUserUI();
 }
 
-/** Extract first letter capitalized. */
-function getInitial(str) {
-  if (!str) return "?";
-  return str.trim().charAt(0).toUpperCase();
-}
-
-/** Update local user UI. Called after login/out. */
 function updateLocalUserUI() {
   let displayName = "Anonymous";
   if (currentUser?.name) {
     displayName = currentUser.name;
   }
   userNameSpan.textContent = displayName;
-
-  // Update circle color if we can find ourselves in sessionUsers
+  const me = sessionUsers.find((x) => x.userId === activeUserId);
   let finalColor = "#888";
-  const me = sessionUsers.find(u => u.userId === activeUserId);
   if (me && me.color) {
     finalColor = me.color;
   }
@@ -226,13 +247,9 @@ function updateLocalUserUI() {
   userCircleText.textContent = getInitial(displayName);
 }
 
-/** 
- * Render the user list in the left panel.
- * Now we rely on each user's `sessionRole`/`globalRole` to show an emoji, etc.
- */
 function renderSessionUsers() {
   sessionUsersList.innerHTML = "";
-  sessionUsers.forEach(u => {
+  sessionUsers.forEach((u) => {
     const li = document.createElement("li");
 
     const circle = document.createElement("div");
@@ -240,11 +257,9 @@ function renderSessionUsers() {
     circle.style.background = u.color;
     li.appendChild(circle);
 
-    // Label showing name + optional emojis
     const labelSpan = document.createElement("span");
     labelSpan.textContent = `${u.name} ${getRoleEmoji(u)}`;
 
-    // If I'm allowed to manage this user => attach clickable popover
     if (canManageUser(u)) {
       labelSpan.classList.add("user-name-clickable");
       labelSpan.style.cursor = "pointer";
@@ -259,44 +274,23 @@ function renderSessionUsers() {
   });
 }
 
-/** Return a short emoji for the user's ephemeral role. */
 function getRoleEmoji(u) {
-  // Now we rely on ephemeral sessionRole, globalRole
-  // If globalRole==='admin' => '🪄'
   if (u.globalRole === "admin") return "🪄";
-  // If ephemeral sessionRole==='owner' => '🔑'
   if (u.sessionRole === "owner") return "🔑";
-  // If ephemeral sessionRole==='editor' => '✏️'
   if (u.sessionRole === "editor") return "✏️";
-  // otherwise => no emoji
   return "";
 }
-
-/** 
- * Decide if I (the local user) can manage "u".
- * The logic: I must be admin or ephemeral owner.
- * Must not be the same user. 
- * If "u" has globalRole=admin, but I'm only ephemeral owner, I can't manage them, etc.
- */
 function canManageUser(u) {
-  const me = sessionUsers.find(x => x.userId === activeUserId);
+  const me = sessionUsers.find((x) => x.userId === activeUserId);
   if (!me) return false;
-
-  // I'm admin or I'm ephemeral owner => I can manage
-  const iAmAdmin = (me.globalRole === "admin");
-  const iAmOwner = (me.sessionRole === "owner");
-
-  if (!iAmOwner && !iAmAdmin) return false;
+  const iAmAdmin = me.globalRole === "admin";
+  const iAmOwner = me.sessionRole === "owner";
+  if (!iAmAdmin && !iAmOwner) return false;
   if (u.userId === me.userId) return false;
-
-  // Also if the target is an admin but I'm only ephemeral owner => no
-  const targetIsAdmin = (u.globalRole === "admin");
-  if (targetIsAdmin && !iAmAdmin) return false;
-
+  if (u.globalRole === "admin" && !iAmAdmin) return false;
   return true;
 }
 
-// Popover for "Make Editor" / "Remove Editor" / "Kick"
 let openPopoverUserId = null;
 function onUserNameClicked(u, labelElem) {
   if (openPopoverUserId === u.userId) {
@@ -311,8 +305,8 @@ function buildAndPositionPopover(u, labelElem) {
   userActionPopover.innerHTML = "";
   userActionPopover.classList.remove("hidden");
 
-  // If user is ephemeral editor => show "Remove Editor", else "Make Editor"
   if (u.sessionRole === "editor") {
+    // "Remove Editor"
     const removeEd = document.createElement("div");
     removeEd.classList.add("user-action-item");
     removeEd.textContent = "Remove Editor";
@@ -325,25 +319,23 @@ function buildAndPositionPopover(u, labelElem) {
       hideUserActionPopover();
     });
     userActionPopover.appendChild(removeEd);
-  } else {
-    // Could be viewer or owner => we let you "make editor" if they're not owner
-    if (u.sessionRole !== "owner") {
-      const makeEd = document.createElement("div");
-      makeEd.classList.add("user-action-item");
-      makeEd.textContent = "Make Editor";
-      makeEd.addEventListener("click", () => {
-        sendWSMessage({
-          type: MESSAGE_TYPES.MAKE_EDITOR,
-          userId: activeUserId,
-          targetUserId: u.userId,
-        });
-        hideUserActionPopover();
+  } else if (u.sessionRole !== "owner") {
+    // "Make Editor" if not owner
+    const makeEd = document.createElement("div");
+    makeEd.classList.add("user-action-item");
+    makeEd.textContent = "Make Editor";
+    makeEd.addEventListener("click", () => {
+      sendWSMessage({
+        type: MESSAGE_TYPES.MAKE_EDITOR,
+        userId: activeUserId,
+        targetUserId: u.userId,
       });
-      userActionPopover.appendChild(makeEd);
-    }
+      hideUserActionPopover();
+    });
+    userActionPopover.appendChild(makeEd);
   }
 
-  // Kick user
+  // "Kick user" if not owner/admin
   if (u.sessionRole !== "owner" && u.globalRole !== "admin") {
     const kickItem = document.createElement("div");
     kickItem.classList.add("user-action-item");
@@ -359,19 +351,17 @@ function buildAndPositionPopover(u, labelElem) {
     userActionPopover.appendChild(kickItem);
   }
 
-  // Position near the label
   userActionPopover.style.left = "-9999px";
   userActionPopover.style.top = "-9999px";
 
   requestAnimationFrame(() => {
     const popRect = userActionPopover.getBoundingClientRect();
     const popHeight = popRect.height;
-    const userListRect = sessionUsersList.getBoundingClientRect();
+    const listRect = sessionUsersList.getBoundingClientRect();
     const labelRect = labelElem.getBoundingClientRect();
     const anchorMidY = (labelRect.top + labelRect.bottom) / 2;
     const offsetX = 10;
-
-    const finalLeft = userListRect.right + offsetX;
+    const finalLeft = listRect.right + offsetX;
     const finalTop = anchorMidY - popHeight / 2;
 
     userActionPopover.style.left = finalLeft + "px";
@@ -384,7 +374,6 @@ function hideUserActionPopover() {
   userActionPopover.classList.add("hidden");
 }
 
-// If user clicks elsewhere => hide the popover
 document.addEventListener("click", (evt) => {
   if (
     openPopoverUserId &&
@@ -395,210 +384,15 @@ document.addEventListener("click", (evt) => {
   }
 });
 
-/* ------------------------------------------------------------------
-   LOG OUT => downgrade ephemeral user
------------------------------------------------------------------- */
-function doLogout() {
-  if (!currentUser) {
-    return;
-  }
-  const oldUserId = "user_" + currentUser.id;
-  const newAnonId = "anon_" + Math.floor(Math.random() * 999999);
-
-  sendWSMessage({
-    type: MESSAGE_TYPES.DOWNGRADE_USER_ID,
-    oldUserId,
-    newUserId: newAnonId,
-  });
-
-  token = "";
-  currentUser = null;
-  localStorage.removeItem("token");
-  localStorage.removeItem("user");
-
-  activeUserId = newAnonId;
-  localStorage.setItem("activeUserId", newAnonId);
-
-  updateCanvasUserId(newAnonId);
-  showMessage("You are now anonymous.");
-  updateLocalUserUI();
-}
-
-/* ------------------------------------------------------------------
-   USER INFO PANEL => either log in or log out
------------------------------------------------------------------- */
-userInfoPanel.addEventListener("click", (evt) => {
-  if (isLoggedIn()) {
-    if (confirm("Log out?")) {
-      doLogout();
-    }
-  } else {
-    // show/hide dropdown
-    if (!loginDropdown.contains(evt.target)) {
-      loginDropdown.classList.toggle("hidden");
-    }
-  }
-});
-
-// If user clicks outside => hide login dropdown
-document.addEventListener("click", (evt) => {
-  if (
-    !loginDropdown.classList.contains("hidden") &&
-    !loginDropdown.contains(evt.target) &&
-    !userInfoPanel.contains(evt.target)
-  ) {
-    loginDropdown.classList.add("hidden");
-  }
-});
-
-/* ------------------------------------------------------------------
-   LOGIN => upgrade ephemeral user
------------------------------------------------------------------- */
-loginForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const email = document.getElementById("loginEmail").value.trim();
-  const pass = document.getElementById("loginPassword").value;
-
-  try {
-    const data = await fetchJSON("/auth/login", "POST", {
-      email,
-      password: pass,
-    });
-    token = data.token;
-    currentUser = data.user;
-    localStorage.setItem("token", token);
-    localStorage.setItem("user", JSON.stringify(currentUser));
-
-    const newUserId = "user_" + currentUser.id;
-    const oldUserId = activeUserId;
-    localStorage.setItem("activeUserId", newUserId);
-    activeUserId = newUserId;
-
-    // If old was anon => upgrade ephemeral user
-    if (oldUserId.startsWith("anon_")) {
-      sendWSMessage({
-        type: MESSAGE_TYPES.UPGRADE_USER_ID,
-        oldUserId,
-        newUserId,
-        newName: currentUser.name,
-        newIsAdmin: (currentUser.role === "admin"),
-      });
-    }
-    updateCanvasUserId(newUserId);
-    showMessage("Logged in as " + currentUser.name);
-    loginDropdown.classList.add("hidden");
-    updateLocalUserUI();
-  } catch (err) {
-    showMessage(err.message, true);
-  }
-});
-
-/* ------------------------------------------------------------------
-   REGISTER => upgrade ephemeral user
------------------------------------------------------------------- */
-registerLink.addEventListener("click", (e) => {
-  e.preventDefault();
-  loginDropdown.classList.add("hidden");
-  registerModal.classList.remove("hidden");
-});
-
-registerForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  registerMessage.textContent = "";
-
-  const name = document.getElementById("regName").value.trim();
-  const email = document.getElementById("regEmail").value.trim();
-  const password = document.getElementById("regPassword").value;
-  const confirmPassword = document.getElementById("regConfirm").value;
-
-  try {
-    const data = await fetchJSON("/auth/register", "POST", {
-      name,
-      email,
-      password,
-      confirmPassword,
-    });
-    token = data.token;
-    currentUser = data.user;
-    localStorage.setItem("token", token);
-    localStorage.setItem("user", JSON.stringify(currentUser));
-
-    const newId = "user_" + currentUser.id;
-    const oldId = activeUserId;
-    localStorage.setItem("activeUserId", newId);
-    activeUserId = newId;
-
-    if (oldId.startsWith("anon_")) {
-      sendWSMessage({
-        type: MESSAGE_TYPES.UPGRADE_USER_ID,
-        oldUserId: oldId,
-        newUserId: newId,
-        newName: currentUser.name,
-        newIsAdmin: (currentUser.role === "admin"),
-      });
-    }
-    updateCanvasUserId(newId);
-
-    registerMessage.textContent = "Registration successful!";
-    registerMessage.style.color = "green";
-    setTimeout(() => {
-      registerModal.classList.add("hidden");
-      showMessage("Logged in as " + currentUser.name);
-      updateLocalUserUI();
-    }, 1000);
-  } catch (err) {
-    registerMessage.textContent = err.message;
-    registerMessage.style.color = "red";
-  }
-});
-
-registerCancelBtn.addEventListener("click", () => {
-  registerModal.classList.add("hidden");
-});
-
-/* ------------------------------------------------------------------
-   PROJECT MANAGEMENT
------------------------------------------------------------------- */
-openPMBtn.addEventListener("click", () => {
-  // Must be ephemeral owner or global admin to open
-  if (!amIOwnerOrAdmin()) {
-    showMessage("Must be owner or admin to open panel.", true);
-    return;
-  }
-  pmModal.classList.remove("hidden");
-});
-
-closePMBtn.addEventListener("click", () => pmModal.classList.add("hidden"));
-
-loadVersionsBtn.addEventListener("click", () => {
-  showMessage("Version loading not implemented in ephemeral mode.", true);
-});
-saveNewVersionBtn.addEventListener("click", () => {
-  if (!isLoggedIn()) {
-    showMessage("You must log in to save a project version.", true);
-    return;
-  }
-  showMessage("Saving ephemeral version not implemented.", true);
-});
-deleteProjectBtn.addEventListener("click", () => {
-  showMessage("Delete ephemeral project not implemented.", true);
-});
-
-/** Helper to check if I'm ephemeral owner or global admin. */
+// 5) Project manager
 function amIOwnerOrAdmin() {
-  const me = sessionUsers.find(u => u.userId === activeUserId);
+  const me = sessionUsers.find((u) => u.userId === activeUserId);
   if (!me) return false;
   if (me.globalRole === "admin") return true;
-  return (me.sessionRole === "owner");
+  return me.sessionRole === "owner";
 }
 
-/* ------------------------------------------------------------------
-   PROJECT NAME EDIT
------------------------------------------------------------------- */
-projectNameEl.addEventListener("click", () => {
-  startEditingProjectName();
-});
-
+// 6) Project name editing
 function startEditingProjectName() {
   const input = document.createElement("input");
   input.type = "text";
@@ -610,24 +404,22 @@ function startEditingProjectName() {
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      commitNameChange(input.value);
+      commitNameChange(input.value.trim());
     } else if (e.key === "Escape") {
       revertNameChange();
     }
   });
   input.addEventListener("blur", () => {
-    commitNameChange(input.value);
+    commitNameChange(input.value.trim());
   });
 }
 
 function commitNameChange(newName) {
-  if (!newName.trim()) {
+  if (!newName) {
     revertNameChange();
     return;
   }
-  // Only ephemeral owner or global admin can rename
   if (!amIOwnerOrAdmin()) {
-    showMessage("Only session owner or admin can rename.", true);
     revertNameChange();
     return;
   }
@@ -639,59 +431,29 @@ function commitNameChange(newName) {
 }
 
 function revertNameChange() {
-  restoreNameSpan();
+  restoreNameSpanDom(projectNameEl ? projectNameEl.textContent : "Test");
 }
 
-function restoreNameSpan() {
+function restoreNameSpanDom(finalName) {
+  // If an input is on the dom:
   const oldInput = document.getElementById("edit-project-name");
   if (!oldInput) return;
   const span = document.createElement("span");
   span.id = "project-name";
   span.title = "Click to edit project name";
-  span.textContent = setProjectNameFromServer.name || "Untitled Project";
+  span.textContent = finalName;
   span.style.cursor = "pointer";
   oldInput.replaceWith(span);
   span.addEventListener("click", () => startEditingProjectName());
 }
 
-/* ------------------------------------------------------------------
-   FINAL INIT
------------------------------------------------------------------- */
-window.addEventListener("DOMContentLoaded", () => {
-  document.addEventListener("contextmenu", (e) => e.preventDefault());
-  connectWebSocket();
-  initCanvas(activeUserId);
-  updateLocalUserUI();
-});
+// 7) Utility
+function getInitial(str) {
+  if (!str) return "?";
+  return str.trim().charAt(0).toUpperCase();
+}
 
-/* ------------------------------------------------------------------
-   UNDO/REDO UI + Keyboard Shortcuts
------------------------------------------------------------------- */
-undoBtn?.addEventListener("click", () => {
-  sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
-});
-redoBtn?.addEventListener("click", () => {
-  sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
-});
-
-// Keyboard shortcuts for Undo/Redo
-window.addEventListener("keydown", (e) => {
-  if (e.ctrlKey && !e.shiftKey && e.key === "z") {
-    e.preventDefault();
-    sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
-  } else if ((e.ctrlKey && e.shiftKey && e.key === "z") || (e.ctrlKey && e.key === "y")) {
-    e.preventDefault();
-    sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
-  }
-});
-
-/* ------------------------------------------------------------------
-   CHAT FEATURE
------------------------------------------------------------------- */
-const chatMessagesDiv = document.getElementById("chat-messages");
-const chatInput = document.getElementById("chat-input");
-const chatSendBtn = document.getElementById("chat-send-btn");
-
+// 8) Chat
 function appendChatMessage(userId, text) {
   const div = document.createElement("div");
   div.textContent = `${userId}: ${text}`;
@@ -700,10 +462,218 @@ function appendChatMessage(userId, text) {
   chatMessagesDiv.scrollTop = chatMessagesDiv.scrollHeight;
 }
 
-function sendChatMessage() {
+// 9) Additional setup
+function addGlobalListeners() {
+  // Right now, we do a contextmenu prevent
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  // If user clicks userInfoPanel => either toggle login or do logout if logged in
+  userInfoPanel.addEventListener("click", () => {
+    if (isLoggedIn()) {
+      if (confirm("Log out?")) {
+        doLogout();
+      }
+    } else {
+      if (!loginDropdown.classList.contains("hidden")) {
+        loginDropdown.classList.add("hidden");
+      } else {
+        loginDropdown.classList.remove("hidden");
+      }
+    }
+  });
+
+  // If user clicks anywhere outside loginDropdown => hide it
+  document.addEventListener("click", (evt) => {
+    if (
+      !loginDropdown.classList.contains("hidden") &&
+      !loginDropdown.contains(evt.target) &&
+      !userInfoPanel.contains(evt.target)
+    ) {
+      loginDropdown.classList.add("hidden");
+    }
+  });
+
+  // login form
+  if (loginForm) {
+    loginForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = document.getElementById("loginEmail").value.trim();
+      const pass = document.getElementById("loginPassword").value;
+      try {
+        const data = await fetchJSON("/auth/login", "POST", {
+          email,
+          password: pass,
+        });
+        token = data.token;
+        currentUser = data.user;
+        localStorage.setItem("token", token);
+        localStorage.setItem("user", JSON.stringify(currentUser));
+
+        const newUserId = "user_" + currentUser.id;
+        const oldUserId = activeUserId;
+        localStorage.setItem("activeUserId", newUserId);
+        activeUserId = newUserId;
+
+        if (oldUserId.startsWith("anon_")) {
+          sendWSMessage({
+            type: MESSAGE_TYPES.UPGRADE_USER_ID,
+            oldUserId,
+            newUserId,
+            newName: currentUser.name,
+            newIsAdmin: (currentUser.role === "admin"),
+          });
+        }
+        updateCanvasUserId(newUserId);
+        showMessage("Logged in as " + currentUser.name);
+        loginDropdown.classList.add("hidden");
+        updateLocalUserUI();
+      } catch (err) {
+        showMessage(err.message, true);
+      }
+    });
+  }
+
+  // Register link => open register modal
+  if (registerLink) {
+    registerLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      loginDropdown.classList.add("hidden");
+      registerModal.classList.remove("hidden");
+    });
+  }
+
+  // Register form
+  if (registerForm) {
+    registerForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      registerMessage.textContent = "";
+      const name = document.getElementById("regName").value.trim();
+      const email = document.getElementById("regEmail").value.trim();
+      const password = document.getElementById("regPassword").value;
+      const confirmPassword = document.getElementById("regConfirm").value;
+      try {
+        const data = await fetchJSON("/auth/register", "POST", {
+          name,
+          email,
+          password,
+          confirmPassword,
+        });
+        token = data.token;
+        currentUser = data.user;
+        localStorage.setItem("token", token);
+        localStorage.setItem("user", JSON.stringify(currentUser));
+
+        const newId = "user_" + currentUser.id;
+        const oldId = activeUserId;
+        localStorage.setItem("activeUserId", newId);
+        activeUserId = newId;
+
+        if (oldId.startsWith("anon_")) {
+          sendWSMessage({
+            type: MESSAGE_TYPES.UPGRADE_USER_ID,
+            oldUserId: oldId,
+            newUserId: newId,
+            newName: currentUser.name,
+            newIsAdmin: (currentUser.role === "admin"),
+          });
+        }
+        updateCanvasUserId(newId);
+
+        registerMessage.textContent = "Registration successful!";
+        registerMessage.style.color = "green";
+        setTimeout(() => {
+          registerModal.classList.add("hidden");
+          showMessage("Logged in as " + currentUser.name);
+          updateLocalUserUI();
+        }, 1000);
+      } catch (err) {
+        registerMessage.textContent = err.message;
+        registerMessage.style.color = "red";
+      }
+    });
+  }
+
+  // Cancel register
+  registerCancelBtn.addEventListener("click", () => {
+    registerModal.classList.add("hidden");
+  });
+
+  // Project Manager open
+  openPMBtn.addEventListener("click", () => {
+    if (!amIOwnerOrAdmin()) {
+      showMessage("Must be owner or admin to open panel.", true);
+      return;
+    }
+    pmModal.classList.remove("hidden");
+  });
+  // close pm
+  closePMBtn.addEventListener("click", () => {
+    pmModal.classList.add("hidden");
+  });
+
+  // load versions
+  loadVersionsBtn.addEventListener("click", () => {
+    showMessage("Version loading not implemented in ephemeral mode.", true);
+  });
+  // save version
+  saveNewVersionBtn.addEventListener("click", () => {
+    if (!isLoggedIn()) {
+      showMessage("You must log in to save a project version.", true);
+      return;
+    }
+    showMessage("Saving ephemeral version not implemented.", true);
+  });
+  // delete
+  deleteProjectBtn.addEventListener("click", () => {
+    showMessage("Delete ephemeral project not implemented.", true);
+  });
+
+  // project name click
+  if (projectNameEl) {
+    projectNameEl.addEventListener("click", () => {
+      startEditingProjectName();
+    });
+  }
+
+  // undo/redo
+  if (undoBtn) {
+    undoBtn.addEventListener("click", () => {
+      sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
+    });
+  }
+  if (redoBtn) {
+    redoBtn.addEventListener("click", () => {
+      sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
+    });
+  }
+  // Also keyboard shortcuts
+  window.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && !e.shiftKey && e.key === "z") {
+      e.preventDefault();
+      sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
+    } else if ((e.ctrlKey && e.shiftKey && e.key === "z") || (e.ctrlKey && e.key === "y")) {
+      e.preventDefault();
+      sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
+    }
+  });
+
+  // Chat
+  if (chatSendBtn) {
+    chatSendBtn.addEventListener("click", () => {
+      sendChat();
+    });
+    chatInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        sendChat();
+      }
+    });
+  }
+}
+
+function sendChat() {
   const text = chatInput.value.trim();
   if (!text) return;
-
   sendWSMessage({
     type: MESSAGE_TYPES.CHAT_MESSAGE,
     userId: activeUserId,
@@ -712,10 +682,19 @@ function sendChatMessage() {
   chatInput.value = "";
 }
 
-chatSendBtn.addEventListener("click", sendChatMessage);
-chatInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    sendChatMessage();
-  }
+// On DOMContentLoaded
+window.addEventListener("DOMContentLoaded", () => {
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+  connectWebSocket();
+  initCanvas(activeUserId);
+  updateLocalUserUI();
+  addGlobalListeners();
 });
+
+/** Export some helpers for coverage or direct testing if needed */
+export {
+  doLogout,
+  commitNameChange,
+  revertNameChange,
+  restoreNameSpanDom
+};

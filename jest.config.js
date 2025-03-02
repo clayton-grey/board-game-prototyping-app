@@ -1,4 +1,10 @@
 export default {
+  coverageProvider: 'babel',
+  collectCoverage: true,
+  coveragePathIgnorePatterns: [
+    '/node_modules/',
+    '/client/',
+  ],
   projects: [
     {
       displayName: 'server',
@@ -13,16 +19,14 @@ export default {
     },
     {
       displayName: 'client',
+      collectCoverage: false,
       testEnvironment: 'jsdom',
       transform: {
         '^.+\\.[tj]s$': 'babel-jest'
       },
-      testMatch: [
-        '<rootDir>/tests/client/**/*.test.js'
-      ],
-      setupFiles: [
-        'jest-canvas-mock'
-      ]
+      testMatch: ['<rootDir>/tests/client/**/*.test.js'],
+      setupFiles: ['jest-canvas-mock'],
+      setupFilesAfterEnv: ['@testing-library/jest-dom']
     }
   ]
 };
