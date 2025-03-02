@@ -383,6 +383,45 @@ This project aims to create an interactive board game prototyping environment th
     - Conflict resolution beyond simple locking is left for future improvements.
 
 
+===== ./tests/unit/handlerUtils.test.js =====
+
+// tests/unit/handlerUtils.test.js
+import { sessionGuard } from '../../server/ws/handlers/handlerUtils.js';
+
+describe('handlerUtils - sessionGuard', () => {
+  test('returns immediately if session is falsy', () => {
+    const mockFn = jest.fn();
+    const guardedFn = sessionGuard(mockFn);
+
+    guardedFn(null, { some: 'data' }, { /* mockWs */ });
+    expect(mockFn).not.toHaveBeenCalled();
+
+    guardedFn(undefined, { some: 'data' }, {});
+    expect(mockFn).not.toHaveBeenCalled();
+  });
+
+  test('calls the wrapped function if session is truthy', () => {
+    const mockFn = jest.fn();
+    const guardedFn = sessionGuard(mockFn);
+
+    const fakeSession = { code: 'test-session' };
+    const fakeData = { type: 'example' };
+    const fakeWs = { readyState: 1 };
+
+    guardedFn(fakeSession, fakeData, fakeWs);
+    expect(mockFn).toHaveBeenCalledWith(fakeSession, fakeData, fakeWs);
+  });
+
+  test('returns whatever the wrapped function returns', () => {
+    const mockFn = jest.fn().mockReturnValue('someValue');
+    const guardedFn = sessionGuard(mockFn);
+
+    const out = guardedFn({ code: 'test' }, {}, {});
+    expect(out).toBe('someValue');
+  });
+});
+
+
 ===== ./tests/unit/Permissions.test.js =====
 
 // tests/unit/Permissions.test.js
@@ -979,6 +1018,113 @@ describe('Session class', () => {
     session.clearUndoRedo();
     expect(session.undoStack.length).toBe(0);
     expect(session.redoStack.length).toBe(0);
+  });
+});
+
+
+===== ./tests/unit/ProjectServiceErrorHandling.test.js =====
+
+// tests/unit/ProjectServiceErrorHandling.test.js
+import { ProjectService } from '../../server/services/ProjectService.js';
+import pool from '../../server/database.js';
+import { HttpError } from '../../server/utils/HttpError.js';
+
+// We use the same jest mock for the pool that your other tests do
+jest.mock('../../server/database.js', () => {
+  return {
+    __esModule: true,
+    default: {
+      query: jest.fn(),
+    },
+  };
+});
+
+describe('ProjectService - Error Handling', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('createProject throws an error if INSERT fails', async () => {
+    pool.query.mockRejectedValueOnce(new Error('DB insertion error'));
+
+    // We do not wrap with try/catch => we want to see that it actually throws
+    await expect(ProjectService.createProject(999, 'TestName', 'Desc'))
+      .rejects
+      .toThrow('DB insertion error');
+
+    expect(pool.query).toHaveBeenCalledTimes(1);
+  });
+
+  test('listVersions rethrows if DB fails', async () => {
+    pool.query.mockRejectedValueOnce(new Error('DB read error'));
+
+    await expect(ProjectService.listVersions(123))
+      .rejects
+      .toThrow('DB read error');
+  });
+
+  test('rollbackVersion => if final insertion fails, rethrows error', async () => {
+    // 1) Mock that the old version is found
+    pool.query.mockResolvedValueOnce({
+      rows: [{ id: 999, version_number: 3, project_data: { key: 'someValue' } }],
+    });
+    // 2) Mock the next query for getMaxVersion => 3
+    pool.query.mockResolvedValueOnce({ rows: [{ max_ver: 3 }] });
+    // 3) Mock the final insertion to fail
+    pool.query.mockRejectedValueOnce(new Error('Failing final insert'));
+
+    await expect(ProjectService.rollbackVersion(1, 999))
+      .rejects
+      .toThrow('Failing final insert');
+
+    expect(pool.query).toHaveBeenCalledTimes(3);
+  });
+
+  test('rollbackVersion => if old version not found => throws 404 HttpError', async () => {
+    pool.query.mockResolvedValueOnce({ rows: [] }); // no version found
+    await expect(ProjectService.rollbackVersion(1, 9999))
+      .rejects
+      .toThrow(HttpError); // specifically your code: new HttpError('Version not found.', 404)
+
+    expect(pool.query).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+===== ./tests/unit/config.test.js =====
+
+// tests/unit/config.test.js
+describe('config.js under NODE_ENV=test', () => {
+  let originalEnv;
+
+  beforeAll(() => {
+    originalEnv = { ...process.env };
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  test('Node environment is pinned to test => DB_NAME forced; DB_USER, etc. come from env', () => {
+    process.env.NODE_ENV = 'test';
+    // Suppose .env.test or Docker sets DB_USER=admin, DB_PASSWORD=whatever
+
+    jest.resetModules();
+    const config = require('../../server/config.js').default;
+
+    // DB_NAME forced to test
+    expect(config.DB_NAME).toBe('board_game_prototyping_test');
+
+    // DB_USER might be 'admin' if your .env.test says so:
+    expect(config.DB_USER).toBe('admin');
+
+    // If DB_PASSWORD is set in .env.test as well, we confirm that:
+    // expect(config.DB_PASSWORD).toBe('mySecretPassword');
+
+    // If DB_SSL is 'true', then:
+    // expect(config.DB_SSL).toBe(true);
+
+    // Or you can do partial checks if you're not sure
   });
 });
 
@@ -1606,6 +1752,81 @@ describe('HttpError', () => {
 });
 
 
+===== ./tests/unit/authMiddleware.test.js =====
+
+// tests/unit/authMiddleware.test.js
+import { authenticateToken, authorizeAdmin } from '../../server/middleware/authMiddleware.js';
+import { AuthService } from '../../server/services/AuthService.js';
+
+jest.mock('../../server/services/AuthService.js');
+
+describe('authMiddleware', () => {
+
+  let mockReq, mockRes, mockNext;
+  beforeEach(() => {
+    mockReq = {
+      headers: {},
+      user: null,
+    };
+    mockRes = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
+    };
+    mockNext = jest.fn();
+    jest.clearAllMocks();
+  });
+
+  describe('authenticateToken', () => {
+    test('returns 401 if no token provided', () => {
+      // no Authorization header
+      authenticateToken(mockReq, mockRes, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(401);
+      expect(mockRes.json).toHaveBeenCalledWith({ message: 'Unauthorized: No token provided' });
+      expect(mockNext).not.toHaveBeenCalled();
+    });
+
+    test('returns 403 if token is invalid', () => {
+      mockReq.headers['authorization'] = 'Bearer some_token';
+      AuthService.verifyToken.mockImplementation(() => { throw new Error('Invalid token'); });
+
+      authenticateToken(mockReq, mockRes, mockNext);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockRes.json).toHaveBeenCalledWith({ message: 'Forbidden: Invalid token' });
+      expect(mockNext).not.toHaveBeenCalled();
+    });
+
+    test('sets req.user and calls next if token is valid', () => {
+      mockReq.headers['authorization'] = 'Bearer valid_jwt';
+      AuthService.verifyToken.mockReturnValue({ id: 123, email: 'test@example.com' });
+
+      authenticateToken(mockReq, mockRes, mockNext);
+
+      expect(AuthService.verifyToken).toHaveBeenCalledWith('valid_jwt');
+      expect(mockReq.user).toEqual({ id: 123, email: 'test@example.com' });
+      expect(mockNext).toHaveBeenCalled();
+    });
+  });
+
+  describe('authorizeAdmin', () => {
+    test('calls next if req.user.isAdmin is true', () => {
+      // Suppose authenticateToken was successful => sets req.user
+      mockReq.user = { isAdmin: true };
+      authorizeAdmin(mockReq, mockRes, mockNext);
+      expect(mockNext).toHaveBeenCalled();
+    });
+
+    test('returns 403 if user is not admin', () => {
+      mockReq.user = { isAdmin: false };
+      authorizeAdmin(mockReq, mockRes, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockRes.json).toHaveBeenCalledWith({ message: 'Access denied. Admins only.' });
+      expect(mockNext).not.toHaveBeenCalled();
+    });
+  });
+});
+
+
 ===== ./tests/unit/chatHandlers.test.js =====
 
 // tests/unit/chatHandlers.test.js
@@ -2188,6 +2409,85 @@ describe('collaboration.js - handleWebSocketConnection', () => {
 });
 
 
+===== ./tests/unit/undoRedoExtra.test.js =====
+
+// tests/unit/undoRedoExtra.test.js
+import { handleUndo, handleRedo, pushUndoAction } from '../../server/ws/handlers/undoRedoHandlers.js';
+import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+
+function makeSession(elements = []) {
+  return {
+    users: new Map(),
+    elements: elements,
+    undoStack: [],
+    redoStack: [],
+    pendingMoves: new Map(),
+    pendingResizes: new Map(),
+  };
+}
+
+describe('undoRedoHandlers - extra coverage', () => {
+  let session;
+  let mockWsSend;
+
+  beforeEach(() => {
+    mockWsSend = jest.fn();
+    session = makeSession();
+    session.users.set('testUser', {
+      userId: 'testUser',
+      socket: { send: mockWsSend, readyState: 1 },
+    });
+  });
+
+  test('pushUndoAction with no diffs, then handleUndo => no changes, but coverage for default cases', () => {
+    // This might represent a weird user action that didn't store diffs properly
+    const action = { type: 'unknown', diffs: null };
+    pushUndoAction(session, action);
+
+    handleUndo(session, { userId: 'testUser' }, { send: mockWsSend });
+    // We expect no broadcast or changes, but let's check we get an ELEMENT_STATE broadcast or not:
+    // Actually, handleUndo won't apply if diffs are not an array => canApplyAction returns true,
+    // then revertAction sees unknown type => does nothing, but we do broadcast.
+    const sentJSON = mockWsSend.mock.calls.map((call) => JSON.parse(call[0]));
+    const hasElemState = sentJSON.some((msg) => msg.type === MESSAGE_TYPES.ELEMENT_STATE);
+    expect(hasElemState).toBe(true); // Because we do broadcast after revert
+  });
+
+  test('handleRedo with unknown action type does nothing but still broadcasts', () => {
+    session.redoStack.push({ type: 'some-strange-action', diffs: [] });
+
+    handleRedo(session, { userId: 'testUser' }, { send: mockWsSend });
+
+    const sentJSON = mockWsSend.mock.calls.map((call) => JSON.parse(call[0]));
+    const hasElemState = sentJSON.some((msg) => msg.type === MESSAGE_TYPES.ELEMENT_STATE);
+    expect(hasElemState).toBe(true);
+  });
+
+  test('handleUndo => shape locked by unknown user => returns UNDO_REDO_FAILED', () => {
+    // If the shape is locked by someone else => concurrency
+    session.elements.push({ id: 1, x: 0, y: 0, lockedBy: 'otherUser' });
+    session.undoStack.push({
+      type: 'move',
+      diffs: [
+        {
+          elementId: 1,
+          from: { x: 0, y: 0 },
+          to: { x: 50, y: 60 },
+        },
+      ],
+    });
+
+    handleUndo(session, { userId: 'testUser' }, { send: mockWsSend });
+
+    // We expect an UNDO_REDO_FAILED message to be sent
+    const [sentStr] = mockWsSend.mock.calls[0];
+    const msg = JSON.parse(sentStr);
+    expect(msg.type).toBe(MESSAGE_TYPES.UNDO_REDO_FAILED);
+    expect(msg.reason).toMatch(/Element locked by another user/);
+  });
+});
+
+
 ===== ./tests/integration/edgeCases.test.js =====
 
 // tests/integration/edgeCases.test.js
@@ -2564,6 +2864,47 @@ describe('Project Routes Integration', () => {
     // Verify
     const check = await pool.query('SELECT * FROM projects WHERE id=$1', [projectId]);
     expect(check.rowCount).toBe(0);
+  });
+});
+
+
+===== ./tests/integration/serverStartup.test.js =====
+
+// tests/integration/serverStartup.test.js
+
+import request from 'supertest';
+import { createServer } from 'http';
+import { WebSocketServer } from 'ws';
+import app from '../../server/app.js';
+import { handleWebSocketConnection } from '../../server/ws/collaboration.js';
+
+describe('Server Startup Integration Test', () => {
+  let server;
+
+  beforeAll((done) => {
+    // Create an HTTP server from the Express app
+    server = createServer(app);
+
+    // Create a WebSocket server on top of the same HTTP server
+    const wss = new WebSocketServer({ server });
+    wss.on('connection', (ws) => handleWebSocketConnection(ws, wss));
+
+    // Listen on ephemeral port 0 => OS picks a random available port
+    server.listen(0, () => {
+      done();
+    });
+  });
+
+  afterAll((done) => {
+    // Gracefully shut down
+    server.close(done);
+  });
+
+  test('responds with HTML at /', async () => {
+    const res = await request(server).get('/');
+    expect(res.statusCode).toBe(200);
+    // We expect the HTML from index.html or some default text
+    expect(res.text).toMatch(/<title>Board Game Prototyping<\/title>/);
   });
 });
 
