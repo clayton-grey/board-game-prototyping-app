@@ -358,6 +358,164 @@ This project aims to create an interactive board game prototyping environment th
     - Conflict resolution beyond simple locking is left for future improvements.
 
 
+===== ./tests/unit/Permissions.test.js =====
+
+// tests/unit/Permissions.test.js
+
+import {
+  isAdmin,
+  isOwner,
+  isEditor,
+  isViewer,
+  canManageOthers,
+  canKickUser,
+  canRenameProject,
+  canEditProject,
+} from '../../server/utils/Permissions.js';
+
+describe('Permissions utility functions', () => {
+  const adminUser = {
+    userId: 'admin1',
+    globalRole: 'admin',
+    sessionRole: 'viewer', // even if sessionRole=viewer, globalRole=admin overrides in many checks
+  };
+  const ownerUser = {
+    userId: 'owner1',
+    globalRole: 'user',
+    sessionRole: 'owner',
+  };
+  const editorUser = {
+    userId: 'editor1',
+    globalRole: 'user',
+    sessionRole: 'editor',
+  };
+  const viewerUser = {
+    userId: 'viewer1',
+    globalRole: 'user',
+    sessionRole: 'viewer',
+  };
+
+  describe('isAdmin', () => {
+    test('admin user => true', () => {
+      expect(isAdmin(adminUser)).toBe(true);
+    });
+    test('non-admin => false', () => {
+      expect(isAdmin(ownerUser)).toBe(false);
+      expect(isAdmin(editorUser)).toBe(false);
+      expect(isAdmin(viewerUser)).toBe(false);
+    });
+  });
+
+  describe('isOwner', () => {
+    test('sessionRole="owner" => true', () => {
+      expect(isOwner(ownerUser)).toBe(true);
+    });
+    test('others => false', () => {
+      expect(isOwner(adminUser)).toBe(false);
+      expect(isOwner(editorUser)).toBe(false);
+      expect(isOwner(viewerUser)).toBe(false);
+    });
+  });
+
+  describe('isEditor', () => {
+    test('sessionRole="editor" => true', () => {
+      expect(isEditor(editorUser)).toBe(true);
+    });
+    test('sessionRole="owner" => true', () => {
+      expect(isEditor(ownerUser)).toBe(true);
+    });
+    test('admin globalRole with viewer session => isEditor= false (strictly speaking, code says only "owner" or "editor")', () => {
+      // If you want admins to auto be "editor", you can adjust. Currently, the code is: isEditor = sessionRole==='editor'||'owner'
+      // So an admin with sessionRole='viewer' is not recognized as 'editor'. This might be fine or might be a design choice.
+      expect(isEditor(adminUser)).toBe(false);
+    });
+    test('sessionRole="viewer" => false', () => {
+      expect(isEditor(viewerUser)).toBe(false);
+    });
+  });
+
+  describe('isViewer', () => {
+    test('sessionRole="viewer" => true', () => {
+      expect(isViewer(viewerUser)).toBe(true);
+      expect(isViewer(adminUser)).toBe(true); // Because adminUser.sessionRole='viewer'
+    });
+    test('others => false', () => {
+      expect(isViewer(ownerUser)).toBe(false);
+      expect(isViewer(editorUser)).toBe(false);
+    });
+  });
+
+  describe('canManageOthers', () => {
+    test('admin => true', () => {
+      expect(canManageOthers(adminUser)).toBe(true);
+    });
+    test('owner => true', () => {
+      expect(canManageOthers(ownerUser)).toBe(true);
+    });
+    test('editor => false', () => {
+      expect(canManageOthers(editorUser)).toBe(false);
+    });
+    test('viewer => false', () => {
+      expect(canManageOthers(viewerUser)).toBe(false);
+    });
+  });
+
+  describe('canKickUser', () => {
+    test('admin can kick viewer or editor or user - as long as target is not admin or owner', () => {
+      // admin user => canKickUser(adminUser, viewerUser) => true
+      expect(canKickUser(adminUser, viewerUser)).toBe(true);
+      expect(canKickUser(adminUser, editorUser)).toBe(true);
+      // cannot kick another admin
+      const admin2 = { ...adminUser, userId: 'admin2' };
+      expect(canKickUser(adminUser, admin2)).toBe(false);
+      // cannot kick an owner
+      expect(canKickUser(adminUser, ownerUser)).toBe(false);
+    });
+    test('owner can kick viewer, editor, but not admin or other owner', () => {
+      // owner => canKickUser(ownerUser, viewerUser)=true
+      expect(canKickUser(ownerUser, viewerUser)).toBe(true);
+      expect(canKickUser(ownerUser, editorUser)).toBe(true);
+      // cannot kick admin
+      expect(canKickUser(ownerUser, adminUser)).toBe(false);
+      // cannot kick another "owner" if that existed
+    });
+    test('editor or viewer => false always', () => {
+      expect(canKickUser(editorUser, viewerUser)).toBe(false);
+      expect(canKickUser(viewerUser, editorUser)).toBe(false);
+      expect(canKickUser(editorUser, ownerUser)).toBe(false);
+      expect(canKickUser(viewerUser, adminUser)).toBe(false);
+    });
+  });
+
+  describe('canRenameProject (== canManageOthers)', () => {
+    test('admin => true', () => {
+      expect(canRenameProject(adminUser)).toBe(true);
+    });
+    test('owner => true', () => {
+      expect(canRenameProject(ownerUser)).toBe(true);
+    });
+    test('editor => false', () => {
+      expect(canRenameProject(editorUser)).toBe(false);
+    });
+  });
+
+  describe('canEditProject', () => {
+    test('admin => true', () => {
+      expect(canEditProject(adminUser)).toBe(true);
+    });
+    test('owner => true', () => {
+      expect(canEditProject(ownerUser)).toBe(true);
+    });
+    test('editor => true', () => {
+      expect(canEditProject(editorUser)).toBe(true);
+    });
+    test('viewer => false', () => {
+      expect(canEditProject(viewerUser)).toBe(false);
+    });
+  });
+});
+
+
 ===== ./tests/unit/permissionHandlers.test.js =====
 
 // tests/unit/permissionHandlers.test.js
@@ -455,6 +613,45 @@ describe('permissionHandlers', () => {
       JSON.stringify({ type: 'kicked' }),
       expect.any(Function)
     );
+  });
+});
+
+
+===== ./tests/unit/asyncHandler.test.js =====
+
+// tests/unit/asyncHandler.test.js
+import { asyncHandler } from '../../server/utils/asyncHandler.js';
+
+describe('asyncHandler', () => {
+  test('calls next with error if the wrapped function rejects', async () => {
+    const mockReq = {};
+    const mockRes = {};
+    const mockNext = jest.fn();
+
+    const failingFn = async () => {
+      throw new Error('Oops!');
+    };
+    const wrapped = asyncHandler(failingFn);
+
+    await wrapped(mockReq, mockRes, mockNext);
+    expect(mockNext).toHaveBeenCalledTimes(1);
+    const [err] = mockNext.mock.calls[0];
+    expect(err.message).toBe('Oops!');
+  });
+
+  test('calls the handler normally if no error', async () => {
+    const mockReq = {};
+    const mockRes = {};
+    const mockNext = jest.fn();
+
+    const successFn = async (req, res, next) => {
+      // No error
+      return 'OK';
+    };
+    const wrapped = asyncHandler(successFn);
+
+    await wrapped(mockReq, mockRes, mockNext);
+    expect(mockNext).not.toHaveBeenCalled();
   });
 });
 
@@ -1353,6 +1550,33 @@ describe('cursorHandlers', () => {
   test('handleCursorUpdate => does nothing if session is null or undefined', () => {
     handleCursorUpdate(null, { userId: 'userA', x: 10, y: 10 }, mockWs);
     expect(broadcastToSession).not.toHaveBeenCalled();
+  });
+});
+
+
+===== ./tests/unit/HttpError.test.js =====
+
+// tests/unit/HttpError.test.js
+import { HttpError } from '../../server/utils/HttpError.js';
+
+describe('HttpError', () => {
+  test('creates an error with a message and statusCode', () => {
+    const err = new HttpError('Not Found', 404);
+    expect(err.message).toBe('Not Found');
+    expect(err.statusCode).toBe(404);
+    expect(err.stack).toBeDefined();
+    // The name property should be 'Error' or 'HttpError' depending on environment
+    expect(err.name).toBe('HttpError');
+  });
+
+  test('defaults to statusCode=500 if not provided', () => {
+    const err = new HttpError('Server failure');
+    expect(err.statusCode).toBe(500);
+  });
+
+  test('stack trace is captured (V8 only)', () => {
+    // Just confirm it has a 'stack' property
+    expect(new HttpError('Test').stack).toContain('HttpError');
   });
 });
 
@@ -2508,13 +2732,13 @@ export function asyncHandler(fn) {
 
 ===== ./server/utils/HttpError.js =====
 
-// server/utils/HttpError.js
-
+// ./server/utils/HttpError.js
 export class HttpError extends Error {
   constructor(message, statusCode = 500) {
     super(message);
     this.statusCode = statusCode;
-    // Maintain proper stack trace (V8 only)
+    this.name = 'HttpError';
+
     if (Error.captureStackTrace) {
       Error.captureStackTrace(this, this.constructor);
     }
