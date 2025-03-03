@@ -1,6 +1,6 @@
 {
   "name": "board-game-prototyping-app",
-  "version": "0.0.3",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "start": "node server/index.js",

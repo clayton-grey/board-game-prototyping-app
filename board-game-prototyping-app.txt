@@ -126,7 +126,7 @@ This project is licensed under the MIT License.
 
 {
   "name": "board-game-prototyping-app",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
@@ -6052,6 +6052,9 @@ let camX = 0, camY = 0, scale = 1.0;
 const minScale = 0.01, maxScale = 16.0;
 const wheelZoomSpeed = 0.0015, buttonZoomStep = 0.25;
 
+// We add this for the modular grid:
+const BASE_SPACING = 100; // older grid logic uses this as the "major" spacing
+
 // Flags
 let isPanning = false;
 let isDragging = false;
@@ -6708,7 +6711,7 @@ function hitTestResizeHandles(e) {
   if (!canTransformSelection()) return null;
 
   const rect = e.currentTarget.getBoundingClientRect();
-  // correct for devicePixelRatio when using e.clientX / e.clientY
+  // correct for devicePixelRatio
   const sx = (e.clientX - rect.left) / (1 / devicePixelRatio);
   const sy = (e.clientY - rect.top) / (1 / devicePixelRatio);
 
@@ -6920,7 +6923,7 @@ function render() {
   ctx.restore();
 
   fillBackground(ctx);
-  drawGrid(ctx);
+  drawGrid(ctx); // Now uses the old modular-grid logic
 
   // Draw elements
   ctx.save();
@@ -6993,32 +6996,78 @@ function fillBackground(ctx) {
   ctx.restore();
 }
 
+/**
+ * Replaces the original grid with the older modular-grid approach.
+ * This function uses getEffectiveMajorSpacing() and BASE_SPACING.
+ */
 function drawGrid(ctx) {
   ctx.save();
   ctx.translate(-camX * scale, -camY * scale);
   ctx.scale(scale, scale);
 
+  const { majorSpacing, fraction } = getEffectiveMajorSpacing(scale);
   const cw = ctx.canvas.clientWidth / scale;
   const ch = ctx.canvas.clientHeight / scale;
-  const step = 100;
-  const startX = Math.floor(camX / step) * step;
-  const endX = Math.ceil((camX + cw) / step) * step;
-  const startY = Math.floor(camY / step) * step;
-  const endY = Math.ceil((camY + ch) / step) * step;
+  const startX = Math.floor(camX / majorSpacing) * majorSpacing;
+  const endX = Math.ceil((camX + cw) / majorSpacing) * majorSpacing;
+  const startY = Math.floor(camY / majorSpacing) * majorSpacing;
+  const endY = Math.ceil((camY + ch) / majorSpacing) * majorSpacing;
 
   ctx.strokeStyle = "rgb(220,220,220)";
   ctx.lineWidth = 1 / scale;
   ctx.beginPath();
-  for (let x = startX; x <= endX; x += step) {
+
+  for (let x = startX; x <= endX; x += majorSpacing) {
     ctx.moveTo(x, startY);
     ctx.lineTo(x, endY);
   }
-  for (let y = startY; y <= endY; y += step) {
+  for (let y = startY; y <= endY; y += majorSpacing) {
     ctx.moveTo(startX, y);
     ctx.lineTo(endX, y);
   }
   ctx.stroke();
+
+  // Draw finer sub-lines at 1/4 intervals, using an alpha fraction
+  if (fraction > 0) {
+    ctx.strokeStyle = `rgba(230,230,230,${fraction})`;
+    const subSpacing = majorSpacing / 4;
+    ctx.beginPath();
+    for (let x = startX; x <= endX; x += majorSpacing) {
+      for (let i = 1; i < 4; i++) {
+        const xx = x + i * subSpacing;
+        ctx.moveTo(xx, startY);
+        ctx.lineTo(xx, endY);
+      }
+    }
+    for (let y = startY; y <= endY; y += majorSpacing) {
+      for (let i = 1; i < 4; i++) {
+        const yy = y + i * subSpacing;
+        ctx.moveTo(startX, yy);
+        ctx.lineTo(endX, yy);
+      }
+    }
+    ctx.stroke();
+  }
+
   ctx.restore();
+}
+
+/**
+ * Helper function from the older version that computes
+ * the spacing and fraction for sub-divisions.
+ */
+function getEffectiveMajorSpacing(s) {
+  // We treat scale as powers of 2, in steps of 4x. 
+  // L4 is log2(scale)/2, so each integer step of L4 is a 4x difference.
+  const L4 = Math.log2(s) / 2;
+  const iPart = Math.floor(L4);
+  let frac = L4 - iPart;
+  if (frac < 0) frac += 1;
+
+  // majorSpacing is 100 / 4^(iPart) for typical usage
+  const majorSpacing = BASE_SPACING / Math.pow(4, iPart);
+
+  return { majorSpacing, fraction: frac };
 }
 
 function drawMarquee(ctx) {
