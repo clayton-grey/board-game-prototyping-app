@@ -1,5 +1,10 @@
+// tests/integration/wsCollaboration.test.js
+
 /**
  * ./tests/integration/wsCollaboration.test.js
+ * This tests real-time collaboration over WS.
+ * 
+ * We also close the DB pool in afterAll to avoid open handles.
  */
 import { createServer } from 'http';
 import request from 'supertest';
@@ -7,9 +12,8 @@ import { WebSocketServer } from 'ws';
 import WebSocket from 'ws';
 import app from '../../server/app.js';
 import { handleWebSocketConnection } from '../../server/ws/collaboration.js';
-import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+import { closeDBPool } from './testUtils.js';
 
-// Increase test timeout to 20 or 30 seconds if needed
 jest.setTimeout(30000);
 
 describe('WebSocket Collaboration Integration Test', () => {
@@ -29,11 +33,14 @@ describe('WebSocket Collaboration Integration Test', () => {
     });
   });
 
-  afterAll((done) => {
+  afterAll(async () => {
     // Clean up websockets if still open
     if (client1 && client1.readyState === WebSocket.OPEN) client1.close();
     if (client2 && client2.readyState === WebSocket.OPEN) client2.close();
-    server.close(done);
+    server.close();
+
+    // Also close DB pool
+    await closeDBPool();
   });
 
   test('HTTP server is up => GET / responds 200', async () => {
@@ -49,24 +56,9 @@ describe('WebSocket Collaboration Integration Test', () => {
     client1 = new WebSocket(`ws://localhost:${port}`);
     client2 = new WebSocket(`ws://localhost:${port}`);
 
-    /**
-     * Our helper to parse + store each incoming WS message.
-     */
     function handleIncoming(wsName, msgStr, storage) {
       try {
         const data = JSON.parse(msgStr);
-        // If you still want some logs, uncomment these lines:
-        /*
-        if (data.type === MESSAGE_TYPES.ELEMENT_STATE) {
-          console.log(
-            wsName,
-            'element-state =>',
-            JSON.stringify(data.elements, null, 2)
-          );
-        } else {
-          console.log(wsName, '=>', data);
-        }
-        */
         storage.push(data);
       } catch (err) {
         console.error(wsName, 'parse error:', err, msgStr);
@@ -78,16 +70,16 @@ describe('WebSocket Collaboration Integration Test', () => {
     // Connect + join session
     client1.on('open', () => {
       client1.send(JSON.stringify({
-        type: MESSAGE_TYPES.JOIN_SESSION,
+        type: 'join-session',
         userId: 'testUser1',
         sessionCode,
         name: 'UserOne',
-        userRole: 'admin',  // ensure editing perms
+        userRole: 'admin',
       }));
     });
     client2.on('open', () => {
       client2.send(JSON.stringify({
-        type: MESSAGE_TYPES.JOIN_SESSION,
+        type: 'join-session',
         userId: 'testUser2',
         sessionCode,
         name: 'UserTwo',
@@ -95,7 +87,6 @@ describe('WebSocket Collaboration Integration Test', () => {
       }));
     });
 
-    // On each message => parse & proceed if ready
     client1.on('message', (raw) => {
       handleIncoming('client1', raw, messagesClient1);
       proceedIfReady();
@@ -105,47 +96,44 @@ describe('WebSocket Collaboration Integration Test', () => {
       proceedIfReady();
     });
 
-    // Helper checks
     function lockedBy(msg, elementId, locker) {
       return (
-        msg.type === MESSAGE_TYPES.ELEMENT_STATE &&
+        msg.type === 'element-state' &&
         msg.elements?.some(e => e.id === elementId && e.lockedBy === locker)
       );
     }
+
     function atPosition(msg, elementId, x, y) {
       return (
-        msg.type === MESSAGE_TYPES.ELEMENT_STATE &&
+        msg.type === 'element-state' &&
         msg.elements?.some(e => e.id === elementId && e.x === x && e.y === y)
       );
     }
+
     function lastElemState(msgs) {
-      const reversed = [...msgs].reverse();
-      return reversed.find(m => m.type === MESSAGE_TYPES.ELEMENT_STATE);
+      return [...msgs].reverse().find(m => m.type === 'element-state');
     }
 
-    // Step-based flow
     function proceedIfReady() {
       if (step === 0) {
-        // Wait until each client has at least 2 inbound messages:
-        // Typically => [SESSION_USERS, ELEMENT_STATE]
+        // Wait until each client has at least 2 inbound messages
         if (messagesClient1.length >= 2 && messagesClient2.length >= 2) {
           step = 1;
-          // user1 => lock element #1
           client1.send(JSON.stringify({
-            type: MESSAGE_TYPES.ELEMENT_GRAB,
+            type: 'element-grab',
             userId: 'testUser1',
             elementId: 1,
           }));
         }
       } else if (step === 1) {
-        // Wait until each sees an ELEMENT_STATE with lockedBy='testUser1' for id=1
+        // Wait for both to see lockedBy='testUser1' for element #1
         const c1HasLock = messagesClient1.some(m => lockedBy(m, 1, 'testUser1'));
         const c2HasLock = messagesClient2.some(m => lockedBy(m, 1, 'testUser1'));
         if (c1HasLock && c2HasLock) {
           step = 2;
           // Move the locked element to (500,300)
           client1.send(JSON.stringify({
-            type: MESSAGE_TYPES.ELEMENT_MOVE,
+            type: 'element-move',
             userId: 'testUser1',
             elementId: 1,
             x: 500,
@@ -153,27 +141,24 @@ describe('WebSocket Collaboration Integration Test', () => {
           }));
         }
       } else if (step === 2) {
-        // Wait until each sees that element #1 is at (500,300)
+        // Wait until each sees element #1 at (500,300)
         const c1HasMove = messagesClient1.some(m => atPosition(m, 1, 500, 300));
         const c2HasMove = messagesClient2.some(m => atPosition(m, 1, 500, 300));
         if (c1HasMove && c2HasMove) {
           step = 3;
-          // user2 tries to move same element => locked => ignore
+          // user2 tries to move same => locked => ignore
           client2.send(JSON.stringify({
-            type: MESSAGE_TYPES.ELEMENT_MOVE,
+            type: 'element-move',
             userId: 'testUser2',
             elementId: 1,
             x: 999,
             y: 999,
           }));
-
-          // No new broadcast from server is expected, so we finalize now
+          // No new broadcast from server expected => finalize
           setTimeout(() => {
-            // Final check => the last known 'element-state' from client2
             const lastStateC2 = lastElemState(messagesClient2);
             if (lastStateC2) {
               const el = lastStateC2.elements.find(e => e.id === 1);
-              // Confirm it remains at (500,300)
               expect(el.x).toBe(500);
               expect(el.y).toBe(300);
             }

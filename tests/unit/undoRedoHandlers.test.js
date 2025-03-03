@@ -2,7 +2,7 @@
 import { handleUndo, handleRedo, pushUndoAction } from '../../server/ws/handlers/undoRedoHandlers.js';
 import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
 
-describe('undoRedoHandlers', () => {
+describe('undoRedoHandlers - main tests', () => {
   let session;
   let mockSend;
 
@@ -34,7 +34,6 @@ describe('undoRedoHandlers', () => {
   test('handleUndo does nothing if undoStack is empty', () => {
     handleUndo(session, { userId: 'userA' }, {});
     expect(session.undoStack.length).toBe(0);
-    // No message of type UNDO_REDO_FAILED
     expect(mockSend).not.toHaveBeenCalled();
   });
 
@@ -53,7 +52,7 @@ describe('undoRedoHandlers', () => {
         ],
       }
     ];
-    // Our element is currently at x=70,y=70 => pretend it's moved
+    // The element is currently at x=70,y=70 => pretend it's moved
     session.elements[1].x = 70;
     session.elements[1].y = 70;
 
@@ -88,7 +87,6 @@ describe('undoRedoHandlers', () => {
       }
     ];
 
-    // Pass our shared mockSend so we can verify it was called
     handleUndo(session, { userId: 'userA' }, { send: mockSend });
 
     // We expect a message to userA with type=UNDO_REDO_FAILED
@@ -128,6 +126,7 @@ describe('undoRedoHandlers', () => {
     // Undo stack now has the re-applied action
     expect(session.undoStack.length).toBe(1);
     expect(session.redoStack.length).toBe(0);
+
     // And we broadcast the new element state
     expect(mockSend).toHaveBeenCalled();
     const lastCall = mockSend.mock.calls[mockSend.mock.calls.length - 1];
@@ -144,11 +143,77 @@ describe('undoRedoHandlers', () => {
       ]
     });
 
-    // Again, provide a valid ws-like object that uses our shared mock
     handleRedo(session, { userId: 'userA' }, { send: mockSend });
 
     expect(mockSend).toHaveBeenCalled();
     const data = JSON.parse(mockSend.mock.calls[0][0]);
     expect(data.type).toBe(MESSAGE_TYPES.UNDO_REDO_FAILED);
+  });
+});
+
+describe('undoRedoHandlers - Extra Coverage (Merged from undoRedoExtra.test.js)', () => {
+  function makeSession(elements = []) {
+    return {
+      users: new Map(),
+      elements,
+      undoStack: [],
+      redoStack: [],
+      pendingMoves: new Map(),
+      pendingResizes: new Map(),
+    };
+  }
+
+  let session;
+  let mockWsSend;
+
+  beforeEach(() => {
+    mockWsSend = jest.fn();
+    session = makeSession();
+    session.users.set('testUser', {
+      userId: 'testUser',
+      socket: { send: mockWsSend, readyState: 1 },
+    });
+  });
+
+  test('pushUndoAction with no diffs, then handleUndo => no changes, but coverage for default cases', () => {
+    const action = { type: 'unknown', diffs: null };
+    pushUndoAction(session, action);
+
+    handleUndo(session, { userId: 'testUser' }, { send: mockWsSend });
+    // The revert sees unknown type => does nothing, but we do broadcast
+    const sentJSON = mockWsSend.mock.calls.map((call) => JSON.parse(call[0]));
+    const hasElemState = sentJSON.some((msg) => msg.type === MESSAGE_TYPES.ELEMENT_STATE);
+    expect(hasElemState).toBe(true);
+  });
+
+  test('handleRedo with unknown action type does nothing but still broadcasts', () => {
+    session.redoStack.push({ type: 'some-strange-action', diffs: [] });
+
+    handleRedo(session, { userId: 'testUser' }, { send: mockWsSend });
+
+    const sentJSON = mockWsSend.mock.calls.map((call) => JSON.parse(call[0]));
+    const hasElemState = sentJSON.some((msg) => msg.type === MESSAGE_TYPES.ELEMENT_STATE);
+    expect(hasElemState).toBe(true);
+  });
+
+  test('handleUndo => shape locked by unknown user => returns UNDO_REDO_FAILED', () => {
+    session.elements.push({ id: 1, x: 0, y: 0, lockedBy: 'otherUser' });
+    session.undoStack.push({
+      type: 'move',
+      diffs: [
+        {
+          elementId: 1,
+          from: { x: 0, y: 0 },
+          to: { x: 50, y: 60 },
+        },
+      ],
+    });
+
+    handleUndo(session, { userId: 'testUser' }, { send: mockWsSend });
+
+    const [sentStr] = mockWsSend.mock.calls[0];
+    const msg = JSON.parse(sentStr);
+    expect(msg.type).toBe(MESSAGE_TYPES.UNDO_REDO_FAILED);
+    expect(msg.reason).toMatch(/Element locked by another user/);
   });
 });
