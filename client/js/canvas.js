@@ -1198,15 +1198,33 @@ function zoomAroundPoint(newScale, anchorX, anchorY) {
 }
 
 function frameAllElements() {
-  if (!elements.length) return;
   let minX = Infinity, maxX = -Infinity;
   let minY = Infinity, maxY = -Infinity;
-  for (const el of elements) {
-    minX = Math.min(minX, el.x);
-    maxX = Math.max(maxX, el.x + el.w);
-    minY = Math.min(minY, el.y);
-    maxY = Math.max(maxY, el.y + el.h);
+
+  if (!selectedElementIds.length){
+    for (const el of elements) {
+      minX = Math.min(minX, el.x);
+      maxX = Math.max(maxX, el.x + el.w);
+      minY = Math.min(minY, el.y);
+      maxY = Math.max(maxY, el.y + el.h);
+    }
   }
+  else if (!elements.length) {
+    return;
+  }
+  else
+  {
+    for (const id of selectedElementIds) {
+      const el = elements.find(e => e.id === id);
+      minX = Math.min(minX, el.x);
+      maxX = Math.max(maxX, el.x + el.w);
+      minY = Math.min(minY, el.y);
+      maxY = Math.max(maxY, el.y + el.h);
+    }
+    deselectAll();
+  }
+  
+  console.log(minX, maxX, minY, maxY)
   const w = maxX - minX, h = maxY - minY;
   if (w <= 0 || h <= 0) return;
 
@@ -1215,6 +1233,7 @@ function frameAllElements() {
   const margin = 50;
   const scaleX = (cw - margin * 2) / w;
   const scaleY = (ch - margin * 2) / h;
+  console.log(scaleX, scaleY)
   scale = clampScale(Math.min(scaleX, scaleY));
 
   const cx = minX + w / 2;
