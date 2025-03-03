@@ -1,4 +1,6 @@
-// server/ws/handlers/sessionHandlers.js
+// =========================
+// FILE: server/ws/handlers/sessionHandlers.js
+// =========================
 
 import { SessionService } from '../../services/SessionService.js';
 import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
@@ -6,7 +8,7 @@ import { sessionGuard } from './handlerUtils.js';
 
 /**
  * handleJoinSession remains unguarded because it can create or retrieve a session
- * if none is provided. 
+ * if none is provided.
  */
 export function handleJoinSession(session, data, ws) {
   const { userId, name, sessionCode, userRole } = data;
@@ -15,7 +17,7 @@ export function handleJoinSession(session, data, ws) {
   // If session is not explicitly passed, we fetch or create:
   const theSession = session || SessionService.getOrCreateSession(sessionCode || 'defaultSession');
 
-  let isAdmin;
+  let isAdmin = false;
   if (userRole === 'admin') {
     isAdmin = true;
   }
@@ -31,7 +33,7 @@ export function handleJoinSession(session, data, ws) {
 
 export const handleUpgradeUserId = sessionGuard((session, data, ws) => {
   const { oldUserId, newUserId, newName, newIsAdmin } = data;
-
+  // Merge old ephemeral user → newly logged-in user
   const userObj = session.upgradeUserId(
     oldUserId,
     newUserId,
@@ -41,7 +43,10 @@ export const handleUpgradeUserId = sessionGuard((session, data, ws) => {
   );
   if (!userObj) return;
 
+  // Update the ws fields to reflect the new ID
   ws.userId = userObj.userId;
+
+  // *** CRITICAL FIX: Always broadcast after upgrade ***
   broadcastUserList(session);
   broadcastElementState(session);
 });

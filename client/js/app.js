@@ -1,4 +1,6 @@
-// ./client/js/app.js
+// =========================
+// FILE: client/js/app.js
+// =========================
 
 import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
 import {
@@ -22,7 +24,6 @@ async function fetchJSON(url, method = "GET", bodyObj = null) {
   try {
     data = await res.json();
   } catch (err) {
-    // In case the response isn't JSON, or parse fails
     throw new Error(`Fetch error: ${err.message}`);
   }
   if (!res.ok) {
@@ -46,10 +47,7 @@ if (!activeUserId) {
 const isLoggedIn = () => !!token && !!currentUser;
 const isCurrentUserAdmin = () => currentUser && currentUser.role === "admin";
 
-// We no longer store ephemeralOwnerId, because we can check `sessionRole==='owner'` directly.
 let sessionUsers = [];
-
-// We store the ephemeral session code in localStorage
 let ephemeralSessionCode = localStorage.getItem("sessionCode") || "defaultSession";
 
 // DOM references
@@ -83,7 +81,7 @@ const redoBtn = document.getElementById("redo-btn");
 
 let ws = null;
 
-/** Helper to display a short message at the top of the project manager modal or wherever needed. */
+/** Helper to display a short message at the top of the project manager modal or wherever. */
 function showMessage(msg, isError = false) {
   messageContainer.textContent = msg;
   messageContainer.style.color = isError ? "red" : "green";
@@ -100,9 +98,9 @@ function sendWSMessage(obj) {
     ws.send(JSON.stringify(obj));
   }
 }
-window.__sendWSMessage = sendWSMessage; // Expose globally for the canvas code
+window.__sendWSMessage = sendWSMessage; // so canvas.js can call it
 
-/** Connect to the WebSocket server. On open => join session, on message => handle. */
+/** Connect to the WebSocket server. */
 function connectWebSocket() {
   ws = new WebSocket("ws://localhost:3000");
   ws.onopen = () => {
@@ -124,24 +122,38 @@ function connectWebSocket() {
   };
 }
 
-/** Process all incoming WebSocket messages. */
+/** Once connected, join our ephemeral session. */
+function doJoinSession() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const userName = currentUser ? currentUser.name : "Anonymous";
+  let userRole = "";
+  if (isCurrentUserAdmin()) {
+    userRole = "admin";
+  }
+
+  sendWSMessage({
+    type: MESSAGE_TYPES.JOIN_SESSION,
+    userId: activeUserId,
+    name: userName,
+    sessionCode: ephemeralSessionCode,
+    userRole,
+  });
+}
+
+/** Handle all incoming WS messages. */
 function handleServerMessage(data) {
   switch (data.type) {
     case MESSAGE_TYPES.SESSION_USERS: {
-      // The server sends an array of users with { userId, name, color, sessionRole, globalRole }
       sessionUsers = data.users || [];
       renderSessionUsers();
+      updateLocalUserUI();
 
-      // update local color info for cursors
       sessionUsers.forEach(u => {
         handleUserColorUpdate(u.userId, u.name, u.color);
       });
+      removeCursorsForMissingUsers(sessionUsers.map(u => u.userId));
 
-      // remove stale cursors
-      const userIds = sessionUsers.map(u => u.userId);
-      removeCursorsForMissingUsers(userIds);
-
-      // update local user circle color
+      // local user circle color
       const me = sessionUsers.find(u => u.userId === activeUserId);
       if (me) {
         userCircle.style.background = me.color;
@@ -153,13 +165,12 @@ function handleServerMessage(data) {
     case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
       const { newName } = data;
       setProjectNameFromServer(newName);
-      restoreNameSpan(); // revert input => normal label
+      restoreNameSpan();
       showMessage(`Renamed to: ${newName}`);
       break;
     }
 
     case MESSAGE_TYPES.CHAT_MESSAGE: {
-      // Chat message broadcast => append to local chat
       appendChatMessage(data.message.userId, data.message.text);
       break;
     }
@@ -184,31 +195,32 @@ function handleServerMessage(data) {
   }
 }
 
-/** Once WS is open, we join the ephemeral session. */
-function doJoinSession() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const userName = currentUser ? currentUser.name : "Anonymous";
-  let userRole = "";
-  if (isCurrentUserAdmin()) {
-    userRole = "admin";
-  }
-
-  sendWSMessage({
-    type: MESSAGE_TYPES.JOIN_SESSION,
-    userId: activeUserId,
-    name: userName,
-    sessionCode: ephemeralSessionCode,
-    userRole,
-  });
+/** Check if user is ephemeral owner or admin. */
+function amIOwnerOrAdmin() {
+  const me = sessionUsers.find(u => u.userId === activeUserId);
+  if (!me) return false;
+  if (me.globalRole === "admin") return true;
+  return (me.sessionRole === "owner");
 }
 
-/** Extract first letter capitalized. */
+/** Show/hide certain UI elements based on login or roles. */
+function updateUIVisibility() {
+  if (!isLoggedIn()) {
+    // Not logged in => Hide project manager button
+    openPMBtn.style.display = "none";
+  } else if (amIOwnerOrAdmin()) {
+    openPMBtn.style.display = "inline-block";
+  } else {
+    openPMBtn.style.display = "none";
+  }
+}
+
 function getInitial(str) {
   if (!str) return "?";
   return str.trim().charAt(0).toUpperCase();
 }
 
-/** Update local user UI. Called after login/out. */
+/** Called after user logs in or out, or after sessionUsers changes. */
 function updateLocalUserUI() {
   let displayName = "Anonymous";
   if (currentUser?.name) {
@@ -216,20 +228,18 @@ function updateLocalUserUI() {
   }
   userNameSpan.textContent = displayName;
 
-  // Update circle color if we can find ourselves in sessionUsers
-  let finalColor = "#888";
+  // If I'm in sessionUsers, color might override:
   const me = sessionUsers.find(u => u.userId === activeUserId);
-  if (me && me.color) {
+  let finalColor = "#888";
+  if (me?.color) {
     finalColor = me.color;
   }
   userCircle.style.background = finalColor;
   userCircleText.textContent = getInitial(displayName);
+
+  updateUIVisibility();
 }
 
-/** 
- * Render the user list in the left panel.
- * Now we rely on each user's `sessionRole`/`globalRole` to show an emoji, etc.
- */
 function renderSessionUsers() {
   sessionUsersList.innerHTML = "";
   sessionUsers.forEach(u => {
@@ -240,11 +250,8 @@ function renderSessionUsers() {
     circle.style.background = u.color;
     li.appendChild(circle);
 
-    // Label showing name + optional emojis
     const labelSpan = document.createElement("span");
     labelSpan.textContent = `${u.name} ${getRoleEmoji(u)}`;
-
-    // If I'm allowed to manage this user => attach clickable popover
     if (canManageUser(u)) {
       labelSpan.classList.add("user-name-clickable");
       labelSpan.style.cursor = "pointer";
@@ -259,44 +266,27 @@ function renderSessionUsers() {
   });
 }
 
-/** Return a short emoji for the user's ephemeral role. */
 function getRoleEmoji(u) {
-  // Now we rely on ephemeral sessionRole, globalRole
-  // If globalRole==='admin' => '🪄'
   if (u.globalRole === "admin") return "🪄";
-  // If ephemeral sessionRole==='owner' => '🔑'
   if (u.sessionRole === "owner") return "🔑";
-  // If ephemeral sessionRole==='editor' => '✏️'
   if (u.sessionRole === "editor") return "✏️";
-  // otherwise => no emoji
   return "";
 }
 
-/** 
- * Decide if I (the local user) can manage "u".
- * The logic: I must be admin or ephemeral owner.
- * Must not be the same user. 
- * If "u" has globalRole=admin, but I'm only ephemeral owner, I can't manage them, etc.
- */
 function canManageUser(u) {
   const me = sessionUsers.find(x => x.userId === activeUserId);
   if (!me) return false;
-
-  // I'm admin or I'm ephemeral owner => I can manage
   const iAmAdmin = (me.globalRole === "admin");
   const iAmOwner = (me.sessionRole === "owner");
 
   if (!iAmOwner && !iAmAdmin) return false;
-  if (u.userId === me.userId) return false;
-
-  // Also if the target is an admin but I'm only ephemeral owner => no
-  const targetIsAdmin = (u.globalRole === "admin");
-  if (targetIsAdmin && !iAmAdmin) return false;
+  if (u.userId === me.userId) return false; // can't manage self
+  if (u.globalRole === "admin" && !iAmAdmin) return false;
 
   return true;
 }
 
-// Popover for "Make Editor" / "Remove Editor" / "Kick"
+// popover for user actions
 let openPopoverUserId = null;
 function onUserNameClicked(u, labelElem) {
   if (openPopoverUserId === u.userId) {
@@ -311,7 +301,6 @@ function buildAndPositionPopover(u, labelElem) {
   userActionPopover.innerHTML = "";
   userActionPopover.classList.remove("hidden");
 
-  // If user is ephemeral editor => show "Remove Editor", else "Make Editor"
   if (u.sessionRole === "editor") {
     const removeEd = document.createElement("div");
     removeEd.classList.add("user-action-item");
@@ -326,7 +315,6 @@ function buildAndPositionPopover(u, labelElem) {
     });
     userActionPopover.appendChild(removeEd);
   } else {
-    // Could be viewer or owner => we let you "make editor" if they're not owner
     if (u.sessionRole !== "owner") {
       const makeEd = document.createElement("div");
       makeEd.classList.add("user-action-item");
@@ -343,7 +331,6 @@ function buildAndPositionPopover(u, labelElem) {
     }
   }
 
-  // Kick user
   if (u.sessionRole !== "owner" && u.globalRole !== "admin") {
     const kickItem = document.createElement("div");
     kickItem.classList.add("user-action-item");
@@ -359,7 +346,7 @@ function buildAndPositionPopover(u, labelElem) {
     userActionPopover.appendChild(kickItem);
   }
 
-  // Position near the label
+  // position near label
   userActionPopover.style.left = "-9999px";
   userActionPopover.style.top = "-9999px";
 
@@ -384,7 +371,6 @@ function hideUserActionPopover() {
   userActionPopover.classList.add("hidden");
 }
 
-// If user clicks elsewhere => hide the popover
 document.addEventListener("click", (evt) => {
   if (
     openPopoverUserId &&
@@ -424,23 +410,18 @@ function doLogout() {
   updateLocalUserUI();
 }
 
-/* ------------------------------------------------------------------
-   USER INFO PANEL => either log in or log out
------------------------------------------------------------------- */
 userInfoPanel.addEventListener("click", (evt) => {
   if (isLoggedIn()) {
     if (confirm("Log out?")) {
       doLogout();
     }
   } else {
-    // show/hide dropdown
     if (!loginDropdown.contains(evt.target)) {
       loginDropdown.classList.toggle("hidden");
     }
   }
 });
 
-// If user clicks outside => hide login dropdown
 document.addEventListener("click", (evt) => {
   if (
     !loginDropdown.classList.contains("hidden") &&
@@ -474,7 +455,6 @@ loginForm.addEventListener("submit", async (e) => {
     localStorage.setItem("activeUserId", newUserId);
     activeUserId = newUserId;
 
-    // If old was anon => upgrade ephemeral user
     if (oldUserId.startsWith("anon_")) {
       sendWSMessage({
         type: MESSAGE_TYPES.UPGRADE_USER_ID,
@@ -560,7 +540,6 @@ registerCancelBtn.addEventListener("click", () => {
    PROJECT MANAGEMENT
 ------------------------------------------------------------------ */
 openPMBtn.addEventListener("click", () => {
-  // Must be ephemeral owner or global admin to open
   if (!amIOwnerOrAdmin()) {
     showMessage("Must be owner or admin to open panel.", true);
     return;
@@ -573,6 +552,7 @@ closePMBtn.addEventListener("click", () => pmModal.classList.add("hidden"));
 loadVersionsBtn.addEventListener("click", () => {
   showMessage("Version loading not implemented in ephemeral mode.", true);
 });
+
 saveNewVersionBtn.addEventListener("click", () => {
   if (!isLoggedIn()) {
     showMessage("You must log in to save a project version.", true);
@@ -580,17 +560,10 @@ saveNewVersionBtn.addEventListener("click", () => {
   }
   showMessage("Saving ephemeral version not implemented.", true);
 });
+
 deleteProjectBtn.addEventListener("click", () => {
   showMessage("Delete ephemeral project not implemented.", true);
 });
-
-/** Helper to check if I'm ephemeral owner or global admin. */
-function amIOwnerOrAdmin() {
-  const me = sessionUsers.find(u => u.userId === activeUserId);
-  if (!me) return false;
-  if (me.globalRole === "admin") return true;
-  return (me.sessionRole === "owner");
-}
 
 /* ------------------------------------------------------------------
    PROJECT NAME EDIT
@@ -625,7 +598,6 @@ function commitNameChange(newName) {
     revertNameChange();
     return;
   }
-  // Only ephemeral owner or global admin can rename
   if (!amIOwnerOrAdmin()) {
     showMessage("Only session owner or admin can rename.", true);
     revertNameChange();
@@ -638,6 +610,7 @@ function commitNameChange(newName) {
   });
 }
 
+// FIX: replaced setProjectNameFromServer.name => use the local front-end variable
 function revertNameChange() {
   restoreNameSpan();
 }
@@ -648,10 +621,25 @@ function restoreNameSpan() {
   const span = document.createElement("span");
   span.id = "project-name";
   span.title = "Click to edit project name";
-  span.textContent = setProjectNameFromServer.name || "Untitled Project";
-  span.style.cursor = "pointer";
+
+  // Use the actual local state from 'canvas.js' or a shared variable
+  // For example, if 'currentProjectName' is your front-end variable:
+  externCurrentProjectNameFallback(span);
+  // Alternatively, if your code expects getProjectNameFromSomewhere():
+  //   span.textContent = getCurrentProjectName() || "Untitled Project";
+
   oldInput.replaceWith(span);
   span.addEventListener("click", () => startEditingProjectName());
+}
+
+// Helper to retrieve the 'currentProjectName' from canvas.js or a global
+function externCurrentProjectNameFallback(spanEl) {
+  if (typeof window.currentProjectName === 'string' && window.currentProjectName) {
+    spanEl.textContent = window.currentProjectName;
+  } else {
+    // fallback
+    spanEl.textContent = "Untitled Project";
+  }
 }
 
 /* ------------------------------------------------------------------
@@ -674,7 +662,6 @@ redoBtn?.addEventListener("click", () => {
   sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
 });
 
-// Keyboard shortcuts for Undo/Redo
 window.addEventListener("keydown", (e) => {
   if (e.ctrlKey && !e.shiftKey && e.key === "z") {
     e.preventDefault();

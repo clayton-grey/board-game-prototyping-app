@@ -121,6 +121,15 @@ describe('Session class', () => {
     expect(el.lockedBy).toBe('real_99');
   });
 
+  test('upgradeUserId => preserves sessionRole=owner if old user was owner', () => {
+    const anonOwner = session.addUser('anon_owner', 'Ephemeral Owner');
+    expect(anonOwner.sessionRole).toBe('owner');
+
+    // Now upgrade
+    const realUser = session.upgradeUserId('anon_owner', 'user_10', 'RealUser', false);
+    expect(realUser.sessionRole).toBe('owner');
+  });
+
   test('upgradeUserId => handles non-existent oldUserId by creating placeholder', () => {
     // we never added 'fakeId' to the session, so it's "non-existent"
     const out = session.upgradeUserId('fakeId', 'newId', 'NewName', false, null);

@@ -1,4 +1,6 @@
-// server/services/Session.js
+// =========================
+// FILE: server/services/Session.js
+// =========================
 
 import { isAdmin } from '../utils/Permissions.js';
 
@@ -29,9 +31,9 @@ export class Session {
 
   /**
    * Add or re-join a user to this session:
-   *  - If it's a brand-new user => sessionRole='owner' if there's no owner, else 'viewer'.
-   *  - If user exists => update name/socket/admin if needed.
-   *  - Then we check if the session has an owner; if not, we assign *this* user as owner.
+   * - If it's a brand-new user => sessionRole='owner' if there's no owner, else 'viewer'.
+   * - If user exists => update name/socket/admin if needed.
+   * - Then we check if the session has an owner; if not, we assign *this* user as owner.
    */
   addUser(userId, userName, isAdminFlag = false, wsSocket = null) {
     let userObj = this.users.get(userId);
@@ -111,13 +113,13 @@ export class Session {
   }
 
   /**
-   * Upgrades ephemeral user => merges locks, possibly sets globalRole='admin'.
-   * We do *not* forcibly re-check for owner in upgrade—some code does want that
-   * but to avoid conflicts with tests, we only ensure an owner in addUser().
+   * Upgrades an ephemeral user to a "real" user by removing oldUserId
+   * and replacing it with newUserId, preserving sessionRole (including 'owner').
    */
   upgradeUserId(oldUserId, newUserId, newName, newIsAdmin, wsSocket) {
     let oldUser = this.users.get(oldUserId);
     if (!oldUser) {
+      // If somehow oldUserId wasn't in the map, create a placeholder so we can "upgrade" it
       oldUser = {
         userId: oldUserId,
         name: 'Anonymous',
@@ -130,34 +132,42 @@ export class Session {
       this.users.set(oldUserId, oldUser);
     }
 
+    // Transfer any locked elements from old ID to new ID
     for (const el of this.elements) {
       if (el.lockedBy === oldUserId) {
         el.lockedBy = newUserId;
       }
     }
 
+    // Remember their old ephemeral role (e.g., 'owner', 'editor', 'viewer')
     const oldSessionRole = oldUser.sessionRole;
+
+    // Remove the old user key from the map
     this.users.delete(oldUserId);
 
+    // Also remove any existing user at newUserId (just in case)
+    this.users.delete(newUserId);
+
+    // Update fields in the same user object
     oldUser.userId = newUserId;
     oldUser.name = newName || oldUser.name;
     oldUser.globalRole = newIsAdmin ? 'admin' : 'user';
+    // Preserve ephemeral role (including 'owner' if it was)
     oldUser.sessionRole = oldSessionRole;
 
     if (wsSocket) {
       oldUser.socket = wsSocket;
     }
+
+    // Finally store them under newUserId
     this.users.set(newUserId, oldUser);
 
-    // We do *not* forcibly set them to owner here because it can
-    // break tests that expect a user to remain viewer/editor.
     return oldUser;
   }
 
   /**
-   * Downgrade ephemeral user => merges locks, sets them to viewer, always user.
-   * We do *not* forcibly re-check for an owner here, because your tests expect
-   * the user to remain 'viewer' even if the session is left ownerless.
+   * Downgrade ephemeral user => merges locks, sets them to viewer, always user,
+   * reassigning owner if needed so we don't end up with no owners.
    */
   downgradeUserId(oldUserId, newUserId, wsSocket) {
     let oldUser = this.users.get(oldUserId);
@@ -198,8 +208,7 @@ export class Session {
     this.users.set(newUserId, oldUser);
 
     if (wasOwner) {
-      // Pass excludeUserId=newUserId so we do NOT reassign
-      // the newly downgraded user as owner
+      // Do not reassign the newly downgraded user as owner
       this._reassignOwnerIfNeeded(newUserId);
     }
 
@@ -233,7 +242,6 @@ export class Session {
     candidates.sort((a, b) => a.joinOrder - b.joinOrder);
     candidates[0].sessionRole = 'owner';
   }
-
 
   _hasOwner() {
     return [...this.users.values()].some(u => u.sessionRole === 'owner');

@@ -126,7 +126,7 @@ This project is licensed under the MIT License.
 
 {
   "name": "board-game-prototyping-app",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
@@ -963,6 +963,15 @@ describe('Session class', () => {
 
     const el = session.elements.find(e => e.id === 101);
     expect(el.lockedBy).toBe('real_99');
+  });
+
+  test('upgradeUserId => preserves sessionRole=owner if old user was owner', () => {
+    const anonOwner = session.addUser('anon_owner', 'Ephemeral Owner');
+    expect(anonOwner.sessionRole).toBe('owner');
+
+    // Now upgrade
+    const realUser = session.upgradeUserId('anon_owner', 'user_10', 'RealUser', false);
+    expect(realUser.sessionRole).toBe('owner');
   });
 
   test('upgradeUserId => handles non-existent oldUserId by creating placeholder', () => {
@@ -4118,7 +4127,9 @@ export class UserService {
 
 ===== ./server/services/Session.js =====
 
-// server/services/Session.js
+// =========================
+// FILE: server/services/Session.js
+// =========================
 
 import { isAdmin } from '../utils/Permissions.js';
 
@@ -4149,9 +4160,9 @@ export class Session {
 
   /**
    * Add or re-join a user to this session:
-   *  - If it's a brand-new user => sessionRole='owner' if there's no owner, else 'viewer'.
-   *  - If user exists => update name/socket/admin if needed.
-   *  - Then we check if the session has an owner; if not, we assign *this* user as owner.
+   * - If it's a brand-new user => sessionRole='owner' if there's no owner, else 'viewer'.
+   * - If user exists => update name/socket/admin if needed.
+   * - Then we check if the session has an owner; if not, we assign *this* user as owner.
    */
   addUser(userId, userName, isAdminFlag = false, wsSocket = null) {
     let userObj = this.users.get(userId);
@@ -4231,13 +4242,13 @@ export class Session {
   }
 
   /**
-   * Upgrades ephemeral user => merges locks, possibly sets globalRole='admin'.
-   * We do *not* forcibly re-check for owner in upgrade—some code does want that
-   * but to avoid conflicts with tests, we only ensure an owner in addUser().
+   * Upgrades an ephemeral user to a "real" user by removing oldUserId
+   * and replacing it with newUserId, preserving sessionRole (including 'owner').
    */
   upgradeUserId(oldUserId, newUserId, newName, newIsAdmin, wsSocket) {
     let oldUser = this.users.get(oldUserId);
     if (!oldUser) {
+      // If somehow oldUserId wasn't in the map, create a placeholder so we can "upgrade" it
       oldUser = {
         userId: oldUserId,
         name: 'Anonymous',
@@ -4250,34 +4261,42 @@ export class Session {
       this.users.set(oldUserId, oldUser);
     }
 
+    // Transfer any locked elements from old ID to new ID
     for (const el of this.elements) {
       if (el.lockedBy === oldUserId) {
         el.lockedBy = newUserId;
       }
     }
 
+    // Remember their old ephemeral role (e.g., 'owner', 'editor', 'viewer')
     const oldSessionRole = oldUser.sessionRole;
+
+    // Remove the old user key from the map
     this.users.delete(oldUserId);
 
+    // Also remove any existing user at newUserId (just in case)
+    this.users.delete(newUserId);
+
+    // Update fields in the same user object
     oldUser.userId = newUserId;
     oldUser.name = newName || oldUser.name;
     oldUser.globalRole = newIsAdmin ? 'admin' : 'user';
+    // Preserve ephemeral role (including 'owner' if it was)
     oldUser.sessionRole = oldSessionRole;
 
     if (wsSocket) {
       oldUser.socket = wsSocket;
     }
+
+    // Finally store them under newUserId
     this.users.set(newUserId, oldUser);
 
-    // We do *not* forcibly set them to owner here because it can
-    // break tests that expect a user to remain viewer/editor.
     return oldUser;
   }
 
   /**
-   * Downgrade ephemeral user => merges locks, sets them to viewer, always user.
-   * We do *not* forcibly re-check for an owner here, because your tests expect
-   * the user to remain 'viewer' even if the session is left ownerless.
+   * Downgrade ephemeral user => merges locks, sets them to viewer, always user,
+   * reassigning owner if needed so we don't end up with no owners.
    */
   downgradeUserId(oldUserId, newUserId, wsSocket) {
     let oldUser = this.users.get(oldUserId);
@@ -4318,8 +4337,7 @@ export class Session {
     this.users.set(newUserId, oldUser);
 
     if (wasOwner) {
-      // Pass excludeUserId=newUserId so we do NOT reassign
-      // the newly downgraded user as owner
+      // Do not reassign the newly downgraded user as owner
       this._reassignOwnerIfNeeded(newUserId);
     }
 
@@ -4353,7 +4371,6 @@ export class Session {
     candidates.sort((a, b) => a.joinOrder - b.joinOrder);
     candidates[0].sessionRole = 'owner';
   }
-
 
   _hasOwner() {
     return [...this.users.values()].some(u => u.sessionRole === 'owner');
@@ -5382,7 +5399,9 @@ export const handleCursorUpdate = sessionGuard((session, data, ws) => {
 
 ===== ./server/ws/handlers/sessionHandlers.js =====
 
-// server/ws/handlers/sessionHandlers.js
+// =========================
+// FILE: server/ws/handlers/sessionHandlers.js
+// =========================
 
 import { SessionService } from '../../services/SessionService.js';
 import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
@@ -5390,7 +5409,7 @@ import { sessionGuard } from './handlerUtils.js';
 
 /**
  * handleJoinSession remains unguarded because it can create or retrieve a session
- * if none is provided. 
+ * if none is provided.
  */
 export function handleJoinSession(session, data, ws) {
   const { userId, name, sessionCode, userRole } = data;
@@ -5399,7 +5418,7 @@ export function handleJoinSession(session, data, ws) {
   // If session is not explicitly passed, we fetch or create:
   const theSession = session || SessionService.getOrCreateSession(sessionCode || 'defaultSession');
 
-  let isAdmin;
+  let isAdmin = false;
   if (userRole === 'admin') {
     isAdmin = true;
   }
@@ -5415,7 +5434,7 @@ export function handleJoinSession(session, data, ws) {
 
 export const handleUpgradeUserId = sessionGuard((session, data, ws) => {
   const { oldUserId, newUserId, newName, newIsAdmin } = data;
-
+  // Merge old ephemeral user → newly logged-in user
   const userObj = session.upgradeUserId(
     oldUserId,
     newUserId,
@@ -5425,7 +5444,10 @@ export const handleUpgradeUserId = sessionGuard((session, data, ws) => {
   );
   if (!userObj) return;
 
+  // Update the ws fields to reflect the new ID
   ws.userId = userObj.userId;
+
+  // *** CRITICAL FIX: Always broadcast after upgrade ***
   broadcastUserList(session);
   broadcastElementState(session);
 });
@@ -7270,7 +7292,9 @@ function sendCursorUpdate(uId, wx, wy) {
 
 ===== ./client/js/app.js =====
 
-// ./client/js/app.js
+// =========================
+// FILE: client/js/app.js
+// =========================
 
 import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
 import {
@@ -7294,7 +7318,6 @@ async function fetchJSON(url, method = "GET", bodyObj = null) {
   try {
     data = await res.json();
   } catch (err) {
-    // In case the response isn't JSON, or parse fails
     throw new Error(`Fetch error: ${err.message}`);
   }
   if (!res.ok) {
@@ -7318,10 +7341,7 @@ if (!activeUserId) {
 const isLoggedIn = () => !!token && !!currentUser;
 const isCurrentUserAdmin = () => currentUser && currentUser.role === "admin";
 
-// We no longer store ephemeralOwnerId, because we can check `sessionRole==='owner'` directly.
 let sessionUsers = [];
-
-// We store the ephemeral session code in localStorage
 let ephemeralSessionCode = localStorage.getItem("sessionCode") || "defaultSession";
 
 // DOM references
@@ -7355,7 +7375,7 @@ const redoBtn = document.getElementById("redo-btn");
 
 let ws = null;
 
-/** Helper to display a short message at the top of the project manager modal or wherever needed. */
+/** Helper to display a short message at the top of the project manager modal or wherever. */
 function showMessage(msg, isError = false) {
   messageContainer.textContent = msg;
   messageContainer.style.color = isError ? "red" : "green";
@@ -7372,9 +7392,9 @@ function sendWSMessage(obj) {
     ws.send(JSON.stringify(obj));
   }
 }
-window.__sendWSMessage = sendWSMessage; // Expose globally for the canvas code
+window.__sendWSMessage = sendWSMessage; // so canvas.js can call it
 
-/** Connect to the WebSocket server. On open => join session, on message => handle. */
+/** Connect to the WebSocket server. */
 function connectWebSocket() {
   ws = new WebSocket("ws://localhost:3000");
   ws.onopen = () => {
@@ -7396,24 +7416,38 @@ function connectWebSocket() {
   };
 }
 
-/** Process all incoming WebSocket messages. */
+/** Once connected, join our ephemeral session. */
+function doJoinSession() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const userName = currentUser ? currentUser.name : "Anonymous";
+  let userRole = "";
+  if (isCurrentUserAdmin()) {
+    userRole = "admin";
+  }
+
+  sendWSMessage({
+    type: MESSAGE_TYPES.JOIN_SESSION,
+    userId: activeUserId,
+    name: userName,
+    sessionCode: ephemeralSessionCode,
+    userRole,
+  });
+}
+
+/** Handle all incoming WS messages. */
 function handleServerMessage(data) {
   switch (data.type) {
     case MESSAGE_TYPES.SESSION_USERS: {
-      // The server sends an array of users with { userId, name, color, sessionRole, globalRole }
       sessionUsers = data.users || [];
       renderSessionUsers();
+      updateLocalUserUI();
 
-      // update local color info for cursors
       sessionUsers.forEach(u => {
         handleUserColorUpdate(u.userId, u.name, u.color);
       });
+      removeCursorsForMissingUsers(sessionUsers.map(u => u.userId));
 
-      // remove stale cursors
-      const userIds = sessionUsers.map(u => u.userId);
-      removeCursorsForMissingUsers(userIds);
-
-      // update local user circle color
+      // local user circle color
       const me = sessionUsers.find(u => u.userId === activeUserId);
       if (me) {
         userCircle.style.background = me.color;
@@ -7425,13 +7459,12 @@ function handleServerMessage(data) {
     case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
       const { newName } = data;
       setProjectNameFromServer(newName);
-      restoreNameSpan(); // revert input => normal label
+      restoreNameSpan();
       showMessage(`Renamed to: ${newName}`);
       break;
     }
 
     case MESSAGE_TYPES.CHAT_MESSAGE: {
-      // Chat message broadcast => append to local chat
       appendChatMessage(data.message.userId, data.message.text);
       break;
     }
@@ -7456,31 +7489,32 @@ function handleServerMessage(data) {
   }
 }
 
-/** Once WS is open, we join the ephemeral session. */
-function doJoinSession() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const userName = currentUser ? currentUser.name : "Anonymous";
-  let userRole = "";
-  if (isCurrentUserAdmin()) {
-    userRole = "admin";
-  }
-
-  sendWSMessage({
-    type: MESSAGE_TYPES.JOIN_SESSION,
-    userId: activeUserId,
-    name: userName,
-    sessionCode: ephemeralSessionCode,
-    userRole,
-  });
+/** Check if user is ephemeral owner or admin. */
+function amIOwnerOrAdmin() {
+  const me = sessionUsers.find(u => u.userId === activeUserId);
+  if (!me) return false;
+  if (me.globalRole === "admin") return true;
+  return (me.sessionRole === "owner");
 }
 
-/** Extract first letter capitalized. */
+/** Show/hide certain UI elements based on login or roles. */
+function updateUIVisibility() {
+  if (!isLoggedIn()) {
+    // Not logged in => Hide project manager button
+    openPMBtn.style.display = "none";
+  } else if (amIOwnerOrAdmin()) {
+    openPMBtn.style.display = "inline-block";
+  } else {
+    openPMBtn.style.display = "none";
+  }
+}
+
 function getInitial(str) {
   if (!str) return "?";
   return str.trim().charAt(0).toUpperCase();
 }
 
-/** Update local user UI. Called after login/out. */
+/** Called after user logs in or out, or after sessionUsers changes. */
 function updateLocalUserUI() {
   let displayName = "Anonymous";
   if (currentUser?.name) {
@@ -7488,20 +7522,18 @@ function updateLocalUserUI() {
   }
   userNameSpan.textContent = displayName;
 
-  // Update circle color if we can find ourselves in sessionUsers
-  let finalColor = "#888";
+  // If I'm in sessionUsers, color might override:
   const me = sessionUsers.find(u => u.userId === activeUserId);
-  if (me && me.color) {
+  let finalColor = "#888";
+  if (me?.color) {
     finalColor = me.color;
   }
   userCircle.style.background = finalColor;
   userCircleText.textContent = getInitial(displayName);
+
+  updateUIVisibility();
 }
 
-/** 
- * Render the user list in the left panel.
- * Now we rely on each user's `sessionRole`/`globalRole` to show an emoji, etc.
- */
 function renderSessionUsers() {
   sessionUsersList.innerHTML = "";
   sessionUsers.forEach(u => {
@@ -7512,11 +7544,8 @@ function renderSessionUsers() {
     circle.style.background = u.color;
     li.appendChild(circle);
 
-    // Label showing name + optional emojis
     const labelSpan = document.createElement("span");
     labelSpan.textContent = `${u.name} ${getRoleEmoji(u)}`;
-
-    // If I'm allowed to manage this user => attach clickable popover
     if (canManageUser(u)) {
       labelSpan.classList.add("user-name-clickable");
       labelSpan.style.cursor = "pointer";
@@ -7531,44 +7560,27 @@ function renderSessionUsers() {
   });
 }
 
-/** Return a short emoji for the user's ephemeral role. */
 function getRoleEmoji(u) {
-  // Now we rely on ephemeral sessionRole, globalRole
-  // If globalRole==='admin' => '🪄'
   if (u.globalRole === "admin") return "🪄";
-  // If ephemeral sessionRole==='owner' => '🔑'
   if (u.sessionRole === "owner") return "🔑";
-  // If ephemeral sessionRole==='editor' => '✏️'
   if (u.sessionRole === "editor") return "✏️";
-  // otherwise => no emoji
   return "";
 }
 
-/** 
- * Decide if I (the local user) can manage "u".
- * The logic: I must be admin or ephemeral owner.
- * Must not be the same user. 
- * If "u" has globalRole=admin, but I'm only ephemeral owner, I can't manage them, etc.
- */
 function canManageUser(u) {
   const me = sessionUsers.find(x => x.userId === activeUserId);
   if (!me) return false;
-
-  // I'm admin or I'm ephemeral owner => I can manage
   const iAmAdmin = (me.globalRole === "admin");
   const iAmOwner = (me.sessionRole === "owner");
 
   if (!iAmOwner && !iAmAdmin) return false;
-  if (u.userId === me.userId) return false;
-
-  // Also if the target is an admin but I'm only ephemeral owner => no
-  const targetIsAdmin = (u.globalRole === "admin");
-  if (targetIsAdmin && !iAmAdmin) return false;
+  if (u.userId === me.userId) return false; // can't manage self
+  if (u.globalRole === "admin" && !iAmAdmin) return false;
 
   return true;
 }
 
-// Popover for "Make Editor" / "Remove Editor" / "Kick"
+// popover for user actions
 let openPopoverUserId = null;
 function onUserNameClicked(u, labelElem) {
   if (openPopoverUserId === u.userId) {
@@ -7583,7 +7595,6 @@ function buildAndPositionPopover(u, labelElem) {
   userActionPopover.innerHTML = "";
   userActionPopover.classList.remove("hidden");
 
-  // If user is ephemeral editor => show "Remove Editor", else "Make Editor"
   if (u.sessionRole === "editor") {
     const removeEd = document.createElement("div");
     removeEd.classList.add("user-action-item");
@@ -7598,7 +7609,6 @@ function buildAndPositionPopover(u, labelElem) {
     });
     userActionPopover.appendChild(removeEd);
   } else {
-    // Could be viewer or owner => we let you "make editor" if they're not owner
     if (u.sessionRole !== "owner") {
       const makeEd = document.createElement("div");
       makeEd.classList.add("user-action-item");
@@ -7615,7 +7625,6 @@ function buildAndPositionPopover(u, labelElem) {
     }
   }
 
-  // Kick user
   if (u.sessionRole !== "owner" && u.globalRole !== "admin") {
     const kickItem = document.createElement("div");
     kickItem.classList.add("user-action-item");
@@ -7631,7 +7640,7 @@ function buildAndPositionPopover(u, labelElem) {
     userActionPopover.appendChild(kickItem);
   }
 
-  // Position near the label
+  // position near label
   userActionPopover.style.left = "-9999px";
   userActionPopover.style.top = "-9999px";
 
@@ -7656,7 +7665,6 @@ function hideUserActionPopover() {
   userActionPopover.classList.add("hidden");
 }
 
-// If user clicks elsewhere => hide the popover
 document.addEventListener("click", (evt) => {
   if (
     openPopoverUserId &&
@@ -7696,23 +7704,18 @@ function doLogout() {
   updateLocalUserUI();
 }
 
-/* ------------------------------------------------------------------
-   USER INFO PANEL => either log in or log out
------------------------------------------------------------------- */
 userInfoPanel.addEventListener("click", (evt) => {
   if (isLoggedIn()) {
     if (confirm("Log out?")) {
       doLogout();
     }
   } else {
-    // show/hide dropdown
     if (!loginDropdown.contains(evt.target)) {
       loginDropdown.classList.toggle("hidden");
     }
   }
 });
 
-// If user clicks outside => hide login dropdown
 document.addEventListener("click", (evt) => {
   if (
     !loginDropdown.classList.contains("hidden") &&
@@ -7746,7 +7749,6 @@ loginForm.addEventListener("submit", async (e) => {
     localStorage.setItem("activeUserId", newUserId);
     activeUserId = newUserId;
 
-    // If old was anon => upgrade ephemeral user
     if (oldUserId.startsWith("anon_")) {
       sendWSMessage({
         type: MESSAGE_TYPES.UPGRADE_USER_ID,
@@ -7832,7 +7834,6 @@ registerCancelBtn.addEventListener("click", () => {
    PROJECT MANAGEMENT
 ------------------------------------------------------------------ */
 openPMBtn.addEventListener("click", () => {
-  // Must be ephemeral owner or global admin to open
   if (!amIOwnerOrAdmin()) {
     showMessage("Must be owner or admin to open panel.", true);
     return;
@@ -7845,6 +7846,7 @@ closePMBtn.addEventListener("click", () => pmModal.classList.add("hidden"));
 loadVersionsBtn.addEventListener("click", () => {
   showMessage("Version loading not implemented in ephemeral mode.", true);
 });
+
 saveNewVersionBtn.addEventListener("click", () => {
   if (!isLoggedIn()) {
     showMessage("You must log in to save a project version.", true);
@@ -7852,17 +7854,10 @@ saveNewVersionBtn.addEventListener("click", () => {
   }
   showMessage("Saving ephemeral version not implemented.", true);
 });
+
 deleteProjectBtn.addEventListener("click", () => {
   showMessage("Delete ephemeral project not implemented.", true);
 });
-
-/** Helper to check if I'm ephemeral owner or global admin. */
-function amIOwnerOrAdmin() {
-  const me = sessionUsers.find(u => u.userId === activeUserId);
-  if (!me) return false;
-  if (me.globalRole === "admin") return true;
-  return (me.sessionRole === "owner");
-}
 
 /* ------------------------------------------------------------------
    PROJECT NAME EDIT
@@ -7897,7 +7892,6 @@ function commitNameChange(newName) {
     revertNameChange();
     return;
   }
-  // Only ephemeral owner or global admin can rename
   if (!amIOwnerOrAdmin()) {
     showMessage("Only session owner or admin can rename.", true);
     revertNameChange();
@@ -7910,6 +7904,7 @@ function commitNameChange(newName) {
   });
 }
 
+// FIX: replaced setProjectNameFromServer.name => use the local front-end variable
 function revertNameChange() {
   restoreNameSpan();
 }
@@ -7920,10 +7915,25 @@ function restoreNameSpan() {
   const span = document.createElement("span");
   span.id = "project-name";
   span.title = "Click to edit project name";
-  span.textContent = setProjectNameFromServer.name || "Untitled Project";
-  span.style.cursor = "pointer";
+
+  // Use the actual local state from 'canvas.js' or a shared variable
+  // For example, if 'currentProjectName' is your front-end variable:
+  externCurrentProjectNameFallback(span);
+  // Alternatively, if your code expects getProjectNameFromSomewhere():
+  //   span.textContent = getCurrentProjectName() || "Untitled Project";
+
   oldInput.replaceWith(span);
   span.addEventListener("click", () => startEditingProjectName());
+}
+
+// Helper to retrieve the 'currentProjectName' from canvas.js or a global
+function externCurrentProjectNameFallback(spanEl) {
+  if (typeof window.currentProjectName === 'string' && window.currentProjectName) {
+    spanEl.textContent = window.currentProjectName;
+  } else {
+    // fallback
+    spanEl.textContent = "Untitled Project";
+  }
 }
 
 /* ------------------------------------------------------------------
@@ -7946,7 +7956,6 @@ redoBtn?.addEventListener("click", () => {
   sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
 });
 
-// Keyboard shortcuts for Undo/Redo
 window.addEventListener("keydown", (e) => {
   if (e.ctrlKey && !e.shiftKey && e.key === "z") {
     e.preventDefault();
@@ -8001,7 +8010,7 @@ chatInput.addEventListener("keydown", (e) => {
 CREATE DATABASE board_game_prototyping;
 \connect board_game_prototyping;
 
--- Create tables in main DB (example)
+-- Create tables in main DB
 CREATE TABLE users (
   id SERIAL PRIMARY KEY,
   name VARCHAR(100) NOT NULL,
@@ -8009,12 +8018,14 @@ CREATE TABLE users (
   password VARCHAR(200) NOT NULL,
   role VARCHAR(50) DEFAULT 'user'
 );
+
 CREATE TABLE projects (
   id SERIAL PRIMARY KEY,
   owner_id INT REFERENCES users(id),
   name VARCHAR(200),
   description TEXT
 );
+
 CREATE TABLE project_versions (
   id SERIAL PRIMARY KEY,
   project_id INT REFERENCES projects(id),
@@ -8022,6 +8033,28 @@ CREATE TABLE project_versions (
   project_data JSONB DEFAULT '{}',
   created_at TIMESTAMP DEFAULT NOW()
 );
+
+/* 
+   IMPORTANT: Grant ownership & privileges in the main DB 
+   so that "admin" can SELECT/INSERT/UPDATE these tables.
+*/
+CREATE ROLE admin WITH LOGIN PASSWORD 'test1234';
+GRANT ALL PRIVILEGES ON DATABASE board_game_prototyping TO admin;
+
+ALTER TABLE users OWNER TO admin;
+ALTER TABLE projects OWNER TO admin;
+ALTER TABLE project_versions OWNER TO admin;
+
+ALTER SEQUENCE users_id_seq OWNER TO admin;
+ALTER SEQUENCE projects_id_seq OWNER TO admin;
+ALTER SEQUENCE project_versions_id_seq OWNER TO admin;
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO admin;
+/* 
+   Optionally ensure future tables are also covered:
+   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO admin;
+*/
+
 
 -- 2) Create test DB
 CREATE DATABASE board_game_prototyping_test;
@@ -8051,39 +8084,17 @@ CREATE TABLE project_versions (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
-/* Example: If you used any ALTER TABLE statements, re-run them here, e.g.:
-ALTER TABLE project_versions
-  ADD CONSTRAINT project_versions_unique UNIQUE (project_id, version_number);
+/*
+   Grant ownership & privileges in the test DB for 'admin' as well.
 */
-
--- 3) Create the admin role & password
-CREATE ROLE admin WITH LOGIN PASSWORD 'test1234';
-
--- 4) Grant privileges on the test DB to "admin"
 GRANT ALL PRIVILEGES ON DATABASE board_game_prototyping_test TO admin;
 
-/*
-  5) Grant table-level privileges in the test DB:
-     If you want admin to have full read/write on *all* tables in 'public' schema:
-*/
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO admin;
-
-/*
-  6) Make admin the owner of each table in the test DB (important to avoid "permission denied"):
-     If you have many tables, do this for each. Example for users/projects:
-*/
 ALTER TABLE users OWNER TO admin;
 ALTER TABLE projects OWNER TO admin;
 ALTER TABLE project_versions OWNER TO admin;
 
-/* Optionally ensure sequences are owned by admin, too: */
 ALTER SEQUENCE users_id_seq OWNER TO admin;
 ALTER SEQUENCE projects_id_seq OWNER TO admin;
 ALTER SEQUENCE project_versions_id_seq OWNER TO admin;
 
-/*
-  7) For safety, you can also set default privileges for any future tables in "public" schema:
-  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO admin;
-*/
-
--- Done
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO admin;
