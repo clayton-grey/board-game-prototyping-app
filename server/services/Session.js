@@ -16,9 +16,15 @@ export class Session {
     ];
 
     this.nextJoinOrder = 1;
+
+    // Shared session-wide stacks for undo/redo
     this.undoStack = [];
     this.redoStack = [];
 
+    // If a user starts moving or resizing but hasn't "finalized" it,
+    // we store partial changes in these maps:
+    //   pendingMoves:   Map<elementId, { userId, oldX, oldY }>
+    //   pendingResizes: Map< userId, Map< elementId, { x, y, w, h } > >
     this.pendingMoves = new Map();
     this.pendingResizes = new Map();
   }
@@ -31,9 +37,8 @@ export class Session {
 
   /**
    * Add or re-join a user to this session:
-   * - If it's a brand-new user => sessionRole='owner' if there's no owner, else 'viewer'.
+   * - If brand-new => sessionRole='owner' if no owner exists; else 'viewer'.
    * - If user exists => update name/socket/admin if needed.
-   * - Then we check if the session has an owner; if not, we assign *this* user as owner.
    */
   addUser(userId, userName, isAdminFlag = false, wsSocket = null) {
     let userObj = this.users.get(userId);
@@ -45,7 +50,6 @@ export class Session {
         name: userName || 'Anonymous',
         color: this._colorFromUserId(userId),
         globalRole: isAdminFlag ? 'admin' : 'user',
-        // "viewer" by default; we fix it to "owner" if needed below
         sessionRole: 'viewer',
         socket: wsSocket,
         x: 0,
@@ -54,7 +58,7 @@ export class Session {
       };
       this.users.set(userId, userObj);
     } else {
-      // re-joining => update name, socket, admin
+      // re-joining => update name, socket, possibly admin
       userObj.socket = wsSocket;
       if (userName) {
         userObj.name = userName;
@@ -64,7 +68,7 @@ export class Session {
       }
     }
 
-    // If there's truly no owner in the session, make *this user* the owner
+    // If there's truly no owner, make this user the owner
     if (!this._hasOwner()) {
       userObj.sessionRole = 'owner';
     }
@@ -76,6 +80,7 @@ export class Session {
     const user = this.users.get(userId);
     if (!user) return null;
 
+    // free any locked elements
     for (const el of this.elements) {
       if (el.lockedBy === userId) {
         el.lockedBy = null;
@@ -97,8 +102,11 @@ export class Session {
     if (!kicker || !target) return null;
 
     if (!this.canManage(kickerUserId)) return null;
-    if (target.sessionRole === 'owner' || target.globalRole === 'admin') return null;
+    if (target.sessionRole === 'owner' || target.globalRole === 'admin') {
+      return null;
+    }
 
+    // free any locked elements
     for (const el of this.elements) {
       if (el.lockedBy === targetUserId) {
         el.lockedBy = null;
@@ -113,13 +121,16 @@ export class Session {
   }
 
   /**
-   * Upgrades an ephemeral user to a "real" user by removing oldUserId
-   * and replacing it with newUserId, preserving sessionRole (including 'owner').
+   * Upgrades an ephemeral user ID to a "real" user ID, preserving:
+   *   - locked elements,
+   *   - session roles (owner/editor/viewer),
+   *   - pending moves/resizes,
+   *   - and merges admin if requested.
    */
   upgradeUserId(oldUserId, newUserId, newName, newIsAdmin, wsSocket) {
     let oldUser = this.users.get(oldUserId);
     if (!oldUser) {
-      // If somehow oldUserId wasn't in the map, create a placeholder so we can "upgrade" it
+      // create a placeholder so we can "upgrade" it
       oldUser = {
         userId: oldUserId,
         name: 'Anonymous',
@@ -132,46 +143,61 @@ export class Session {
       this.users.set(oldUserId, oldUser);
     }
 
-    // Transfer any locked elements from old ID to new ID
+    // 1) Transfer locked elements
     for (const el of this.elements) {
       if (el.lockedBy === oldUserId) {
         el.lockedBy = newUserId;
       }
     }
 
-    // Remember their old ephemeral role (e.g., 'owner', 'editor', 'viewer')
+    // 2) Remove oldUser from the map
     const oldSessionRole = oldUser.sessionRole;
-
-    // Remove the old user key from the map
     this.users.delete(oldUserId);
 
-    // Also remove any existing user at newUserId (just in case)
+    // 3) Also remove any existing user at newUserId (just in case)
     this.users.delete(newUserId);
 
-    // Update fields in the same user object
+    // 4) Overwrite fields in oldUser => store as newUserId
     oldUser.userId = newUserId;
     oldUser.name = newName || oldUser.name;
     oldUser.globalRole = newIsAdmin ? 'admin' : 'user';
-    // Preserve ephemeral role (including 'owner' if it was)
     oldUser.sessionRole = oldSessionRole;
-
     if (wsSocket) {
       oldUser.socket = wsSocket;
     }
-
-    // Finally store them under newUserId
     this.users.set(newUserId, oldUser);
+
+    // 5) Transfer any pending moves referencing oldUserId
+    for (const [elementId, moveData] of this.pendingMoves.entries()) {
+      if (moveData.userId === oldUserId) {
+        moveData.userId = newUserId;
+      }
+    }
+
+    // 6) Transfer any pending resizes from oldUserId => newUserId
+    const oldMap = this.pendingResizes.get(oldUserId);
+    if (oldMap) {
+      this.pendingResizes.delete(oldUserId);
+      // If there's already a map for newUserId, merge them
+      const existingMap = this.pendingResizes.get(newUserId) || new Map();
+      // Copy all from oldMap into existingMap
+      for (const [elId, originalPos] of oldMap.entries()) {
+        existingMap.set(elId, originalPos);
+      }
+      this.pendingResizes.set(newUserId, existingMap);
+    }
 
     return oldUser;
   }
 
   /**
-   * Downgrade ephemeral user => merges locks, sets them to viewer, always user,
-   * reassigning owner if needed so we don't end up with no owners.
+   * Downgrades a user => merges locks, sets them to viewer, clears admin,
+   * reassigns ownership if needed.
    */
   downgradeUserId(oldUserId, newUserId, wsSocket) {
     let oldUser = this.users.get(oldUserId);
     if (!oldUser) {
+      // create a placeholder so we can "downgrade" it
       oldUser = {
         userId: oldUserId,
         name: 'Anonymous',
@@ -186,14 +212,13 @@ export class Session {
 
     const wasOwner = (oldUser.sessionRole === 'owner');
 
-    // Merge locks ...
+    // free or reassign locks
     for (const el of this.elements) {
       if (el.lockedBy === oldUserId) {
         el.lockedBy = newUserId;
       }
     }
 
-    // Remove old, build new
     this.users.delete(oldUserId);
 
     oldUser.userId = newUserId;
@@ -207,8 +232,25 @@ export class Session {
     }
     this.users.set(newUserId, oldUser);
 
+    // Also fix pending moves
+    for (const [elementId, moveData] of this.pendingMoves.entries()) {
+      if (moveData.userId === oldUserId) {
+        moveData.userId = newUserId;
+      }
+    }
+
+    // Fix pending resizes
+    const oldMap = this.pendingResizes.get(oldUserId);
+    if (oldMap) {
+      this.pendingResizes.delete(oldUserId);
+      const existingMap = this.pendingResizes.get(newUserId) || new Map();
+      for (const [elId, originalPos] of oldMap.entries()) {
+        existingMap.set(elId, originalPos);
+      }
+      this.pendingResizes.set(newUserId, existingMap);
+    }
+
     if (wasOwner) {
-      // Do not reassign the newly downgraded user as owner
       this._reassignOwnerIfNeeded(newUserId);
     }
 
@@ -227,9 +269,6 @@ export class Session {
     this.redoStack = [];
   }
 
-  /**
-   * If there's no owner left, pick the earliest joiner to be the new owner.
-   */
   _reassignOwnerIfNeeded(excludeUserId = null) {
     if (this._hasOwner()) return;
 

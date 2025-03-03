@@ -28,8 +28,22 @@ export const handleElementMove = sessionGuard((session, data, ws) => {
 
   // Must be locked by this user
   if (el.lockedBy === userId) {
+    // Track original position if not yet stored
+    if (!session.pendingMoves) {
+      session.pendingMoves = new Map();
+    }
+    if (!session.pendingMoves.has(elementId)) {
+      session.pendingMoves.set(elementId, {
+        userId,
+        oldX: el.x,
+        oldY: el.y,
+      });
+    }
+
+    // Apply new position
     el.x = x;
     el.y = y;
+
     broadcastElementState(session);
   }
 });
@@ -39,16 +53,22 @@ export const handleElementRelease = sessionGuard((session, data, ws) => {
   const el = session.elements.find(e => e.id === elementId);
   if (!el) return;
 
+  // If the releasing user actually had it locked, free it
   if (el.lockedBy === userId) {
-    // We currently do nothing except broadcast (the design might expand here)
-    broadcastElementState(session);
+    el.lockedBy = null;
   }
+
+  // Now finalize the pending moves (for any element the user no longer locks)
+  finalizeAllPendingMovesForUser(session, userId);
+
+  broadcastElementState(session);
 });
 
 export const handleElementDeselect = sessionGuard((session, data, ws) => {
   const { userId, elementIds } = data;
   if (!Array.isArray(elementIds)) return;
 
+  // Unlock any elements we actually had
   for (const elementId of elementIds) {
     const el = session.elements.find(e => e.id === elementId);
     if (!el) continue;
@@ -56,6 +76,9 @@ export const handleElementDeselect = sessionGuard((session, data, ws) => {
       el.lockedBy = null;
     }
   }
+  // Finalize moves on any that are no longer locked by the user
+  finalizeAllPendingMovesForUser(session, userId);
+
   broadcastElementState(session);
 });
 
@@ -73,13 +96,18 @@ export const handleElementCreate = sessionGuard((session, data, ws) => {
     id: newId,
     shape,
     x, y, w, h,
-    lockedBy: userId, // lock to creator
+    lockedBy: userId, // lock to creator (so they can drag it right away)
   };
   session.elements.push(newElement);
 
+  // Store all relevant data so that REDO can re-create
   const action = {
     type: 'create',
-    diffs: [{ elementId: newId }],
+    diffs: [{
+      elementId: newId,
+      shape,
+      x, y, w, h,
+    }],
   };
   pushUndoAction(session, action);
 
@@ -96,7 +124,8 @@ export const handleElementDelete = sessionGuard((session, data, ws) => {
     if (idx >= 0) {
       const el = session.elements[idx];
       if (isElementLockedByOthers(el, userId)) {
-        continue; // skip if locked by someone else
+        // skip if locked by someone else
+        continue;
       }
       toDelete.push({ ...el });
       session.elements.splice(idx, 1);
@@ -211,3 +240,54 @@ export const handleElementResizeEnd = sessionGuard((session, data, ws) => {
 
   broadcastElementState(session);
 });
+
+/**
+ * Called internally whenever a user finishes locking or releasing
+ * one or more elements. We check all pending moves that belong
+ * to that user but are for elements no longer locked by them.
+ * We unify all those diffs into a single 'move' action.
+ */
+function finalizeAllPendingMovesForUser(session, userId) {
+  if (!session.pendingMoves) {
+    session.pendingMoves = new Map();
+  }
+  const diffs = [];
+
+  for (const [elementId, moveData] of session.pendingMoves.entries()) {
+    if (moveData.userId !== userId) continue;
+    const el = session.elements.find(e => e.id === elementId);
+    if (!el) {
+      // element might have been deleted
+      session.pendingMoves.delete(elementId);
+      continue;
+    }
+    // If it's still locked by the user, skip finalizing it now
+    if (el.lockedBy === userId) {
+      continue;
+    }
+
+    // Otherwise finalize
+    const oldX = moveData.oldX;
+    const oldY = moveData.oldY;
+    const newX = el.x;
+    const newY = el.y;
+    session.pendingMoves.delete(elementId);
+
+    // Only record a diff if something actually moved
+    if (oldX !== newX || oldY !== newY) {
+      diffs.push({
+        elementId,
+        from: { x: oldX, y: oldY },
+        to: { x: newX, y: newY },
+      });
+    }
+  }
+
+  if (diffs.length > 0) {
+    const action = {
+      type: 'move',
+      diffs,
+    };
+    pushUndoAction(session, action);
+  }
+}

@@ -17,10 +17,8 @@ export function handleJoinSession(session, data, ws) {
   // If session is not explicitly passed, we fetch or create:
   const theSession = session || SessionService.getOrCreateSession(sessionCode || 'defaultSession');
 
-  let isAdmin = false;
-  if (userRole === 'admin') {
-    isAdmin = true;
-  }
+  // Instead of always "false" for non-admin, we pass `undefined` if userRole != 'admin'.
+  const isAdmin = (userRole === 'admin') ? true : undefined;
 
   const userObj = theSession.addUser(userId, name, isAdmin, ws);
 

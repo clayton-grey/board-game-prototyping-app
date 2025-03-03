@@ -9,27 +9,22 @@ describe('Session class', () => {
   });
 
   test('empty session => first user is owner by default', () => {
-    expect(session.users.size).toBe(0); 
+    expect(session.users.size).toBe(0);
     const user = session.addUser('uFirst', 'First');
-    expect(user.sessionRole).toBe('owner'); 
+    expect(user.sessionRole).toBe('owner');
     expect(session.users.size).toBe(1);
   });
 
   test('first user in an empty session becomes owner, even if re-joining an ID that was never fully set', () => {
-    // Suppose the session is brand new => size=0, no owners
     expect(session.users.size).toBe(0);
 
-    // We "add" user with ID 'uA'
     const userA = session.addUser('uA', 'UserA');
-    // Because the session was empty, userA becomes owner
     expect(userA.sessionRole).toBe('owner');
     expect(session.users.size).toBe(1);
 
-    // Suppose we remove them => no owners left
     session.removeUser('uA');
     expect(session.users.size).toBe(0);
 
-    // Another user joins => should become owner
     const userB = session.addUser('uB', 'UserB');
     expect(userB.sessionRole).toBe('owner');
   });
@@ -38,7 +33,7 @@ describe('Session class', () => {
     expect(session.code).toBe('test-code');
     expect(session.projectName).toBe('New Project');
     expect(session.users.size).toBe(0);
-    expect(session.elements.length).toBe(2); 
+    expect(session.elements.length).toBe(2);
     expect(session.undoStack.length).toBe(0);
     expect(session.redoStack.length).toBe(0);
   });
@@ -47,7 +42,7 @@ describe('Session class', () => {
     const user1 = session.addUser('u1', 'Alice');
     expect(user1.sessionRole).toBe('owner');
     const user2 = session.addUser('u2', 'Bob');
-    expect(user2.sessionRole).toBe('viewer'); // by default
+    expect(user2.sessionRole).toBe('viewer');
     expect(session.users.size).toBe(2);
   });
 
@@ -56,8 +51,7 @@ describe('Session class', () => {
     expect(adminUser.globalRole).toBe('admin');
   });
 
-
-  test('addUser => re-joining a user updates socket or name if provided', () => {
+  test('addUser => re-joining a user updates name/socket if provided', () => {
     const initial = session.addUser('user1', 'FirstName');
     expect(initial.name).toBe('FirstName');
     expect(session.users.size).toBe(1);
@@ -71,7 +65,6 @@ describe('Session class', () => {
   test('removeUser => frees locks, reassigns owner if needed', () => {
     const owner = session.addUser('owner1', 'Owner1');
     const user2 = session.addUser('user2', 'Regular');
-    // lock something to user2
     session.elements.push({ id: 99, lockedBy: 'user2' });
 
     session.removeUser('user2');
@@ -86,23 +79,18 @@ describe('Session class', () => {
 
   test('kickUser => must be owner/admin, cannot kick owners/admins, returns kicked user or null', () => {
     const owner = session.addUser('owner1', 'OwnerUser');
-    owner.isOwner = true; // first user isOwner
+    owner.isOwner = true; // for test scenario
 
     const normal = session.addUser('u2', 'User2');
-    // Attempt to kick user2 with an owner => success
     const kicked = session.kickUser('owner1', 'u2');
     expect(kicked.userId).toBe('u2');
     expect(session.users.has('u2')).toBe(false);
 
-    // re-add user2 as an admin
     const user2Again = session.addUser('u2', 'User2Again', true);
-
-    // Attempt to have owner1 kick admin => fails
-    const failKick = session.kickUser('owner1', 'u2');
+    const failKick = session.kickUser('owner1', 'u2'); // can't kick admin
     expect(failKick).toBeNull();
     expect(session.users.has('u2')).toBe(true);
 
-    // an admin tries to kick the owner => also fails
     const adminKickOwner = session.kickUser('u2', 'owner1');
     expect(adminKickOwner).toBeNull();
   });
@@ -114,7 +102,6 @@ describe('Session class', () => {
     const upgraded = session.upgradeUserId('anon_1', 'real_99', 'RealName', true);
     expect(upgraded.userId).toBe('real_99');
     expect(upgraded.name).toBe('RealName');
-    // was newIsAdmin = true => globalRole='admin'
     expect(upgraded.globalRole).toBe('admin');
 
     const el = session.elements.find(e => e.id === 101);
@@ -125,13 +112,11 @@ describe('Session class', () => {
     const anonOwner = session.addUser('anon_owner', 'Ephemeral Owner');
     expect(anonOwner.sessionRole).toBe('owner');
 
-    // Now upgrade
     const realUser = session.upgradeUserId('anon_owner', 'user_10', 'RealUser', false);
     expect(realUser.sessionRole).toBe('owner');
   });
 
   test('upgradeUserId => handles non-existent oldUserId by creating placeholder', () => {
-    // we never added 'fakeId' to the session, so it's "non-existent"
     const out = session.upgradeUserId('fakeId', 'newId', 'NewName', false, null);
     expect(out.userId).toBe('newId');
     expect(out.name).toBe('NewName');
@@ -139,28 +124,22 @@ describe('Session class', () => {
     expect(session.users.has('newId')).toBe(true);
   });
 
-  test('downgradeUserId => merges locks, sets new ID as anonymous, clears admin/owner/editor', () => {
-    // Setup
+  test('downgradeUserId => merges locks, sets new ID as viewer, clears admin/owner/editor', () => {
     const user = session.addUser('u111', 'TestUser', true); // => globalRole='admin'
-    user.sessionRole = 'owner'; // Mark them as owner
+    user.sessionRole = 'owner';
 
     session.elements.push({ id: 200, lockedBy: 'u111' });
 
-    // Action
     const downgraded = session.downgradeUserId('u111', 'anon_99');
-
-    // Checks:
-    // user => 'anon_99', globalRole='user', sessionRole='viewer'
     expect(downgraded.userId).toBe('anon_99');
     expect(downgraded.globalRole).toBe('user');
-    expect(downgraded.sessionRole).toBe('viewer'); // The test expects 'viewer', not 'owner'
+    expect(downgraded.sessionRole).toBe('viewer');
 
-    // The shape lock merges
     const el = session.elements.find(e => e.id === 200);
     expect(el.lockedBy).toBe('anon_99');
   });
 
-  test('downgradeUserId => handles non-existent oldUserId by creating placeholder, then downgrading it', () => {
+  test('downgradeUserId => handles non-existent oldUserId by creating placeholder, then downgrading', () => {
     const out = session.downgradeUserId('missing_123', 'anon_77');
     expect(out.userId).toBe('anon_77');
     expect(out.globalRole).toBe('user');
@@ -183,5 +162,62 @@ describe('Session class', () => {
     session.clearUndoRedo();
     expect(session.undoStack.length).toBe(0);
     expect(session.redoStack.length).toBe(0);
+  });
+
+  // -------------------- NEW TESTS FOR PENDING MOVES/RESIZES --------------------
+
+  test('upgradeUserId => transfers pendingMoves and pendingResizes from old to new userId', () => {
+    // Setup a partial move
+    session.pendingMoves.set(10, {
+      userId: 'anon_123',
+      oldX: 50,
+      oldY: 60
+    });
+    // Setup partial resize
+    const resizeMap = new Map();
+    resizeMap.set(20, { x: 100, y: 200, w: 40, h: 40 });
+    session.pendingResizes.set('anon_123', resizeMap);
+
+    // Now upgrade
+    session.upgradeUserId('anon_123', 'realUser_1', 'RealName', false, null);
+
+    // The old key "anon_123" in pendingResizes should be gone
+    expect(session.pendingResizes.has('anon_123')).toBe(false);
+
+    // The new user has the same sub-map
+    expect(session.pendingResizes.has('realUser_1')).toBe(true);
+    const newMap = session.pendingResizes.get('realUser_1');
+    expect(newMap.get(20)).toEqual({ x: 100, y: 200, w: 40, h: 40 });
+
+    // The pendingMoves entry changed userId
+    expect(session.pendingMoves.get(10)).toEqual({
+      userId: 'realUser_1',
+      oldX: 50,
+      oldY: 60
+    });
+  });
+
+  test('downgradeUserId => merges pendingMoves and pendingResizes similarly', () => {
+    // Suppose we have partial moves/resizes under "u222"
+    session.pendingMoves.set(7, {
+      userId: 'u222',
+      oldX: 0,
+      oldY: 0
+    });
+    const rMap = new Map();
+    rMap.set(99, { x: 10, y: 20, w: 30, h: 40 });
+    session.pendingResizes.set('u222', rMap);
+
+    // Downgrade
+    session.downgradeUserId('u222', 'anon_444');
+
+    // old keys removed
+    expect(session.pendingMoves.get(7).userId).toBe('anon_444');
+    expect(session.pendingResizes.has('u222')).toBe(false);
+
+    // new keys found
+    const newMap = session.pendingResizes.get('anon_444');
+    expect(newMap.size).toBe(1);
+    expect(newMap.get(99)).toEqual({ x: 10, y: 20, w: 30, h: 40 });
   });
 });

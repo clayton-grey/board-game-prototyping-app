@@ -36,11 +36,15 @@ describe('Edge Cases Integration Tests', () => {
   });
 
   test('Register with a duplicate email => 400 or 409', async () => {
-    // We'll create a known user, then re-register the same email
-    const existing = await createTestUser({ email: 'edge_dup@example.com' });
-    const dup = await request(app).post('/auth/register').send({
+    // Use a unique "duplicate" email each time so the first registration always succeeds
+    const uniqueEmail = `edge_dup_${Date.now()}@example.com`;
+    const existing = await createTestUser({ email: uniqueEmail });
+
+    const dup = await request(app)
+      .post('/auth/register')
+      .send({
       name: 'DupUser',
-      email: 'edge_dup@example.com',
+      email: uniqueEmail,
       password: 'pass123',
       confirmPassword: 'pass123',
     });
