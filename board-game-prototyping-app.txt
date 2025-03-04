@@ -126,7 +126,7 @@ This project is licensed under the MIT License.
 
 {
   "name": "board-game-prototyping-app",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
@@ -6300,11 +6300,8 @@ const BASE_SPACING = 100;
 
 // Flags
 let isPanning = false;
-/** CHANGED: track whether we are actively dragging with left button. */
-let isDragging = false;
-
-/** CHANGED: store offsets only for selected shapes we are actively dragging. */
-const lockedOffsets = {};
+let isDragging = false;   // actively dragging with left button
+const lockedOffsets = {}; // offsets for selected shapes being dragged
 
 // Marquee
 let isMarqueeSelecting = false;
@@ -6337,7 +6334,6 @@ let activeHandle = null; // e.g. 'top-left','bottom-right'
 let boundingBoxAtDragStart = { x: 0, y: 0, w: 0, h: 0 };
 let shapesSnapshot = [];
 
-/** Return the correct mouse cursor for a particular resize handle. */
 function getCursorForHandle(handle) {
   // corners
   if (handle === "top-left" || handle === "bottom-right") return "nwse-resize";
@@ -6369,14 +6365,13 @@ export function initCanvas(initialUserId) {
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerup", onPointerUp);
-
-  /** CHANGED: handle pointercancel/pointerleave so drag doesn’t remain “stuck”. */
   canvas.addEventListener("pointercancel", onPointerCancelOrLeave);
   canvas.addEventListener("pointerleave", onPointerCancelOrLeave);
 
   // Wheel => zoom
   canvas.addEventListener("wheel", onWheel, { passive: false });
 
+  // Setup consolidated keyboard listeners
   setupKeyListeners();
 
   // Zoom UI
@@ -6384,34 +6379,7 @@ export function initCanvas(initialUserId) {
   document.getElementById("zoom-out").addEventListener("click", () => zoomAroundCenter(-buttonZoomStep));
   document.getElementById("frame-all").addEventListener("click", frameAllElements);
 
-  // ESC => cancel creation or resizing or deselect
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      if (creationState?.active) {
-        creationState.active = false;
-      } else if (isResizing) {
-        endResizing(true);
-      } else {
-        deselectAll();
-      }
-    }
-  });
-
   initToolsPalette();
-
-  // Delete key => remove selected shapes
-  window.addEventListener("keydown", (e) => {
-    if ((e.key === "Delete" || e.key === "Backspace") && noTextInputFocused()) {
-      if (selectedElementIds.length > 0) {
-        window.__sendWSMessage({
-          type: MESSAGE_TYPES.ELEMENT_DELETE,
-          userId: localUserId,
-          elementIds: [...selectedElementIds],
-        });
-        selectedElementIds = [];
-      }
-    }
-  });
 
   requestAnimationFrame(render);
 }
@@ -6422,14 +6390,82 @@ function noTextInputFocused() {
   return (tag !== "input" && tag !== "textarea");
 }
 
-/** SHIFT key tracking. */
+/** Consolidated keyboard listeners. */
 function setupKeyListeners() {
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Shift") shiftDown = true;
-  });
+  // SHIFT up/down, plus all other shortcuts in one place
+  window.addEventListener("keydown", handleGlobalKeyDown);
   window.addEventListener("keyup", (e) => {
-    if (e.key === "Shift") shiftDown = false;
+    // Track SHIFT usage for shape creation & resizing
+    if (e.key === "Shift") {
+      shiftDown = false;
+    }
   });
+}
+
+/**
+ * Single handler for global `keydown`.
+ * We ignore certain shortcuts if an input/textarea is focused
+ * so as not to disrupt typing.
+ */
+function handleGlobalKeyDown(e) {
+  // Always track SHIFT so shape creation/resizing can remain constrained
+  if (e.key === "Shift") {
+    shiftDown = true;
+    return;
+  }
+
+  // If user is typing in a text field, do not process
+  // Escape, Delete, Undo/Redo, etc.
+  if (!noTextInputFocused()) {
+    return;
+  }
+
+  switch (e.key) {
+    // Escape => cancel creation or resizing or deselect
+    case "Escape":
+      if (creationState?.active) {
+        creationState.active = false;
+      } else if (isResizing) {
+        endResizing(true);
+      } else {
+        deselectAll();
+      }
+      break;
+
+    // Delete/Backspace => remove selected shapes
+    case "Delete":
+    case "Backspace":
+      e.preventDefault(); // prevent browser "Back" navigation in some cases
+      if (selectedElementIds.length > 0) {
+        window.__sendWSMessage({
+          type: MESSAGE_TYPES.ELEMENT_DELETE,
+          userId: localUserId,
+          elementIds: [...selectedElementIds],
+        });
+        selectedElementIds = [];
+      }
+      break;
+
+    default:
+      // Check for Undo/Redo shortcuts: Cmd/Ctrl + Z
+      if ((e.key.toLowerCase() === 'z') && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (e.shiftKey) {
+          // Redo
+          window.__sendWSMessage({
+            type: MESSAGE_TYPES.REDO,
+            userId: localUserId,
+          });
+        } else {
+          // Undo
+          window.__sendWSMessage({
+            type: MESSAGE_TYPES.UNDO,
+            userId: localUserId,
+          });
+        }
+      }
+      break;
+  }
 }
 
 /** If local user ID changes (login/out), update local references. */
@@ -6459,8 +6495,7 @@ export function handleCanvasMessage(data, myUserId) {
           selectedElementIds = [el.id];
         }
       }
-
-      // CHANGED: Also remove any stale lockedOffsets for shapes no longer selected
+      // Remove any stale lockedOffsets for shapes no longer selected
       for (const k of Object.keys(lockedOffsets)) {
         if (!selectedElementIds.includes(+k)) {
           delete lockedOffsets[k];
@@ -6669,9 +6704,6 @@ function onPointerUp(e) {
   if (isDragging && e.button === 0) {
     isDragging = false;
     canvas.classList.remove("grabbing");
-
-    /** CHANGED: Clear `lockedOffsets` after finishing the drag.
-        Next time we click to drag, we recompute fresh offsets. */
     for (const k of Object.keys(lockedOffsets)) {
       delete lockedOffsets[k];
     }
@@ -6715,7 +6747,7 @@ function onPointerUp(e) {
 }
 
 /**
- * CHANGED: If the pointer is canceled or leaves the canvas while dragging,
+ * If the pointer is canceled or leaves the canvas while dragging,
  * we end the drag to avoid a "stuck" drag state.
  */
 function onPointerCancelOrLeave(e) {
@@ -6752,18 +6784,15 @@ function handleSelectPointerDown(e) {
       if (selectedElementIds.includes(clicked.id)) {
         sendDeselectElement([clicked.id]);
         selectedElementIds = selectedElementIds.filter(id => id !== clicked.id);
-        // CHANGED: remove offset for that shape if it’s being deselected
         delete lockedOffsets[clicked.id];
       } else {
         sendGrabElement(clicked.id);
         selectedElementIds.push(clicked.id);
       }
-      // Don’t set isDragging if SHIFT. So no immediate drag.
       return;
     }
 
-    // ELSE => single select => clear old selection, select new, start dragging
-    // CHANGED: also clear lockedOffsets first so no stale offset remains
+    // ELSE => single select => clear old, select new, start dragging
     for (const k of Object.keys(lockedOffsets)) {
       delete lockedOffsets[k];
     }
@@ -6775,9 +6804,7 @@ function handleSelectPointerDown(e) {
       selectedElementIds.push(clicked.id);
     }
 
-    // If we have a selection => set up immediate drag
     if (selectedElementIds.length > 0) {
-      // Compute offset for each shape in selection
       for (const id of selectedElementIds) {
         const el = elements.find(ele => ele.id === id);
         if (el?.lockedBy === localUserId) {
@@ -6805,7 +6832,7 @@ function handleSelectPointerDown(e) {
     if (!e.shiftKey) {
       deselectAll();
     }
-    isDragging = false; // not dragging shapes
+    isDragging = false; 
     canvas.classList.add("grabbing");
   }
 }
@@ -6835,7 +6862,6 @@ function sendDeselectElement(elementIds) {
     userId: localUserId,
     elementIds,
   });
-  // CHANGED: remove offsets for those IDs
   for (const eid of elementIds) {
     delete lockedOffsets[eid];
   }
@@ -6872,7 +6898,7 @@ function finalizeShapeCreation() {
   let w = Math.abs(curWX - startWX);
   let h = Math.abs(curWY - startWY);
 
-  // If SHIFT => keep it square for rectangle/ellipse
+  // SHIFT => keep it square for rectangle/ellipse
   if (shiftDown && (tool === "rectangle" || tool === "ellipse")) {
     const side = Math.max(w, h);
     w = side;
@@ -7165,6 +7191,7 @@ function sendElementResizeEnd(ids) {
     elementIds: ids,
   });
 }
+
 function sendResizeElement(elementId, x, y, w, h) {
   window.__sendWSMessage({
     type: MESSAGE_TYPES.ELEMENT_RESIZE,
@@ -7484,19 +7511,16 @@ function frameAllElements() {
   let minX = Infinity, maxX = -Infinity;
   let minY = Infinity, maxY = -Infinity;
 
-  if (!selectedElementIds.length){
+  if (!selectedElementIds.length) {
     for (const el of elements) {
       minX = Math.min(minX, el.x);
       maxX = Math.max(maxX, el.x + el.w);
       minY = Math.min(minY, el.y);
       maxY = Math.max(maxY, el.y + el.h);
     }
-  }
-  else if (!elements.length) {
+  } else if (!elements.length) {
     return;
-  }
-  else
-  {
+  } else {
     for (const id of selectedElementIds) {
       const el = elements.find(e => e.id === id);
       minX = Math.min(minX, el.x);
@@ -7506,8 +7530,7 @@ function frameAllElements() {
     }
     deselectAll();
   }
-  
-  console.log(minX, maxX, minY, maxY)
+
   const w = maxX - minX, h = maxY - minY;
   if (w <= 0 || h <= 0) return;
 
@@ -7516,7 +7539,6 @@ function frameAllElements() {
   const margin = 50;
   const scaleX = (cw - margin * 2) / w;
   const scaleY = (ch - margin * 2) / h;
-  console.log(scaleX, scaleY)
   scale = clampScale(Math.min(scaleX, scaleY));
 
   const cx = minX + w / 2;
@@ -7553,6 +7575,7 @@ function canTransformSelection() {
   }
   return selectedElementIds.length > 0;
 }
+
 
 ===== ./client/js/app.js =====
 
