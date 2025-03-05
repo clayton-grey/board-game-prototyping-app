@@ -11,6 +11,7 @@ import {
   updateCanvasUserId,
   removeCursorsForMissingUsers,
 } from "./canvas.js";
+import { connectWebSocket, sendWSMessage } from "./wsClient.js"; // <-- import new
 
 // A small helper for JSON fetch calls
 async function fetchJSON(url, method = "GET", bodyObj = null) {
@@ -72,14 +73,10 @@ const registerModal = document.getElementById("register-modal");
 const registerForm = document.getElementById("registerForm");
 const registerMessage = document.getElementById("register-message");
 const registerCancelBtn = document.getElementById("registerCancelBtn");
-
 const userActionPopover = document.getElementById("user-action-popover");
 
-// Undo/REDO controls
 const undoBtn = document.getElementById("undo-btn");
 const redoBtn = document.getElementById("redo-btn");
-
-let ws = null;
 
 /** Helper to display a short message at the top of the project manager modal or wherever. */
 function showMessage(msg, isError = false) {
@@ -92,39 +89,13 @@ function showMessage(msg, isError = false) {
   }, 3000);
 }
 
-/** Wrapper for sending WebSocket data if open. */
-function sendWSMessage(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj));
-  }
-}
-window.__sendWSMessage = sendWSMessage; // so canvas.js can call it
-
-/** Connect to the WebSocket server. */
-function connectWebSocket() {
-  ws = new WebSocket("ws://localhost:3000");
-  ws.onopen = () => {
-    console.log("WebSocket connected.");
-    doJoinSession();
-  };
-  ws.onmessage = (evt) => {
-    let data;
-    try {
-      data = JSON.parse(evt.data);
-    } catch (err) {
-      console.error("WS parse error:", err);
-      return;
-    }
-    handleServerMessage(data);
-  };
-  ws.onclose = () => {
-    console.log("WebSocket closed.");
-  };
+/** Connect to WS and upon message, handle it. */
+function startWebSocket() {
+  connectWebSocket(handleServerMessage);
 }
 
-/** Once connected, join our ephemeral session. */
+/** Once connected (onopen), we call doJoinSession. */
 function doJoinSession() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
   const userName = currentUser ? currentUser.name : "Anonymous";
   let userRole = "";
   if (isCurrentUserAdmin()) {
@@ -140,20 +111,18 @@ function doJoinSession() {
   });
 }
 
-/** Handle all incoming WS messages. */
+/** Master WS message handler. */
 function handleServerMessage(data) {
   switch (data.type) {
     case MESSAGE_TYPES.SESSION_USERS: {
       sessionUsers = data.users || [];
       renderSessionUsers();
       updateLocalUserUI();
-
       sessionUsers.forEach(u => {
         handleUserColorUpdate(u.userId, u.name, u.color);
       });
       removeCursorsForMissingUsers(sessionUsers.map(u => u.userId));
 
-      // local user circle color
       const me = sessionUsers.find(u => u.userId === activeUserId);
       if (me) {
         userCircle.style.background = me.color;
@@ -161,7 +130,6 @@ function handleServerMessage(data) {
       }
       break;
     }
-
     case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
       const { newName } = data;
       setProjectNameFromServer(newName);
@@ -169,27 +137,22 @@ function handleServerMessage(data) {
       showMessage(`Renamed to: ${newName}`);
       break;
     }
-
     case MESSAGE_TYPES.CHAT_MESSAGE: {
       appendChatMessage(data.message.userId, data.message.text);
       break;
     }
-
     case MESSAGE_TYPES.ELEMENT_STATE:
     case MESSAGE_TYPES.CURSOR_UPDATE:
     case MESSAGE_TYPES.CURSOR_UPDATES:
       handleCanvasMessage(data, activeUserId);
       break;
-
     case MESSAGE_TYPES.KICKED:
       alert("You have been kicked from the session.");
-      ws.close();
+      // Possibly close the WS here
       break;
-
     case MESSAGE_TYPES.UNDO_REDO_FAILED:
       showMessage(data.reason || "Undo/Redo failed", true);
       break;
-
     default:
       console.log("Unknown message:", data.type, data);
   }
@@ -200,13 +163,12 @@ function amIOwnerOrAdmin() {
   const me = sessionUsers.find(u => u.userId === activeUserId);
   if (!me) return false;
   if (me.globalRole === "admin") return true;
-  return (me.sessionRole === "owner");
+  return me.sessionRole === "owner";
 }
 
 /** Show/hide certain UI elements based on login or roles. */
 function updateUIVisibility() {
   if (!isLoggedIn()) {
-    // Not logged in => Hide project manager button
     openPMBtn.style.display = "none";
   } else if (amIOwnerOrAdmin()) {
     openPMBtn.style.display = "inline-block";
@@ -220,7 +182,6 @@ function getInitial(str) {
   return str.trim().charAt(0).toUpperCase();
 }
 
-/** Called after user logs in or out, or after sessionUsers changes. */
 function updateLocalUserUI() {
   let displayName = "Anonymous";
   if (currentUser?.name) {
@@ -228,7 +189,6 @@ function updateLocalUserUI() {
   }
   userNameSpan.textContent = displayName;
 
-  // If I'm in sessionUsers, color might override:
   const me = sessionUsers.find(u => u.userId === activeUserId);
   let finalColor = "#888";
   if (me?.color) {
@@ -244,7 +204,6 @@ function renderSessionUsers() {
   sessionUsersList.innerHTML = "";
   sessionUsers.forEach(u => {
     const li = document.createElement("li");
-
     const circle = document.createElement("div");
     circle.classList.add("session-user-circle");
     circle.style.background = u.color;
@@ -280,13 +239,11 @@ function canManageUser(u) {
   const iAmOwner = (me.sessionRole === "owner");
 
   if (!iAmOwner && !iAmAdmin) return false;
-  if (u.userId === me.userId) return false; // can't manage self
+  if (u.userId === me.userId) return false;
   if (u.globalRole === "admin" && !iAmAdmin) return false;
-
   return true;
 }
 
-// popover for user actions
 let openPopoverUserId = null;
 function onUserNameClicked(u, labelElem) {
   if (openPopoverUserId === u.userId) {
@@ -346,10 +303,8 @@ function buildAndPositionPopover(u, labelElem) {
     userActionPopover.appendChild(kickItem);
   }
 
-  // position near label
   userActionPopover.style.left = "-9999px";
   userActionPopover.style.top = "-9999px";
-
   requestAnimationFrame(() => {
     const popRect = userActionPopover.getBoundingClientRect();
     const popHeight = popRect.height;
@@ -381,13 +336,8 @@ document.addEventListener("click", (evt) => {
   }
 });
 
-/* ------------------------------------------------------------------
-   LOG OUT => downgrade ephemeral user
------------------------------------------------------------------- */
 function doLogout() {
-  if (!currentUser) {
-    return;
-  }
+  if (!currentUser) return;
   const oldUserId = "user_" + currentUser.id;
   const newAnonId = "anon_" + Math.floor(Math.random() * 999999);
 
@@ -432,19 +382,13 @@ document.addEventListener("click", (evt) => {
   }
 });
 
-/* ------------------------------------------------------------------
-   LOGIN => upgrade ephemeral user
------------------------------------------------------------------- */
 loginForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const email = document.getElementById("loginEmail").value.trim();
   const pass = document.getElementById("loginPassword").value;
 
   try {
-    const data = await fetchJSON("/auth/login", "POST", {
-      email,
-      password: pass,
-    });
+    const data = await fetchJSON("/auth/login", "POST", { email, password: pass });
     token = data.token;
     currentUser = data.user;
     localStorage.setItem("token", token);
@@ -473,9 +417,6 @@ loginForm.addEventListener("submit", async (e) => {
   }
 });
 
-/* ------------------------------------------------------------------
-   REGISTER => upgrade ephemeral user
------------------------------------------------------------------- */
 registerLink.addEventListener("click", (e) => {
   e.preventDefault();
   loginDropdown.classList.add("hidden");
@@ -536,9 +477,6 @@ registerCancelBtn.addEventListener("click", () => {
   registerModal.classList.add("hidden");
 });
 
-/* ------------------------------------------------------------------
-   PROJECT MANAGEMENT
------------------------------------------------------------------- */
 openPMBtn.addEventListener("click", () => {
   if (!amIOwnerOrAdmin()) {
     showMessage("Must be owner or admin to open panel.", true);
@@ -546,13 +484,11 @@ openPMBtn.addEventListener("click", () => {
   }
   pmModal.classList.remove("hidden");
 });
-
 closePMBtn.addEventListener("click", () => pmModal.classList.add("hidden"));
 
 loadVersionsBtn.addEventListener("click", () => {
   showMessage("Version loading not implemented in ephemeral mode.", true);
 });
-
 saveNewVersionBtn.addEventListener("click", () => {
   if (!isLoggedIn()) {
     showMessage("You must log in to save a project version.", true);
@@ -560,14 +496,10 @@ saveNewVersionBtn.addEventListener("click", () => {
   }
   showMessage("Saving ephemeral version not implemented.", true);
 });
-
 deleteProjectBtn.addEventListener("click", () => {
   showMessage("Delete ephemeral project not implemented.", true);
 });
 
-/* ------------------------------------------------------------------
-   PROJECT NAME EDIT
------------------------------------------------------------------- */
 projectNameEl.addEventListener("click", () => {
   startEditingProjectName();
 });
@@ -610,51 +542,29 @@ function commitNameChange(newName) {
   });
 }
 
-// FIX: replaced setProjectNameFromServer.name => use the local front-end variable
 function revertNameChange() {
-  restoreNameSpan();
-}
-
-function restoreNameSpan() {
   const oldInput = document.getElementById("edit-project-name");
   if (!oldInput) return;
   const span = document.createElement("span");
   span.id = "project-name";
   span.title = "Click to edit project name";
 
-  // Use the actual local state from 'canvas.js' or a shared variable
-  // For example, if 'currentProjectName' is your front-end variable:
-  externCurrentProjectNameFallback(span);
-  // Alternatively, if your code expects getProjectNameFromSomewhere():
-  //   span.textContent = getCurrentProjectName() || "Untitled Project";
-
+  if (typeof window.currentProjectName === "string" && window.currentProjectName) {
+    span.textContent = window.currentProjectName;
+  } else {
+    span.textContent = "Untitled Project";
+  }
   oldInput.replaceWith(span);
   span.addEventListener("click", () => startEditingProjectName());
 }
 
-// Helper to retrieve the 'currentProjectName' from canvas.js or a global
-function externCurrentProjectNameFallback(spanEl) {
-  if (typeof window.currentProjectName === 'string' && window.currentProjectName) {
-    spanEl.textContent = window.currentProjectName;
-  } else {
-    // fallback
-    spanEl.textContent = "Untitled Project";
-  }
-}
-
-/* ------------------------------------------------------------------
-   FINAL INIT
------------------------------------------------------------------- */
 window.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("contextmenu", (e) => e.preventDefault());
-  connectWebSocket();
+  startWebSocket(); // initiate the WS
   initCanvas(activeUserId);
   updateLocalUserUI();
 });
 
-/* ------------------------------------------------------------------
-   UNDO/REDO UI + Keyboard Shortcuts
------------------------------------------------------------------- */
 undoBtn?.addEventListener("click", () => {
   sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
 });
@@ -672,9 +582,6 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-/* ------------------------------------------------------------------
-   CHAT FEATURE
------------------------------------------------------------------- */
 const chatMessagesDiv = document.getElementById("chat-messages");
 const chatInput = document.getElementById("chat-input");
 const chatSendBtn = document.getElementById("chat-send-btn");

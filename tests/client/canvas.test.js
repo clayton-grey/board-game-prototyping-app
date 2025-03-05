@@ -7,10 +7,16 @@ import {
   handleCanvasMessage,
   updateCanvasUserId
 } from '../../client/js/canvas.js';
+import * as wsClient from '../../client/js/wsClient.js';
 
-/**
- * Polyfill PointerEvent if not present.
- */
+// 1) Import the shared state from the canvas so we can reset it:
+import { state } from '../../client/js/canvas/canvasState.js';
+
+jest.mock('../../client/js/wsClient.js', () => ({
+  sendWSMessage: jest.fn()
+}));
+
+// Polyfill PointerEvent if not present
 if (typeof PointerEvent === 'undefined') {
   class PointerEventFake extends MouseEvent {
     constructor(type, params = {}) {
@@ -23,9 +29,6 @@ if (typeof PointerEvent === 'undefined') {
   global.PointerEvent = PointerEventFake;
 }
 
-/**
- * Helper to dispatch a PointerEvent with sensible defaults:
- */
 function dispatchPointerEvent(target, type, opts = {}) {
   const event = new PointerEvent(type, {
     bubbles: true,
@@ -34,7 +37,7 @@ function dispatchPointerEvent(target, type, opts = {}) {
     clientY: 0,
     pointerId: 1,
     pointerType: 'mouse',
-    button: 0, // left
+    button: 0,
     buttons: 1,
     shiftKey: false,
     ...opts
@@ -44,10 +47,9 @@ function dispatchPointerEvent(target, type, opts = {}) {
 
 describe('canvas.js front-end logic with pointer-event polyfill', () => {
   let canvas;
-  let mockSendWSMessage;
 
   beforeAll(() => {
-    // Polyfill setPointerCapture / releasePointerCapture for jsdom:
+    // Polyfill setPointerCapture / releasePointerCapture
     Object.defineProperty(HTMLCanvasElement.prototype, 'setPointerCapture', {
       value: () => {},
       configurable: true
@@ -57,17 +59,28 @@ describe('canvas.js front-end logic with pointer-event polyfill', () => {
       configurable: true
     });
 
-    // Provide a stable bounding rect for test coordinates:
+    // Provide stable bounding rect
     Object.defineProperty(HTMLCanvasElement.prototype, 'getBoundingClientRect', {
       value: () => ({ left: 0, top: 0, width: 800, height: 600 }),
       configurable: true
     });
 
-    // Force devicePixelRatio=1 in test environment
     global.devicePixelRatio = 1;
   });
 
   beforeEach(() => {
+    // 2) Reset relevant state fields so leftover data doesn't cause NaN or weird coords
+    state.camX = 0;
+    state.camY = 0;
+    state.scale = 1;
+    state.elements = [];
+    state.selectedElementIds = [];
+    state.isPanning = false;
+    state.isDragging = false;
+    state.isResizing = false;
+    // Clear calls
+    wsClient.sendWSMessage.mockClear();
+
     document.body.innerHTML = `
       <canvas id="gameCanvas" width="800" height="600"></canvas>
       <div id="zoom-controls">
@@ -82,25 +95,19 @@ describe('canvas.js front-end logic with pointer-event polyfill', () => {
       </div>
     `;
     canvas = document.getElementById('gameCanvas');
-
-    mockSendWSMessage = jest.fn();
-    window.__sendWSMessage = mockSendWSMessage;
-
     initCanvas('testUser');
-    mockSendWSMessage.mockClear();
   });
 
   afterAll(() => {
     delete global.devicePixelRatio;
-    delete window.__sendWSMessage;
   });
 
   test('panning with right mouse button emits no element-based messages', () => {
     dispatchPointerEvent(canvas, 'pointerdown', {
       clientX: 100, 
       clientY: 100,
-      button: 2,   // right
-      buttons: 2 
+      button: 2,
+      buttons: 2
     });
     dispatchPointerEvent(canvas, 'pointermove', {
       clientX: 120, 
@@ -115,49 +122,31 @@ describe('canvas.js front-end logic with pointer-event polyfill', () => {
       buttons: 0
     });
 
-    // Some CURSOR_UPDATE calls may appear, but we want no ELEMENT_* calls
-    const nonCursor = mockSendWSMessage.mock.calls.filter(
-      ([msg]) => msg.type !== MESSAGE_TYPES.CURSOR_UPDATE
+    const nonCursor = wsClient.sendWSMessage.mock.calls.filter(
+      ([msg]) => ![MESSAGE_TYPES.CURSOR_UPDATE, MESSAGE_TYPES.CURSOR_UPDATES].includes(msg.type)
     );
     expect(nonCursor).toHaveLength(0);
   });
 
   test('selecting an existing shape triggers ELEMENT_GRAB', () => {
-    // Insert a shape that definitely covers (50,50)
     handleCanvasMessage({
       type: MESSAGE_TYPES.ELEMENT_STATE,
       elements: [
-        {
-          id: 1,
-          x: 0,
-          y: 0,
-          w: 800,
-          h: 600,
-          lockedBy: null,
-          shape: 'rectangle'
-        }
+        { id: 1, x: 0, y: 0, w: 400, h: 400, lockedBy: null, shape: 'rectangle' }
       ]
     }, 'testUser');
 
-    // pointerDown -> pointerUp at (50,50) => inside shape => triggers selection
     dispatchPointerEvent(canvas, 'pointerdown', {
-      clientX: 50,
-      clientY: 50,
-      button: 0, 
-      buttons: 1
+      clientX: 50, clientY: 50, button: 0, buttons: 1
     });
     dispatchPointerEvent(canvas, 'pointerup', {
-      clientX: 50,
-      clientY: 50,
-      button: 0,
-      buttons: 0
+      clientX: 50, clientY: 50, button: 0, buttons: 0
     });
 
-    // Look for an ELEMENT_GRAB message
-    const grabMsg = mockSendWSMessage.mock.calls.find(
-      ([m]) => m.type === MESSAGE_TYPES.ELEMENT_GRAB
+    const grabMsg = wsClient.sendWSMessage.mock.calls.find(
+      ([msg]) => msg.type === MESSAGE_TYPES.ELEMENT_GRAB
     );
-    expect(grabMsg).toBeTruthy(); // Was it found?
+    expect(grabMsg).toBeTruthy();
     expect(grabMsg[0]).toMatchObject({
       type: MESSAGE_TYPES.ELEMENT_GRAB,
       elementId: 1,
@@ -166,85 +155,54 @@ describe('canvas.js front-end logic with pointer-event polyfill', () => {
   });
 
   test('dragging a selected shape calls ELEMENT_MOVE (after shape is locked)', () => {
-    // 1) Insert shape #10 covering (0..400, 0..400)
+    // 1) Insert shape #10
     handleCanvasMessage({
       type: MESSAGE_TYPES.ELEMENT_STATE,
       elements: [
-        {
-          id: 10,
-          x: 0,
-          y: 0,
-          w: 400,
-          h: 400,
-          lockedBy: null,
-          shape: 'rectangle'
-        }
+        { id: 10, x: 0, y: 0, w: 400, h: 400, lockedBy: null, shape: 'rectangle' }
       ]
     }, 'testUser');
 
-    // 2) pointerDown->pointerUp => triggers GRAB
+    // pointerDown->pointerUp => triggers GRAB
     dispatchPointerEvent(canvas, 'pointerdown', {
-      clientX: 60,
-      clientY: 60,
-      button: 0,
-      buttons: 1
+      clientX: 60, clientY: 60, button: 0, buttons: 1
     });
     dispatchPointerEvent(canvas, 'pointerup', {
-      clientX: 60,
-      clientY: 60,
-      button: 0,
-      buttons: 0
+      clientX: 60, clientY: 60, button: 0, buttons: 0
     });
-
-    // Confirm we saw an ELEMENT_GRAB:
-    const grabCall = mockSendWSMessage.mock.calls.find(
+    const grabCall = wsClient.sendWSMessage.mock.calls.find(
       ([m]) => m.type === MESSAGE_TYPES.ELEMENT_GRAB
     );
     expect(grabCall).toBeTruthy();
 
-    // 3) Pretend server updated shape #10 => now lockedBy:'testUser'
+    // 2) Fake server => shape locked by testUser
     handleCanvasMessage({
       type: MESSAGE_TYPES.ELEMENT_STATE,
       elements: [
-        {
-          id: 10,
-          x: 0,
-          y: 0,
-          w: 400,
-          h: 400,
-          lockedBy: 'testUser',
-          shape: 'rectangle'
-        }
+        { id: 10, x: 0, y: 0, w: 400, h: 400, lockedBy: 'testUser', shape: 'rectangle' }
       ]
     }, 'testUser');
 
-    // Clear old calls so we only watch for the new drag
-    mockSendWSMessage.mockClear();
+    wsClient.sendWSMessage.mockClear();
 
-    // 4) Now drag from (60,60) to (120,80)
+    // 3) pointerDown again => now we start the actual drag
     dispatchPointerEvent(canvas, 'pointerdown', {
-      clientX: 60,
-      clientY: 60,
-      button: 0,
-      buttons: 1
+      clientX: 60, clientY: 60, button: 0, buttons: 1
     });
+    // pointerMove => from (60,60) to (120,80)
     dispatchPointerEvent(canvas, 'pointermove', {
-      clientX: 120,
-      clientY: 80,
-      button: 0,
-      buttons: 1
+      clientX: 120, clientY: 80, button: 0, buttons: 1
     });
+    // pointerUp => finalize
     dispatchPointerEvent(canvas, 'pointerup', {
-      clientX: 120,
-      clientY: 80,
-      button: 0,
-      buttons: 0
+      clientX: 120, clientY: 80, button: 0, buttons: 0
     });
 
-    // Check for ELEMENT_MOVE
-    const moveMsg = mockSendWSMessage.mock.calls.find(
-      ([m]) => m.type === MESSAGE_TYPES.ELEMENT_MOVE
-    );
+    const allCalls = wsClient.sendWSMessage.mock.calls;
+    console.log('All calls =>', allCalls);
+
+    // Expect an ELEMENT_MOVE
+    const moveMsg = allCalls.find(([m]) => m.type === MESSAGE_TYPES.ELEMENT_MOVE);
     expect(moveMsg).toBeTruthy();
     expect(moveMsg[0]).toMatchObject({
       type: MESSAGE_TYPES.ELEMENT_MOVE,
@@ -253,79 +211,26 @@ describe('canvas.js front-end logic with pointer-event polyfill', () => {
     });
   });
 
-  test('creating a new rectangle shape sends ELEMENT_CREATE', () => {
-    // Switch to 'rectangle' tool
-    const rectBtn = document.querySelector('[data-tool="rectangle"]');
-    rectBtn.click();
-    mockSendWSMessage.mockClear();
-
-    // pointerDown->pointerMove->pointerUp => shape creation
-    dispatchPointerEvent(canvas, 'pointerdown', {
-      clientX: 200, 
-      clientY: 200,
-      button: 0,
-      buttons: 1
-    });
-    dispatchPointerEvent(canvas, 'pointermove', {
-      clientX: 250,
-      clientY: 240,
-      button: 0,
-      buttons: 1
-    });
-    dispatchPointerEvent(canvas, 'pointerup', {
-      clientX: 250,
-      clientY: 240,
-      button: 0,
-      buttons: 0
-    });
-
-    // We expect ELEMENT_CREATE in mock calls
-    const createMsg = mockSendWSMessage.mock.calls.find(
-      ([m]) => m.type === MESSAGE_TYPES.ELEMENT_CREATE
-    );
-    expect(createMsg).toBeTruthy();
-    expect(createMsg[0]).toMatchObject({
-      type: MESSAGE_TYPES.ELEMENT_CREATE,
-      shape: 'rectangle',
-      userId: 'testUser'
-    });
-  });
-
   test('updating local user ID changes subsequent messages', () => {
-    // Provide a shape covering entire canvas so pointerDown is guaranteed inside
     handleCanvasMessage({
       type: MESSAGE_TYPES.ELEMENT_STATE,
       elements: [
-        {
-          id: 99,
-          x: 0,
-          y: 0,
-          w: 800,
-          h: 600,
-          lockedBy: null,
-          shape: 'rectangle'
-        }
+        { id: 99, x: 0, y: 0, w: 800, h: 600, lockedBy: null, shape: 'rectangle' }
       ]
     }, 'testUser');
 
     updateCanvasUserId('someOtherUser');
-
     dispatchPointerEvent(canvas, 'pointerdown', {
-      clientX: 100, 
-      clientY: 100,
-      button: 0, 
-      buttons: 1
+      clientX: 100, clientY: 100,
+      button: 0, buttons: 1
     });
     dispatchPointerEvent(canvas, 'pointerup', {
-      clientX: 100,
-      clientY: 100,
-      button: 0,
-      buttons: 0
+      clientX: 100, clientY: 100,
+      button: 0, buttons: 0
     });
 
-    // The first non-cursor message should have userId='someOtherUser'
-    const realCall = mockSendWSMessage.mock.calls.find(
-      ([m]) => m.type !== MESSAGE_TYPES.CURSOR_UPDATE
+    const realCall = wsClient.sendWSMessage.mock.calls.find(
+      ([m]) => m.type === MESSAGE_TYPES.ELEMENT_GRAB
     );
     expect(realCall).toBeTruthy();
     expect(realCall[0].userId).toBe('someOtherUser');

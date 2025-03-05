@@ -1,27 +1,22 @@
-/**
- * client/js/canvas/canvasTools.js
- *
- * Main logic for shape selection, marquee, shape creation,
- * panning, dragging, resizing, etc.
- *
- * We have removed the old handleGlobalKeyDown function from here
- * so that keyboard handling is consolidated in canvasEvents.js.
- */
+// =========================
+// FILE: client/js/canvas/canvasTools.js
+// =========================
 
 import { state } from './canvasState.js';
 import { requestRender } from './canvasRender.js';
 import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
 import { boxesOverlap } from './canvasUtils.js';
+import { sendWSMessage } from '../../js/wsClient.js';
 
-/** 
- * Replace local elements with the array from the server.
+/**
+ * createOrUpdateElementsFromServer => sets state.elements to the latest from the server
  */
 export function createOrUpdateElementsFromServer(serverElements) {
   state.elements = serverElements || [];
 }
 
-/** 
- * Remove any selection that is locked by others or no longer exists. 
+/**
+ * removeObsoleteSelections => removes any local selections that are locked by others or deleted
  */
 export function removeObsoleteSelections(myUserId) {
   state.selectedElementIds = state.selectedElementIds.filter(id => {
@@ -38,7 +33,7 @@ export function removeObsoleteSelections(myUserId) {
 }
 
 /**
- * Handle cursor messages from the server => store in remoteCursors.
+ * handleCursorData => store remote cursors in state
  */
 export function handleCursorData(data, myUserId) {
   if (data.type === MESSAGE_TYPES.CURSOR_UPDATE) {
@@ -49,7 +44,6 @@ export function handleCursorData(data, myUserId) {
     for (const [uId, pos] of Object.entries(data.cursors)) {
       state.remoteCursors.set(uId, pos);
     }
-    // remove old cursors not in data
     for (const oldId of state.remoteCursors.keys()) {
       if (!data.cursors[oldId]) {
         state.remoteCursors.delete(oldId);
@@ -58,7 +52,7 @@ export function handleCursorData(data, myUserId) {
   }
 }
 
-/** Remove stale remote cursors for missing users. */
+/** removeStaleRemoteCursors => remove cursors for user IDs not in the new user list */
 export function removeStaleRemoteCursors(currentUserIds) {
   for (const [uId] of state.remoteCursors) {
     if (!currentUserIds.includes(uId)) {
@@ -67,16 +61,15 @@ export function removeStaleRemoteCursors(currentUserIds) {
   }
 }
 
-/** Update local user ID (e.g. after login). */
+/** setLocalUserId => update the local user ID in state */
 export function setLocalUserId(newId) {
   state.localUserId = newId;
 }
 
 /* ------------------------------------------------------------------
-   Pointer-based interactions for shape creation & selection
+   SHAPE CREATION, SELECTION, DRAG, etc.
 ------------------------------------------------------------------ */
 
-/** Called from pointerdown if the user is not clicking a resize handle. */
 export function onPointerDownSelectOrCreate(e, canvas) {
   const rect = canvas.getBoundingClientRect();
   const sx = e.clientX - rect.left;
@@ -86,14 +79,11 @@ export function onPointerDownSelectOrCreate(e, canvas) {
 
   const tool = getCurrentTool();
   if (tool === 'select') {
-    // Attempt to select or start marquee
     const clicked = findTopmostElementAt(wx, wy);
     if (clicked) {
-      // If shape is locked by someone else, do nothing
       if (clicked.lockedBy && clicked.lockedBy !== state.localUserId) {
         return;
       }
-      // SHIFT => toggle selection
       if (e.shiftKey) {
         if (state.selectedElementIds.includes(clicked.id)) {
           sendDeselectElement([clicked.id]);
@@ -105,14 +95,12 @@ export function onPointerDownSelectOrCreate(e, canvas) {
         }
         return;
       }
-      // else single select
       if (!state.selectedElementIds.includes(clicked.id)) {
         sendDeselectElement(state.selectedElementIds);
         state.selectedElementIds = [];
         sendGrabElement(clicked.id);
         state.selectedElementIds.push(clicked.id);
       }
-      // Start dragging if locked by me
       for (const id of state.selectedElementIds) {
         const el = state.elements.find(ele => ele.id === id);
         if (el?.lockedBy === state.localUserId) {
@@ -125,7 +113,6 @@ export function onPointerDownSelectOrCreate(e, canvas) {
       state.isDragging = true;
       canvas.classList.add('grabbing');
     } else {
-      // No shape => start marquee
       state.isMarqueeSelecting = true;
       state.marqueeStart.xCanvas = sx * window.devicePixelRatio;
       state.marqueeStart.yCanvas = sy * window.devicePixelRatio;
@@ -144,56 +131,42 @@ export function onPointerDownSelectOrCreate(e, canvas) {
       canvas.classList.add('grabbing');
     }
   } else {
-    // shape creation (rectangle, ellipse, text, etc.)
     startShapeCreation(tool, wx, wy);
   }
 }
 
-/** pointermove => might be dragging shapes, marquee, or shape creation. */
 export function onPointerMoveCommon(e, canvas) {
-  // If user is dragging shapes
   if (state.isDragging && (e.buttons & 1)) {
     doDragSelected(e, canvas);
     return;
   }
-
-  // If marquee
   if (state.isMarqueeSelecting && (e.buttons & 1)) {
     updateMarquee(e, canvas);
     return;
   }
-
-  // If shape creation
   if (state.creationState?.active && (e.buttons & 1)) {
     updateShapeCreation(e, canvas);
     return;
   }
-
-  // Otherwise update hover cursor if needed
   updateHoverCursor(e, canvas);
 }
 
-/** pointerup => normal end of shape creation or marquee or drag. */
 export function onPointerUpCommon(e, canvas) {
   if (state.isDragging && e.button === 0) {
-    // end dragging
     state.isDragging = false;
     canvas.classList.remove('grabbing');
     for (const k of Object.keys(state.lockedOffsets)) {
       delete state.lockedOffsets[k];
     }
   }
-  // End shape creation
   if (state.creationState?.active && e.button === 0) {
     finalizeShapeCreation();
   }
-  // End marquee
   if (state.isMarqueeSelecting && e.button === 0) {
     finalizeMarquee(e, canvas);
   }
 }
 
-/** pointercancel/leave => if dragging, stop. */
 export function onPointerCancelOrLeaveCommon(e) {
   if (state.isDragging) {
     state.isDragging = false;
@@ -204,8 +177,9 @@ export function onPointerCancelOrLeaveCommon(e) {
 }
 
 /* ------------------------------------------------------------------
-   DRAG SELECTED SHAPES
+   DRAG, MARQUEE, CREATE
 ------------------------------------------------------------------ */
+
 function doDragSelected(e, canvas) {
   const rect = canvas.getBoundingClientRect();
   const sx = e.clientX - rect.left;
@@ -226,9 +200,6 @@ function doDragSelected(e, canvas) {
   }
 }
 
-/* ------------------------------------------------------------------
-   MARQUEE
------------------------------------------------------------------- */
 function updateMarquee(e, canvas) {
   const rect = canvas.getBoundingClientRect();
   state.marqueeEnd.xCanvas = (e.clientX - rect.left) * window.devicePixelRatio;
@@ -247,7 +218,7 @@ function finalizeMarquee(e, canvas) {
   const rminX = Math.min(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
   const rmaxX = Math.max(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
   const rminY = Math.min(state.marqueeStart.yWorld, state.marqueeEnd.yWorld);
-  const rmaxY = Math.max(state.marqueeStart.yWorld, state.marqueeEnd.yWorld);
+  const rmaxY = Math.max(state.marqueeEnd.yWorld, state.marqueeStart.yWorld);
 
   const newlySelected = [];
   for (const el of state.elements) {
@@ -259,7 +230,6 @@ function finalizeMarquee(e, canvas) {
     }
     newlySelected.push(el.id);
   }
-
   if (!e.shiftKey) {
     deselectAll();
   }
@@ -271,9 +241,6 @@ function finalizeMarquee(e, canvas) {
   }
 }
 
-/* ------------------------------------------------------------------
-   SHAPE CREATION (rectangle, ellipse, text, etc.)
------------------------------------------------------------------- */
 function startShapeCreation(tool, wx, wy) {
   state.creationState = {
     active: true,
@@ -307,13 +274,11 @@ function finalizeShapeCreation() {
   let w = Math.abs(curWX - startWX);
   let h = Math.abs(curWY - startWY);
 
-  // SHIFT => square for rectangle/ellipse
   if (state.shiftDown && (tool === 'rectangle' || tool === 'ellipse')) {
     const side = Math.max(w, h);
     w = side;
     h = side;
   }
-  // text => fixed height
   if (tool === 'text') {
     const TEXT_DEFAULT_HEIGHT = 30;
     h = TEXT_DEFAULT_HEIGHT;
@@ -326,50 +291,14 @@ function finalizeShapeCreation() {
   h = Math.round(h);
 
   deselectAll();
-
   sendElementCreate(tool, x, y, w, h);
   revertToSelectTool();
 }
 
 /* ------------------------------------------------------------------
-   RESIZING LOGIC
+   RESIZING
 ------------------------------------------------------------------ */
 
-/**
- * Return the bounding box around the selected elements, or null if none.
- */
-function getSelectionBoundingBox() {
-  if (!state.selectedElementIds.length) return null;
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const id of state.selectedElementIds) {
-    const el = state.elements.find(e => e.id === id);
-    if (!el) continue;
-    minX = Math.min(minX, el.x);
-    minY = Math.min(minY, el.y);
-    maxX = Math.max(maxX, el.x + el.w);
-    maxY = Math.max(maxY, el.y + el.h);
-  }
-  if (minX > maxX || minY > maxY) return null;
-  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-}
-
-/**
- * Return true if we can transform (resize) all selected shapes,
- * i.e. none are locked by someone else.
- */
-function canTransformSelection() {
-  if (!state.selectedElementIds.length) return false;
-  for (const id of state.selectedElementIds) {
-    const el = state.elements.find(e => e.id === id);
-    if (!el) continue;
-    if (el.lockedBy && el.lockedBy !== state.localUserId) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** hitTestResizeHandles(e, canvas) => returns which handle name was clicked. */
 export function hitTestResizeHandles(e, canvas) {
   if (!canTransformSelection()) return null;
   const bb = getSelectionBoundingBox();
@@ -379,18 +308,15 @@ export function hitTestResizeHandles(e, canvas) {
   const sx = e.clientX - rect.left;
   const sy = e.clientY - rect.top;
 
-  // Convert to world coords
   const wx = state.camX + sx / state.scale;
   const wy = state.camY + sy / state.scale;
 
-  // corner radius
   const cornerRadius = 8 / state.scale;
-  // corners
   const corners = [
-    { x: bb.x,        y: bb.y,        name: 'top-left' },
-    { x: bb.x+bb.w,   y: bb.y,        name: 'top-right' },
-    { x: bb.x,        y: bb.y+bb.h,   name: 'bottom-left' },
-    { x: bb.x+bb.w,   y: bb.y+bb.h,   name: 'bottom-right' }
+    { x: bb.x, y: bb.y, name: 'top-left' },
+    { x: bb.x+bb.w, y: bb.y, name: 'top-right' },
+    { x: bb.x, y: bb.y+bb.h, name: 'bottom-left' },
+    { x: bb.x+bb.w, y: bb.y+bb.h, name: 'bottom-right' }
   ];
   for (const c of corners) {
     const dx = wx - c.x;
@@ -400,21 +326,16 @@ export function hitTestResizeHandles(e, canvas) {
     }
   }
 
-  // edges => smaller tolerance
   const edgeTol = 6 / state.scale;
-  // top
   if (wy >= bb.y - edgeTol && wy <= bb.y + edgeTol && wx >= bb.x && wx <= bb.x+bb.w) {
     return 'top';
   }
-  // bottom
   if (wy >= (bb.y+bb.h - edgeTol) && wy <= (bb.y+bb.h + edgeTol) && wx >= bb.x && wx <= bb.x+bb.w) {
     return 'bottom';
   }
-  // left
   if (wx >= bb.x - edgeTol && wx <= bb.x + edgeTol && wy >= bb.y && wy <= bb.y+bb.h) {
     return 'left';
   }
-  // right
   if (wx >= (bb.x+bb.w - edgeTol) && wx <= (bb.x+bb.w + edgeTol) && wy >= bb.y && wy <= bb.y+bb.h) {
     return 'right';
   }
@@ -422,20 +343,17 @@ export function hitTestResizeHandles(e, canvas) {
   return null;
 }
 
-/** startResizing => store boundingBoxAtDragStart, shapesSnapshot, etc. */
 export function startResizing(handleName, e, canvas) {
   state.isResizing = true;
   state.activeHandle = handleName;
-
   const bb = getSelectionBoundingBox();
-  if (!bb) return; // no selection
+  if (!bb) return;
   state.boundingBoxAtDragStart = { ...bb };
-
   state.shapesSnapshot = [];
+
   for (const id of state.selectedElementIds) {
     const el = state.elements.find(x => x.id === id);
     if (!el) continue;
-    // store offset relative to bounding box origin
     const relX = el.x - bb.x;
     const relY = el.y - bb.y;
     state.shapesSnapshot.push({
@@ -450,7 +368,6 @@ export function startResizing(handleName, e, canvas) {
   }
 }
 
-/** updateResizing => pointermove => adjust bounding box, scale shapes, sendResizeElement. */
 export function updateResizing(e, canvas) {
   if (!state.isResizing) return;
   const rect = canvas.getBoundingClientRect();
@@ -478,22 +395,21 @@ export function updateResizing(e, canvas) {
     bb.h -= deltaTop;
   }
   if (state.activeHandle.includes('bottom')) {
-    const newH = Math.max(2, wy - bb.y);
-    bb.h = newH;
+    bb.h = Math.max(2, wy - bb.y);
   }
 
-  // SHIFT => preserve aspect ratio if it's a corner
   if (
     state.shiftDown &&
-    (state.activeHandle === 'top-left' ||
-     state.activeHandle === 'top-right' ||
-     state.activeHandle === 'bottom-left' ||
-     state.activeHandle === 'bottom-right')
+    (
+      state.activeHandle === 'top-left' ||
+      state.activeHandle === 'top-right' ||
+      state.activeHandle === 'bottom-left' ||
+      state.activeHandle === 'bottom-right'
+    )
   ) {
     const originalRatio = state.boundingBoxAtDragStart.w / state.boundingBoxAtDragStart.h;
     const newRatio = bb.w / bb.h;
     if (newRatio > originalRatio) {
-      // match width’s scale
       const wFactor = bb.w / state.boundingBoxAtDragStart.w;
       bb.h = state.boundingBoxAtDragStart.h * wFactor;
       if (state.activeHandle.includes('top')) {
@@ -503,7 +419,6 @@ export function updateResizing(e, canvas) {
         bb.x = state.boundingBoxAtDragStart.x + state.boundingBoxAtDragStart.w - bb.w;
       }
     } else {
-      // match height’s scale
       const hFactor = bb.h / state.boundingBoxAtDragStart.h;
       bb.w = state.boundingBoxAtDragStart.w * hFactor;
       if (state.activeHandle.includes('top')) {
@@ -518,26 +433,31 @@ export function updateResizing(e, canvas) {
   const scaleX = bb.w / state.boundingBoxAtDragStart.w;
   const scaleY = bb.h / state.boundingBoxAtDragStart.h;
 
-  // For each shape in snapshot, compute new x,y,w,h, call sendResizeElement
   for (const snap of state.shapesSnapshot) {
     const el = state.elements.find(x => x.id === snap.id);
     if (!el) continue;
-    if (el.lockedBy !== state.localUserId) continue; // must be locked by me
+    if (el.lockedBy !== state.localUserId) continue;
 
     let newX = el.x;
     let newY = el.y;
     let newW = el.w;
     let newH = el.h;
 
-    // If horizontally resizing
-    if (state.activeHandle.includes('left') || state.activeHandle.includes('right') ||
-        state.activeHandle.includes('top-') || state.activeHandle.includes('bottom-')) {
+    if (
+      state.activeHandle.includes('left') ||
+      state.activeHandle.includes('right') ||
+      state.activeHandle.includes('top-') ||
+      state.activeHandle.includes('bottom-')
+    ) {
       newX = bb.x + snap.relX * scaleX;
       newW = snap.w * scaleX;
     }
-    // If vertically resizing
-    if (state.activeHandle.includes('top') || state.activeHandle.includes('bottom') ||
-        state.activeHandle.includes('left-') || state.activeHandle.includes('right-')) {
+    if (
+      state.activeHandle.includes('top') ||
+      state.activeHandle.includes('bottom') ||
+      state.activeHandle.includes('left-') ||
+      state.activeHandle.includes('right-')
+    ) {
       newY = bb.y + snap.relY * scaleY;
       newH = snap.h * scaleY;
     }
@@ -551,7 +471,6 @@ export function updateResizing(e, canvas) {
   }
 }
 
-/** endResizing => stop, optionally push an "ELEMENT_RESIZE_END" if not forced cancel. */
 export function endResizing(forceCancel) {
   state.isResizing = false;
   state.activeHandle = null;
@@ -563,12 +482,9 @@ export function endResizing(forceCancel) {
 }
 
 /* ------------------------------------------------------------------
-   UTILITY FOR RESIZING & SELECT
+   UTILS
 ------------------------------------------------------------------ */
 
-/**
- * findTopmostElementAt => check (wx, wy) in world coords for top shape.
- */
 function findTopmostElementAt(wx, wy) {
   for (let i = state.elements.length - 1; i >= 0; i--) {
     const el = state.elements[i];
@@ -591,9 +507,7 @@ function findTopmostElementAt(wx, wy) {
   return null;
 }
 
-/** Possibly show "resize" cursors or normal pointer. */
 function updateHoverCursor(e, canvas) {
-  // If not resizing or dragging, we see if pointer is over a resize handle
   if (!state.isPanning && !state.isResizing && !state.isDragging) {
     const tool = getCurrentTool();
     if (tool === 'select' && canTransformSelection()) {
@@ -608,7 +522,6 @@ function updateHoverCursor(e, canvas) {
   }
 }
 
-/** Return which tool is selected. */
 function getCurrentTool() {
   const palette = document.getElementById('tools-palette');
   if (!palette) return 'select';
@@ -616,7 +529,6 @@ function getCurrentTool() {
   return btn?.dataset?.tool || 'select';
 }
 
-/** Return appropriate CSS cursor from handle name. */
 function getCursorForHandle(handle) {
   if (handle === 'top-left' || handle === 'bottom-right') return 'nwse-resize';
   if (handle === 'top-right' || handle === 'bottom-left') return 'nesw-resize';
@@ -625,94 +537,107 @@ function getCursorForHandle(handle) {
   return 'default';
 }
 
-/* ------------------------------------------------------------------
-   SEND MESSAGES
------------------------------------------------------------------- */
-function sendGrabElement(elementId) {
-  if (window.__sendWSMessage) {
-    window.__sendWSMessage({
-      type: MESSAGE_TYPES.ELEMENT_GRAB,
-      userId: state.localUserId,
-      elementId,
-    });
+function canTransformSelection() {
+  if (!state.selectedElementIds.length) return false;
+  for (const id of state.selectedElementIds) {
+    const el = state.elements.find(e => e.id === id);
+    if (!el) continue;
+    if (el.lockedBy && el.lockedBy !== state.localUserId) {
+      return false;
+    }
   }
+  return true;
+}
+
+function getSelectionBoundingBox() {
+  if (!state.selectedElementIds.length) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const id of state.selectedElementIds) {
+    const el = state.elements.find(e => e.id === id);
+    if (!el) continue;
+    minX = Math.min(minX, el.x);
+    minY = Math.min(minY, el.y);
+    maxX = Math.max(maxX, el.x + el.w);
+    maxY = Math.max(maxY, el.y + el.h);
+  }
+  if (minX > maxX || minY > maxY) return null;
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/* ------------------------------------------------------------------
+   SEND
+------------------------------------------------------------------ */
+
+function sendGrabElement(elementId) {
+  sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_GRAB,
+    userId: state.localUserId,
+    elementId,
+  });
 }
 
 function sendMoveElement(elementId, x, y) {
-  if (window.__sendWSMessage) {
-    window.__sendWSMessage({
-      type: MESSAGE_TYPES.ELEMENT_MOVE,
-      userId: state.localUserId,
-      elementId,
-      x,
-      y,
-    });
-  }
+  sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_MOVE,
+    userId: state.localUserId,
+    elementId,
+    x,
+    y,
+  });
 }
 
 function sendResizeElement(elementId, x, y, w, h) {
-  if (window.__sendWSMessage) {
-    window.__sendWSMessage({
-      type: MESSAGE_TYPES.ELEMENT_RESIZE,
-      userId: state.localUserId,
-      elementId,
-      x,
-      y,
-      w,
-      h,
-    });
-  }
+  sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_RESIZE,
+    userId: state.localUserId,
+    elementId,
+    x,
+    y,
+    w,
+    h,
+  });
 }
 
 function sendElementResizeEnd(ids) {
-  if (window.__sendWSMessage) {
-    window.__sendWSMessage({
-      type: MESSAGE_TYPES.ELEMENT_RESIZE_END,
-      userId: state.localUserId,
-      elementIds: ids,
-    });
-  }
+  sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_RESIZE_END,
+    userId: state.localUserId,
+    elementIds: ids,
+  });
 }
 
 function sendDeselectElement(elementIds) {
   if (!elementIds?.length) return;
-  if (window.__sendWSMessage) {
-    window.__sendWSMessage({
-      type: MESSAGE_TYPES.ELEMENT_DESELECT,
-      userId: state.localUserId,
-      elementIds,
-    });
-  }
+  sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_DESELECT,
+    userId: state.localUserId,
+    elementIds,
+  });
   for (const eid of elementIds) {
     delete state.lockedOffsets[eid];
   }
 }
 
 export function sendDeleteElements(elementIds) {
-  if (window.__sendWSMessage) {
-    window.__sendWSMessage({
-      type: MESSAGE_TYPES.ELEMENT_DELETE,
-      userId: state.localUserId,
-      elementIds: [...elementIds],
-    });
-  }
+  sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_DELETE,
+    userId: state.localUserId,
+    elementIds: [...elementIds],
+  });
 }
 
 function sendElementCreate(shape, x, y, w, h) {
-  if (window.__sendWSMessage) {
-    window.__sendWSMessage({
-      type: MESSAGE_TYPES.ELEMENT_CREATE,
-      userId: state.localUserId,
-      shape,
-      x,
-      y,
-      w,
-      h,
-    });
-  }
+  sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_CREATE,
+    userId: state.localUserId,
+    shape,
+    x,
+    y,
+    w,
+    h,
+  });
 }
 
-/** Deselect everything. */
 export function deselectAll() {
   if (state.selectedElementIds.length) {
     sendDeselectElement(state.selectedElementIds);
