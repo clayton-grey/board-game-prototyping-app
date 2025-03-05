@@ -9,7 +9,11 @@ import {
   onPointerDownSelectOrCreate,
   onPointerMoveCommon,
   onPointerUpCommon,
-  onPointerCancelOrLeaveCommon
+  onPointerCancelOrLeaveCommon,
+  hitTestResizeHandles,
+  startResizing,
+  updateResizing,
+  endResizing,
 } from './canvasTools.js';
 import { sendCursorUpdate } from './canvasUtils.js';
 
@@ -39,6 +43,7 @@ export function initPointerAndKeyEvents() {
     }
   });
 
+  // For Escape / Delete / Backspace
   window.addEventListener('keydown', handleGlobalKeyDown);
 }
 
@@ -57,28 +62,47 @@ function resizeCanvas() {
 function onPointerDown(e) {
   const canvas = e.currentTarget;
   if (e.button === 1 || e.button === 2) {
+    // Middle or right => panning
     state.isPanning = true;
     return;
   }
   if (e.button === 0) {
+    // Left click => either resizing or normal selection
+    // Check if user is about to resize
+    if (!state.isResizing) {
+      const tool = getCurrentTool();
+      if (tool === 'select' && canTransformSelection()) {
+        const handle = hitTestResizeHandles(e, canvas);
+        if (handle) {
+          // Start resizing
+          startResizing(handle, e, canvas);
+          return;
+        }
+      }
+    }
     onPointerDownSelectOrCreate(e, canvas);
   }
 }
 
 function onPointerMove(e) {
   const canvas = e.currentTarget;
+
   if (state.isPanning && (e.buttons & (2 | 4))) {
     doPan(e);
     requestRender();
     sendLocalCursor(e, canvas);
     return;
   }
+
   if (state.isResizing && (e.buttons & 1)) {
-    onPointerMoveCommon(e, canvas);
+    // Update resizing
+    updateResizing(e, canvas);
     requestRender();
     sendLocalCursor(e, canvas);
     return;
   }
+
+  // Otherwise, normal pointer-move logic (drag select, marquee, shape creation, hover)
   onPointerMoveCommon(e, canvas);
   requestRender();
   sendLocalCursor(e, canvas);
@@ -91,7 +115,7 @@ function onPointerUp(e) {
     return;
   }
   if (state.isResizing && e.button === 0) {
-    onPointerUpCommon(e, canvas);
+    endResizing(false); // finalize
     requestRender();
     return;
   }
@@ -101,7 +125,7 @@ function onPointerUp(e) {
 
 function onPointerCancelOrLeave(e) {
   if (state.isResizing) {
-    onPointerCancelOrLeaveCommon(e);
+    endResizing(true); // force-cancel
     requestRender();
     return;
   }
@@ -117,22 +141,27 @@ function doPan(e) {
 }
 
 function handleGlobalKeyDown(e) {
+  // Skip if focused on input/textarea
   const tag = document.activeElement?.tagName?.toLowerCase();
   if (tag === 'input' || tag === 'textarea') {
     return;
   }
+
   switch (e.key) {
     case 'Escape':
       if (state.creationState?.active) {
         state.creationState.active = false;
       } else if (state.isResizing) {
-        onPointerCancelOrLeaveCommon(e);
+        endResizing(true);
       } else {
-        deselectAll();
+        import('./canvasTools.js').then(module => {
+          module.deselectAll();
+        });
       }
       break;
     case 'Delete':
     case 'Backspace':
+      // Avoid going back in history
       e.preventDefault();
       if (state.selectedElementIds.length) {
         import('./canvasTools.js').then(module => {
@@ -142,7 +171,7 @@ function handleGlobalKeyDown(e) {
       }
       break;
     default:
-      // Undo/Redo handled in app.js with Ctrl+Z, etc.
+      // Let other global combos pass
       break;
   }
 }
@@ -154,4 +183,23 @@ function sendLocalCursor(e, canvas) {
   const wx = state.camX + scrX / state.scale;
   const wy = state.camY + scrY / state.scale;
   sendCursorUpdate(state.localUserId, wx, wy);
+}
+
+function getCurrentTool() {
+  const palette = document.getElementById('tools-palette');
+  if (!palette) return 'select';
+  const btn = palette.querySelector('.tool-btn.selected');
+  return btn?.dataset?.tool || 'select';
+}
+
+function canTransformSelection() {
+  if (!state.selectedElementIds.length) return false;
+  for (const id of state.selectedElementIds) {
+    const el = state.elements.find((e) => e.id === id);
+    if (!el) continue;
+    if (el.lockedBy && el.lockedBy !== state.localUserId) {
+      return false;
+    }
+  }
+  return true;
 }

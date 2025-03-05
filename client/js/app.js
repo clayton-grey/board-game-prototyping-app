@@ -94,9 +94,9 @@ function showMessage(msg, isError = false) {
   }, 3000);
 }
 
-/** Connect to WS and set up callback. */
+/** Connect to WS, then doJoinSession once it's open. */
 function startWebSocket() {
-  connectWebSocket(handleServerMessage);
+  connectWebSocket(handleServerMessage, doJoinSession);
 }
 
 /** Called after WS is open => send a JOIN_SESSION message. */
@@ -125,10 +125,12 @@ function handleServerMessage(data) {
         handleUserColorUpdate(u.userId, u.name, u.color);
       });
       removeCursorsForMissingUsers(sessionUsers.map((u) => u.userId));
-      const me = sessionUsers.find((u) => u.userId === activeUserId);
-      if (me) {
-        userCircle.style.background = me.color;
-        userCircleText.textContent = getInitial(me.name);
+      {
+        const me = sessionUsers.find((u) => u.userId === activeUserId);
+        if (me) {
+          userCircle.style.background = me.color;
+          userCircleText.textContent = getInitial(me.name);
+        }
       }
       break;
 
@@ -568,6 +570,7 @@ window.addEventListener("DOMContentLoaded", () => {
   updateLocalUserUI();
 });
 
+// Undo/Redo buttons
 undoBtn?.addEventListener("click", () => {
   sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
 });
@@ -575,11 +578,18 @@ redoBtn?.addEventListener("click", () => {
   sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
 });
 
+// Allow Ctrl+Z or Cmd+Z (metaKey) for Mac
 window.addEventListener("keydown", (e) => {
-  if (e.ctrlKey && !e.shiftKey && e.key === "z") {
+  // Check for Ctrl or Cmd (Meta)
+  const ctrlOrCmd = e.ctrlKey || e.metaKey;
+
+  if (ctrlOrCmd && !e.shiftKey && e.key.toLowerCase() === "z") {
     e.preventDefault();
     sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
-  } else if ((e.ctrlKey && e.shiftKey && e.key === "z") || (e.ctrlKey && e.key === "y")) {
+  } else if (
+    ctrlOrCmd &&
+    ( (e.shiftKey && e.key.toLowerCase() === "z") || e.key.toLowerCase() === "y" )
+  ) {
     e.preventDefault();
     sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });
   }
