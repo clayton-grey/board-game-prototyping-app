@@ -1,29 +1,43 @@
-// server/middleware/authMiddleware.js
-import { AuthService } from '../services/AuthService.js';
-import config from '../config.js';
+// =========================
+// FILE: server/middleware/authMiddleware.js
+// =========================
 
+import { AuthService } from '../services/AuthService.js';
+
+/**
+ * authenticateToken
+ *  - If no token => 401, if invalid => 403,
+ *  - else sets req.user and calls next().
+ */
 export const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1];
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    return res.status(401).json({ message: "Unauthorized: No token provided" });
+    // Your unit test expects res.status(401)
+    res.status(401).json({ message: 'Unauthorized: No token provided' });
+    return;
   }
 
   try {
     const user = AuthService.verifyToken(token);
-    // user now has { id, email, isAdmin, name } from the token
     req.user = user;
     next();
   } catch (err) {
-    return res.status(403).json({ message: "Forbidden: Invalid token" });
+    // Your unit test expects res.status(403)
+    res.status(403).json({ message: 'Forbidden: Invalid token' });
   }
 };
 
+/**
+ * authorizeAdmin
+ *  - If req.user.isAdmin is not true => 403
+ *  - else next()
+ */
 export const authorizeAdmin = (req, res, next) => {
-  // Now checking isAdmin instead of role==='admin'
   if (req.user && req.user.isAdmin) {
     return next();
   }
-  return res.status(403).json({ message: "Access denied. Admins only." });
+  // Again, your test expects direct res calls
+  res.status(403).json({ message: 'Access denied. Admins only.' });
 };

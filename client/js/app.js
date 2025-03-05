@@ -11,29 +11,8 @@ import {
   updateCanvasUserId,
   removeCursorsForMissingUsers,
 } from "./canvas.js";
-import { connectWebSocket, sendWSMessage } from "./wsClient.js"; // <-- import new
+import { connectWebSocket, sendWSMessage } from "./wsClient.js";
 
-// A small helper for JSON fetch calls
-async function fetchJSON(url, method = "GET", bodyObj = null) {
-  const fetchOptions = { method, headers: {} };
-  if (bodyObj) {
-    fetchOptions.headers["Content-Type"] = "application/json";
-    fetchOptions.body = JSON.stringify(bodyObj);
-  }
-  const res = await fetch(url, fetchOptions);
-  let data;
-  try {
-    data = await res.json();
-  } catch (err) {
-    throw new Error(`Fetch error: ${err.message}`);
-  }
-  if (!res.ok) {
-    throw new Error(data.message || `HTTP ${res.status} - ${res.statusText}`);
-  }
-  return data;
-}
-
-// Persisted info
 let token = localStorage.getItem("token") || "";
 let currentUser = localStorage.getItem("user")
   ? JSON.parse(localStorage.getItem("user"))
@@ -44,7 +23,6 @@ if (!activeUserId) {
   localStorage.setItem("activeUserId", activeUserId);
 }
 
-// Quick helpers
 const isLoggedIn = () => !!token && !!currentUser;
 const isCurrentUserAdmin = () => currentUser && currentUser.role === "admin";
 
@@ -78,7 +56,34 @@ const userActionPopover = document.getElementById("user-action-popover");
 const undoBtn = document.getElementById("undo-btn");
 const redoBtn = document.getElementById("redo-btn");
 
-/** Helper to display a short message at the top of the project manager modal or wherever. */
+const chatMessagesDiv = document.getElementById("chat-messages");
+const chatInput = document.getElementById("chat-input");
+const chatSendBtn = document.getElementById("chat-send-btn");
+
+/** A small wrapper for fetch JSON calls. */
+async function fetchJSON(url, method = "GET", bodyObj = null) {
+  const fetchOptions = { method, headers: {} };
+  if (bodyObj) {
+    fetchOptions.headers["Content-Type"] = "application/json";
+    fetchOptions.body = JSON.stringify(bodyObj);
+  }
+  const res = await fetch(url, fetchOptions);
+  let data;
+  try {
+    data = await res.json();
+  } catch (err) {
+    throw new Error(`Fetch error: ${err.message}`);
+  }
+  if (!res.ok) {
+    throw new Error(data.message || `HTTP ${res.status} - ${res.statusText}`);
+  }
+  return data;
+}
+
+/**
+ * A simple helper to display a short message in the top
+ * of the project manager or any other container.
+ */
 function showMessage(msg, isError = false) {
   messageContainer.textContent = msg;
   messageContainer.style.color = isError ? "red" : "green";
@@ -89,18 +94,16 @@ function showMessage(msg, isError = false) {
   }, 3000);
 }
 
-/** Connect to WS and upon message, handle it. */
+/** Connect to WS and set up callback. */
 function startWebSocket() {
   connectWebSocket(handleServerMessage);
 }
 
-/** Once connected (onopen), we call doJoinSession. */
+/** Called after WS is open => send a JOIN_SESSION message. */
 function doJoinSession() {
+  if (!sendWSMessage) return;
   const userName = currentUser ? currentUser.name : "Anonymous";
-  let userRole = "";
-  if (isCurrentUserAdmin()) {
-    userRole = "admin";
-  }
+  let userRole = isCurrentUserAdmin() ? "admin" : "";
 
   sendWSMessage({
     type: MESSAGE_TYPES.JOIN_SESSION,
@@ -111,25 +114,24 @@ function doJoinSession() {
   });
 }
 
-/** Master WS message handler. */
+/** Master WS message handler => route by type. */
 function handleServerMessage(data) {
   switch (data.type) {
-    case MESSAGE_TYPES.SESSION_USERS: {
+    case MESSAGE_TYPES.SESSION_USERS:
       sessionUsers = data.users || [];
       renderSessionUsers();
       updateLocalUserUI();
-      sessionUsers.forEach(u => {
+      sessionUsers.forEach((u) => {
         handleUserColorUpdate(u.userId, u.name, u.color);
       });
-      removeCursorsForMissingUsers(sessionUsers.map(u => u.userId));
-
-      const me = sessionUsers.find(u => u.userId === activeUserId);
+      removeCursorsForMissingUsers(sessionUsers.map((u) => u.userId));
+      const me = sessionUsers.find((u) => u.userId === activeUserId);
       if (me) {
         userCircle.style.background = me.color;
         userCircleText.textContent = getInitial(me.name);
       }
       break;
-    }
+
     case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
       const { newName } = data;
       setProjectNameFromServer(newName);
@@ -137,36 +139,31 @@ function handleServerMessage(data) {
       showMessage(`Renamed to: ${newName}`);
       break;
     }
-    case MESSAGE_TYPES.CHAT_MESSAGE: {
+
+    case MESSAGE_TYPES.CHAT_MESSAGE:
       appendChatMessage(data.message.userId, data.message.text);
       break;
-    }
+
     case MESSAGE_TYPES.ELEMENT_STATE:
     case MESSAGE_TYPES.CURSOR_UPDATE:
     case MESSAGE_TYPES.CURSOR_UPDATES:
       handleCanvasMessage(data, activeUserId);
       break;
+
     case MESSAGE_TYPES.KICKED:
       alert("You have been kicked from the session.");
-      // Possibly close the WS here
       break;
+
     case MESSAGE_TYPES.UNDO_REDO_FAILED:
       showMessage(data.reason || "Undo/Redo failed", true);
       break;
+
     default:
       console.log("Unknown message:", data.type, data);
   }
 }
 
-/** Check if user is ephemeral owner or admin. */
-function amIOwnerOrAdmin() {
-  const me = sessionUsers.find(u => u.userId === activeUserId);
-  if (!me) return false;
-  if (me.globalRole === "admin") return true;
-  return me.sessionRole === "owner";
-}
-
-/** Show/hide certain UI elements based on login or roles. */
+/** Show/hide UI elements if I'm an owner/admin. */
 function updateUIVisibility() {
   if (!isLoggedIn()) {
     openPMBtn.style.display = "none";
@@ -182,28 +179,33 @@ function getInitial(str) {
   return str.trim().charAt(0).toUpperCase();
 }
 
-function updateLocalUserUI() {
-  let displayName = "Anonymous";
-  if (currentUser?.name) {
-    displayName = currentUser.name;
-  }
-  userNameSpan.textContent = displayName;
+/** Are we ephemeral owner or admin in ephemeral session logic? */
+function amIOwnerOrAdmin() {
+  const me = sessionUsers.find((u) => u.userId === activeUserId);
+  if (!me) return false;
+  if (me.globalRole === "admin") return true;
+  return me.sessionRole === "owner";
+}
 
-  const me = sessionUsers.find(u => u.userId === activeUserId);
+/** Called after login/out or user list changes => update user circle, name, etc. */
+function updateLocalUserUI() {
+  let displayName = currentUser?.name || "Anonymous";
+  userNameSpan.textContent = displayName;
+  const me = sessionUsers.find((x) => x.userId === activeUserId);
   let finalColor = "#888";
   if (me?.color) {
     finalColor = me.color;
   }
   userCircle.style.background = finalColor;
   userCircleText.textContent = getInitial(displayName);
-
   updateUIVisibility();
 }
 
 function renderSessionUsers() {
   sessionUsersList.innerHTML = "";
-  sessionUsers.forEach(u => {
+  sessionUsers.forEach((u) => {
     const li = document.createElement("li");
+
     const circle = document.createElement("div");
     circle.classList.add("session-user-circle");
     circle.style.background = u.color;
@@ -233,11 +235,10 @@ function getRoleEmoji(u) {
 }
 
 function canManageUser(u) {
-  const me = sessionUsers.find(x => x.userId === activeUserId);
+  const me = sessionUsers.find((x) => x.userId === activeUserId);
   if (!me) return false;
-  const iAmAdmin = (me.globalRole === "admin");
-  const iAmOwner = (me.sessionRole === "owner");
-
+  const iAmAdmin = me.globalRole === "admin";
+  const iAmOwner = me.sessionRole === "owner";
   if (!iAmOwner && !iAmAdmin) return false;
   if (u.userId === me.userId) return false;
   if (u.globalRole === "admin" && !iAmAdmin) return false;
@@ -312,10 +313,8 @@ function buildAndPositionPopover(u, labelElem) {
     const labelRect = labelElem.getBoundingClientRect();
     const anchorMidY = (labelRect.top + labelRect.bottom) / 2;
     const offsetX = 10;
-
     const finalLeft = userListRect.right + offsetX;
     const finalTop = anchorMidY - popHeight / 2;
-
     userActionPopover.style.left = finalLeft + "px";
     userActionPopover.style.top = finalTop + "px";
   });
@@ -360,6 +359,7 @@ function doLogout() {
   updateLocalUserUI();
 }
 
+// Toggle login dropdown if not logged in, or prompt logout if logged in
 userInfoPanel.addEventListener("click", (evt) => {
   if (isLoggedIn()) {
     if (confirm("Log out?")) {
@@ -372,6 +372,7 @@ userInfoPanel.addEventListener("click", (evt) => {
   }
 });
 
+// If user clicks outside => close the dropdown
 document.addEventListener("click", (evt) => {
   if (
     !loginDropdown.classList.contains("hidden") &&
@@ -399,13 +400,14 @@ loginForm.addEventListener("submit", async (e) => {
     localStorage.setItem("activeUserId", newUserId);
     activeUserId = newUserId;
 
+    // If previously ephemeral, we upgrade
     if (oldUserId.startsWith("anon_")) {
       sendWSMessage({
         type: MESSAGE_TYPES.UPGRADE_USER_ID,
         oldUserId,
         newUserId,
         newName: currentUser.name,
-        newIsAdmin: (currentUser.role === "admin"),
+        newIsAdmin: currentUser.role === "admin",
       });
     }
     updateCanvasUserId(newUserId);
@@ -455,7 +457,7 @@ registerForm.addEventListener("submit", async (e) => {
         oldUserId: oldId,
         newUserId: newId,
         newName: currentUser.name,
-        newIsAdmin: (currentUser.role === "admin"),
+        newIsAdmin: currentUser.role === "admin",
       });
     }
     updateCanvasUserId(newId);
@@ -500,11 +502,12 @@ deleteProjectBtn.addEventListener("click", () => {
   showMessage("Delete ephemeral project not implemented.", true);
 });
 
-projectNameEl.addEventListener("click", () => {
+projectNameEl?.addEventListener("click", () => {
   startEditingProjectName();
 });
 
 function startEditingProjectName() {
+  if (!projectNameEl) return;
   const input = document.createElement("input");
   input.type = "text";
   input.value = projectNameEl.textContent || "Untitled Project";
@@ -560,7 +563,7 @@ function revertNameChange() {
 
 window.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("contextmenu", (e) => e.preventDefault());
-  startWebSocket(); // initiate the WS
+  startWebSocket(); // connect and set up handleServerMessage
   initCanvas(activeUserId);
   updateLocalUserUI();
 });
@@ -582,11 +585,8 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-const chatMessagesDiv = document.getElementById("chat-messages");
-const chatInput = document.getElementById("chat-input");
-const chatSendBtn = document.getElementById("chat-send-btn");
-
 function appendChatMessage(userId, text) {
+  if (!chatMessagesDiv) return;
   const div = document.createElement("div");
   div.textContent = `${userId}: ${text}`;
   div.classList.add("chat-message");
@@ -595,19 +595,19 @@ function appendChatMessage(userId, text) {
 }
 
 function sendChatMessage() {
+  if (!chatInput) return;
   const text = chatInput.value.trim();
   if (!text) return;
-
   sendWSMessage({
     type: MESSAGE_TYPES.CHAT_MESSAGE,
     userId: activeUserId,
-    text
+    text,
   });
   chatInput.value = "";
 }
 
-chatSendBtn.addEventListener("click", sendChatMessage);
-chatInput.addEventListener("keydown", (e) => {
+chatSendBtn?.addEventListener("click", sendChatMessage);
+chatInput?.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     sendChatMessage();

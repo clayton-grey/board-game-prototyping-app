@@ -1,22 +1,24 @@
-// ./server/routes/projects.js
-import express from "express";
-import { authenticateToken } from "../middleware/authMiddleware.js";
-import { asyncHandler } from "../utils/asyncHandler.js";
-import { HttpError } from "../utils/HttpError.js";
-import { ProjectService } from "../services/ProjectService.js";
-import { SessionService } from "../services/SessionService.js";
+// =========================
+// FILE: server/routes/projects.js
+// =========================
+
+import express from 'express';
+import { authenticateToken } from '../middleware/authMiddleware.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { HttpError } from '../utils/HttpError.js';
+import { ProjectService } from '../services/ProjectService.js';
+import { SessionService } from '../services/SessionService.js';
 
 const router = express.Router();
 
 /**
- * Middleware: Check if user can edit project (owner or admin).
- * Throws 403 if not authorized or project not found.
+ * checkProjectEditorPermission => if user can't edit, throw 403 or project not found => 404
  */
-async function authorizeProjectEditor(req, res, next) {
-  const { id } = req.params; // e.g., /projects/:id
+async function checkProjectEditorPermission(req, res, next) {
+  const { id } = req.params; // project id
   const canEdit = await ProjectService.userCanEditProject(id, req.user);
   if (!canEdit) {
-    throw new HttpError("Not authorized or project not found.", 403);
+    throw new HttpError('Not authorized or project not found.', 403);
   }
   return next();
 }
@@ -25,7 +27,7 @@ async function authorizeProjectEditor(req, res, next) {
  * GET /projects/ensureDefault
  */
 router.get(
-  "/ensureDefault",
+  '/ensureDefault',
   authenticateToken,
   asyncHandler(async (req, res) => {
     const project = await ProjectService.createDefaultProjectIfNone(req.user.id);
@@ -37,16 +39,15 @@ router.get(
  * POST /projects
  */
 router.post(
-  "/",
+  '/',
   authenticateToken,
   asyncHandler(async (req, res) => {
     const { name, description } = req.body;
     if (!req.user || !req.user.id) {
-      throw new HttpError("User ID is missing from request", 400);
+      throw new HttpError('User ID is missing from request', 400);
     }
-
-    if (!req.body.name) {
-      return res.status(400).json({ error: 'Project name is required' });
+    if (!name) {
+      throw new HttpError('Project name is required', 400);
     }
 
     const project = await ProjectService.createProject(req.user.id, name, description);
@@ -58,7 +59,7 @@ router.post(
  * GET /projects
  */
 router.get(
-  "/",
+  '/',
   authenticateToken,
   asyncHandler(async (req, res) => {
     const projects = await ProjectService.getProjectsByOwner(req.user.id);
@@ -70,17 +71,17 @@ router.get(
  * PUT /projects/:id
  */
 router.put(
-  "/:id",
+  '/:id',
   authenticateToken,
-  asyncHandler(authorizeProjectEditor),
+  asyncHandler(checkProjectEditorPermission),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     let { name, description } = req.body;
-    if (!description) description = "";
+    if (!description) description = '';
 
     const updated = await ProjectService.updateProject(id, name, description);
     if (!updated) {
-      throw new HttpError("Project not found", 404);
+      throw new HttpError('Project not found', 404);
     }
     return res.json(updated);
   })
@@ -90,16 +91,16 @@ router.put(
  * DELETE /projects/:id
  */
 router.delete(
-  "/:id",
+  '/:id',
   authenticateToken,
-  asyncHandler(authorizeProjectEditor),
+  asyncHandler(checkProjectEditorPermission),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     const deleted = await ProjectService.deleteProject(id);
     if (!deleted) {
-      throw new HttpError("Project not found", 404);
+      throw new HttpError('Project not found', 404);
     }
-    return res.json({ message: "Project deleted" });
+    return res.json({ message: 'Project deleted' });
   })
 );
 
@@ -107,9 +108,9 @@ router.delete(
  * GET /projects/:id/versions
  */
 router.get(
-  "/:id/versions",
+  '/:id/versions',
   authenticateToken,
-  asyncHandler(authorizeProjectEditor),
+  asyncHandler(checkProjectEditorPermission),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     const versions = await ProjectService.listVersions(id);
@@ -121,22 +122,19 @@ router.get(
  * POST /projects/:id/versions
  */
 router.post(
-  "/:id/versions",
+  '/:id/versions',
   authenticateToken,
-  asyncHandler(authorizeProjectEditor),
+  asyncHandler(checkProjectEditorPermission),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { project_data } = req.body || {};
 
     const newVersion = await ProjectService.createVersion(id, project_data);
 
-    // Invalidate the undo/redo stacks for the session(s) that reference this project
-    // Example if your session code is "project_<id>"
     const session = SessionService.getSession(`project_${id}`);
     if (session) {
       SessionService.clearUndoRedo(session);
     }
-
     return res.status(201).json(newVersion);
   })
 );
@@ -145,19 +143,17 @@ router.post(
  * POST /projects/:id/versions/:versionId/rollback
  */
 router.post(
-  "/:id/versions/:versionId/rollback",
+  '/:id/versions/:versionId/rollback',
   authenticateToken,
-  asyncHandler(authorizeProjectEditor),
+  asyncHandler(checkProjectEditorPermission),
   asyncHandler(async (req, res) => {
     const { id, versionId } = req.params;
     const result = await ProjectService.rollbackVersion(id, versionId);
 
-    // Also clear the undo/redo for that project's session
     const session = SessionService.getSession(`project_${id}`);
     if (session) {
       SessionService.clearUndoRedo(session);
     }
-
     return res.json(result);
   })
 );

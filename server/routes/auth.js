@@ -1,4 +1,7 @@
-// server/routes/auth.js
+// =========================
+// FILE: server/routes/auth.js
+// =========================
+
 import express from 'express';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { HttpError } from '../utils/HttpError.js';
@@ -15,7 +18,6 @@ router.post(
   '/register',
   asyncHandler(async (req, res) => {
     const { name, email, password, confirmPassword } = req.body;
-
     if (!name || !email || !password || !confirmPassword) {
       throw new HttpError('All fields are required.', 400);
     }
@@ -23,9 +25,7 @@ router.post(
       throw new HttpError('Passwords do not match.', 400);
     }
 
-    // We rely on UserService.createUser() to handle duplicates:
     const user = await UserService.createUser(name, email, password);
-
     const payload = AuthService.userPayload(user);
     const token = AuthService.createToken(payload, '1h');
 
@@ -45,9 +45,9 @@ router.post(
   '/login',
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
-
     const user = await UserService.getByEmail(email);
     if (!user) {
+      // 401 => invalid credentials
       throw new HttpError('Invalid credentials.', 401);
     }
 

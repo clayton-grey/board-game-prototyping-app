@@ -126,7 +126,7 @@ This project is licensed under the MIT License.
 
 {
   "name": "board-game-prototyping-app",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
@@ -3567,34 +3567,48 @@ export default app;
 
 ===== ./server/middleware/authMiddleware.js =====
 
-// server/middleware/authMiddleware.js
-import { AuthService } from '../services/AuthService.js';
-import config from '../config.js';
+// =========================
+// FILE: server/middleware/authMiddleware.js
+// =========================
 
+import { AuthService } from '../services/AuthService.js';
+
+/**
+ * authenticateToken
+ *  - If no token => 401, if invalid => 403,
+ *  - else sets req.user and calls next().
+ */
 export const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1];
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    return res.status(401).json({ message: "Unauthorized: No token provided" });
+    // Your unit test expects res.status(401)
+    res.status(401).json({ message: 'Unauthorized: No token provided' });
+    return;
   }
 
   try {
     const user = AuthService.verifyToken(token);
-    // user now has { id, email, isAdmin, name } from the token
     req.user = user;
     next();
   } catch (err) {
-    return res.status(403).json({ message: "Forbidden: Invalid token" });
+    // Your unit test expects res.status(403)
+    res.status(403).json({ message: 'Forbidden: Invalid token' });
   }
 };
 
+/**
+ * authorizeAdmin
+ *  - If req.user.isAdmin is not true => 403
+ *  - else next()
+ */
 export const authorizeAdmin = (req, res, next) => {
-  // Now checking isAdmin instead of role==='admin'
   if (req.user && req.user.isAdmin) {
     return next();
   }
-  return res.status(403).json({ message: "Access denied. Admins only." });
+  // Again, your test expects direct res calls
+  res.status(403).json({ message: 'Access denied. Admins only.' });
 };
 
 
@@ -3698,7 +3712,10 @@ export function canEditProject(user) {
 
 ===== ./server/routes/auth.js =====
 
-// server/routes/auth.js
+// =========================
+// FILE: server/routes/auth.js
+// =========================
+
 import express from 'express';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { HttpError } from '../utils/HttpError.js';
@@ -3715,7 +3732,6 @@ router.post(
   '/register',
   asyncHandler(async (req, res) => {
     const { name, email, password, confirmPassword } = req.body;
-
     if (!name || !email || !password || !confirmPassword) {
       throw new HttpError('All fields are required.', 400);
     }
@@ -3723,9 +3739,7 @@ router.post(
       throw new HttpError('Passwords do not match.', 400);
     }
 
-    // We rely on UserService.createUser() to handle duplicates:
     const user = await UserService.createUser(name, email, password);
-
     const payload = AuthService.userPayload(user);
     const token = AuthService.createToken(payload, '1h');
 
@@ -3745,9 +3759,9 @@ router.post(
   '/login',
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
-
     const user = await UserService.getByEmail(email);
     if (!user) {
+      // 401 => invalid credentials
       throw new HttpError('Invalid credentials.', 401);
     }
 
@@ -3778,25 +3792,27 @@ export default router;
 
 ===== ./server/routes/projects.js =====
 
-// ./server/routes/projects.js
-import express from "express";
-import { authenticateToken } from "../middleware/authMiddleware.js";
-import { asyncHandler } from "../utils/asyncHandler.js";
-import { HttpError } from "../utils/HttpError.js";
-import { ProjectService } from "../services/ProjectService.js";
-import { SessionService } from "../services/SessionService.js";
+// =========================
+// FILE: server/routes/projects.js
+// =========================
+
+import express from 'express';
+import { authenticateToken } from '../middleware/authMiddleware.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { HttpError } from '../utils/HttpError.js';
+import { ProjectService } from '../services/ProjectService.js';
+import { SessionService } from '../services/SessionService.js';
 
 const router = express.Router();
 
 /**
- * Middleware: Check if user can edit project (owner or admin).
- * Throws 403 if not authorized or project not found.
+ * checkProjectEditorPermission => if user can't edit, throw 403 or project not found => 404
  */
-async function authorizeProjectEditor(req, res, next) {
-  const { id } = req.params; // e.g., /projects/:id
+async function checkProjectEditorPermission(req, res, next) {
+  const { id } = req.params; // project id
   const canEdit = await ProjectService.userCanEditProject(id, req.user);
   if (!canEdit) {
-    throw new HttpError("Not authorized or project not found.", 403);
+    throw new HttpError('Not authorized or project not found.', 403);
   }
   return next();
 }
@@ -3805,7 +3821,7 @@ async function authorizeProjectEditor(req, res, next) {
  * GET /projects/ensureDefault
  */
 router.get(
-  "/ensureDefault",
+  '/ensureDefault',
   authenticateToken,
   asyncHandler(async (req, res) => {
     const project = await ProjectService.createDefaultProjectIfNone(req.user.id);
@@ -3817,16 +3833,15 @@ router.get(
  * POST /projects
  */
 router.post(
-  "/",
+  '/',
   authenticateToken,
   asyncHandler(async (req, res) => {
     const { name, description } = req.body;
     if (!req.user || !req.user.id) {
-      throw new HttpError("User ID is missing from request", 400);
+      throw new HttpError('User ID is missing from request', 400);
     }
-
-    if (!req.body.name) {
-      return res.status(400).json({ error: 'Project name is required' });
+    if (!name) {
+      throw new HttpError('Project name is required', 400);
     }
 
     const project = await ProjectService.createProject(req.user.id, name, description);
@@ -3838,7 +3853,7 @@ router.post(
  * GET /projects
  */
 router.get(
-  "/",
+  '/',
   authenticateToken,
   asyncHandler(async (req, res) => {
     const projects = await ProjectService.getProjectsByOwner(req.user.id);
@@ -3850,17 +3865,17 @@ router.get(
  * PUT /projects/:id
  */
 router.put(
-  "/:id",
+  '/:id',
   authenticateToken,
-  asyncHandler(authorizeProjectEditor),
+  asyncHandler(checkProjectEditorPermission),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     let { name, description } = req.body;
-    if (!description) description = "";
+    if (!description) description = '';
 
     const updated = await ProjectService.updateProject(id, name, description);
     if (!updated) {
-      throw new HttpError("Project not found", 404);
+      throw new HttpError('Project not found', 404);
     }
     return res.json(updated);
   })
@@ -3870,16 +3885,16 @@ router.put(
  * DELETE /projects/:id
  */
 router.delete(
-  "/:id",
+  '/:id',
   authenticateToken,
-  asyncHandler(authorizeProjectEditor),
+  asyncHandler(checkProjectEditorPermission),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     const deleted = await ProjectService.deleteProject(id);
     if (!deleted) {
-      throw new HttpError("Project not found", 404);
+      throw new HttpError('Project not found', 404);
     }
-    return res.json({ message: "Project deleted" });
+    return res.json({ message: 'Project deleted' });
   })
 );
 
@@ -3887,9 +3902,9 @@ router.delete(
  * GET /projects/:id/versions
  */
 router.get(
-  "/:id/versions",
+  '/:id/versions',
   authenticateToken,
-  asyncHandler(authorizeProjectEditor),
+  asyncHandler(checkProjectEditorPermission),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     const versions = await ProjectService.listVersions(id);
@@ -3901,22 +3916,19 @@ router.get(
  * POST /projects/:id/versions
  */
 router.post(
-  "/:id/versions",
+  '/:id/versions',
   authenticateToken,
-  asyncHandler(authorizeProjectEditor),
+  asyncHandler(checkProjectEditorPermission),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { project_data } = req.body || {};
 
     const newVersion = await ProjectService.createVersion(id, project_data);
 
-    // Invalidate the undo/redo stacks for the session(s) that reference this project
-    // Example if your session code is "project_<id>"
     const session = SessionService.getSession(`project_${id}`);
     if (session) {
       SessionService.clearUndoRedo(session);
     }
-
     return res.status(201).json(newVersion);
   })
 );
@@ -3925,19 +3937,17 @@ router.post(
  * POST /projects/:id/versions/:versionId/rollback
  */
 router.post(
-  "/:id/versions/:versionId/rollback",
+  '/:id/versions/:versionId/rollback',
   authenticateToken,
-  asyncHandler(authorizeProjectEditor),
+  asyncHandler(checkProjectEditorPermission),
   asyncHandler(async (req, res) => {
     const { id, versionId } = req.params;
     const result = await ProjectService.rollbackVersion(id, versionId);
 
-    // Also clear the undo/redo for that project's session
     const session = SessionService.getSession(`project_${id}`);
     if (session) {
       SessionService.clearUndoRedo(session);
     }
-
     return res.json(result);
   })
 );
@@ -3947,7 +3957,10 @@ export default router;
 
 ===== ./server/routes/admin.js =====
 
-// server/routes/admin.js
+// =========================
+// FILE: server/routes/admin.js
+// =========================
+
 import express from 'express';
 import { authenticateToken, authorizeAdmin } from '../middleware/authMiddleware.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -3956,100 +3969,109 @@ import { UserService } from '../services/UserService.js';
 
 const router = express.Router();
 
+// Helper for user checks
+async function fetchUserOrThrow(id) {
+  const user = await UserService.getById(id);
+  if (!user) {
+    throw new HttpError('User not found.', 404);
+  }
+  return user;
+}
+
 // GET /admin/users
-router.get('/users', authenticateToken, authorizeAdmin, asyncHandler(async (req, res) => {
-  const users = await UserService.listAll();
-  return res.json(users);
-}));
+router.get(
+  '/users',
+  authenticateToken,
+  authorizeAdmin,
+  asyncHandler(async (req, res) => {
+    const users = await UserService.listAll();
+    return res.json(users);
+  })
+);
 
 // PUT /admin/users/:id/role
-router.put('/users/:id/role', authenticateToken, authorizeAdmin, asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const { role } = req.body;
+router.put(
+  '/users/:id/role',
+  authenticateToken,
+  authorizeAdmin,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { role } = req.body;
 
-  const updated = await UserService.updateRole(id, role);
-  if (!updated) {
-    throw new HttpError('User not found', 404);
-  }
-  return res.json(updated);
-}));
+    await fetchUserOrThrow(id);
+    const updated = await UserService.updateRole(id, role);
+    // updated is never null if fetchUserOrThrow passed, but we stay consistent
+    if (!updated) {
+      throw new HttpError('User not found.', 404);
+    }
+    return res.json(updated);
+  })
+);
 
 // DELETE /admin/users/:id
-router.delete('/users/:id', authenticateToken, authorizeAdmin, asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const deleted = await UserService.deleteUser(id);
-  if (!deleted) {
-    throw new HttpError('User not found', 404);
-  }
-  return res.json({ message: 'User deleted' });
-}));
+router.delete(
+  '/users/:id',
+  authenticateToken,
+  authorizeAdmin,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    await fetchUserOrThrow(id);
+
+    const deleted = await UserService.deleteUser(id);
+    if (!deleted) {
+      throw new HttpError('User not found.', 404);
+    }
+    return res.json({ message: 'User deleted' });
+  })
+);
 
 export default router;
 
 
 ===== ./server/services/UserService.js =====
 
-// server/services/UserService.js
+// =========================
+// FILE: server/services/UserService.js
+// =========================
 
 import pool from '../database.js';
 import bcrypt from 'bcryptjs';
 import { HttpError } from '../utils/HttpError.js';
 
 export class UserService {
-  /**
-   * Return user row or null if not found.
-   */
   static async getByEmail(email) {
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     if (result.rows.length === 0) return null;
     return result.rows[0];
   }
 
-  /**
-   * Check if an email is already used by some user.
-   */
   static async emailExists(email) {
     const existing = await this.getByEmail(email);
     return !!existing;
   }
 
-  /**
-   * Hash the password and insert a new user row.
-   * Throw HttpError if email is already in use.
-   */
   static async createUser(name, email, plainPassword) {
     const existing = await this.getByEmail(email);
     if (existing) {
       throw new HttpError('Email is already in use.', 400);
     }
-
     const hashedPassword = await bcrypt.hash(plainPassword, 10);
-
     const result = await pool.query(
       'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email, role',
       [name, email, hashedPassword]
     );
-    return result.rows[0]; // newly created user
+    return result.rows[0];
   }
 
-  /**
-   * Compare plain text with hashed password.
-   */
   static async comparePasswords(plainText, hashed) {
     return bcrypt.compare(plainText, hashed);
   }
 
-  /**
-   * List all users (id, email, role). For admin usage
-   */
   static async listAll() {
     const result = await pool.query('SELECT id, email, role FROM users');
     return result.rows;
   }
 
-  /**
-   * Update user role, return updated user row or null if not found.
-   */
   static async updateRole(userId, newRole) {
     const result = await pool.query(
       'UPDATE users SET role = $1 WHERE id = $2 RETURNING id, email, role',
@@ -4059,12 +4081,23 @@ export class UserService {
     return result.rows[0];
   }
 
-  /**
-   * Delete a user, return deleted user row or null if not found.
-   */
   static async deleteUser(userId) {
     const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING *', [userId]);
     if (result.rows.length === 0) return null;
+    return result.rows[0];
+  }
+
+  /**
+   * New method => used by fetchUserOrThrow in adminRoutes.js
+   */
+  static async getById(userId) {
+    const result = await pool.query(
+      'SELECT id, name, email, role FROM users WHERE id = $1',
+      [userId]
+    );
+    if (result.rows.length === 0) {
+      return null;
+    }
     return result.rows[0];
   }
 }
@@ -6181,29 +6214,8 @@ import {
   updateCanvasUserId,
   removeCursorsForMissingUsers,
 } from "./canvas.js";
-import { connectWebSocket, sendWSMessage } from "./wsClient.js"; // <-- import new
+import { connectWebSocket, sendWSMessage } from "./wsClient.js";
 
-// A small helper for JSON fetch calls
-async function fetchJSON(url, method = "GET", bodyObj = null) {
-  const fetchOptions = { method, headers: {} };
-  if (bodyObj) {
-    fetchOptions.headers["Content-Type"] = "application/json";
-    fetchOptions.body = JSON.stringify(bodyObj);
-  }
-  const res = await fetch(url, fetchOptions);
-  let data;
-  try {
-    data = await res.json();
-  } catch (err) {
-    throw new Error(`Fetch error: ${err.message}`);
-  }
-  if (!res.ok) {
-    throw new Error(data.message || `HTTP ${res.status} - ${res.statusText}`);
-  }
-  return data;
-}
-
-// Persisted info
 let token = localStorage.getItem("token") || "";
 let currentUser = localStorage.getItem("user")
   ? JSON.parse(localStorage.getItem("user"))
@@ -6214,7 +6226,6 @@ if (!activeUserId) {
   localStorage.setItem("activeUserId", activeUserId);
 }
 
-// Quick helpers
 const isLoggedIn = () => !!token && !!currentUser;
 const isCurrentUserAdmin = () => currentUser && currentUser.role === "admin";
 
@@ -6248,7 +6259,34 @@ const userActionPopover = document.getElementById("user-action-popover");
 const undoBtn = document.getElementById("undo-btn");
 const redoBtn = document.getElementById("redo-btn");
 
-/** Helper to display a short message at the top of the project manager modal or wherever. */
+const chatMessagesDiv = document.getElementById("chat-messages");
+const chatInput = document.getElementById("chat-input");
+const chatSendBtn = document.getElementById("chat-send-btn");
+
+/** A small wrapper for fetch JSON calls. */
+async function fetchJSON(url, method = "GET", bodyObj = null) {
+  const fetchOptions = { method, headers: {} };
+  if (bodyObj) {
+    fetchOptions.headers["Content-Type"] = "application/json";
+    fetchOptions.body = JSON.stringify(bodyObj);
+  }
+  const res = await fetch(url, fetchOptions);
+  let data;
+  try {
+    data = await res.json();
+  } catch (err) {
+    throw new Error(`Fetch error: ${err.message}`);
+  }
+  if (!res.ok) {
+    throw new Error(data.message || `HTTP ${res.status} - ${res.statusText}`);
+  }
+  return data;
+}
+
+/**
+ * A simple helper to display a short message in the top
+ * of the project manager or any other container.
+ */
 function showMessage(msg, isError = false) {
   messageContainer.textContent = msg;
   messageContainer.style.color = isError ? "red" : "green";
@@ -6259,18 +6297,16 @@ function showMessage(msg, isError = false) {
   }, 3000);
 }
 
-/** Connect to WS and upon message, handle it. */
+/** Connect to WS and set up callback. */
 function startWebSocket() {
   connectWebSocket(handleServerMessage);
 }
 
-/** Once connected (onopen), we call doJoinSession. */
+/** Called after WS is open => send a JOIN_SESSION message. */
 function doJoinSession() {
+  if (!sendWSMessage) return;
   const userName = currentUser ? currentUser.name : "Anonymous";
-  let userRole = "";
-  if (isCurrentUserAdmin()) {
-    userRole = "admin";
-  }
+  let userRole = isCurrentUserAdmin() ? "admin" : "";
 
   sendWSMessage({
     type: MESSAGE_TYPES.JOIN_SESSION,
@@ -6281,25 +6317,24 @@ function doJoinSession() {
   });
 }
 
-/** Master WS message handler. */
+/** Master WS message handler => route by type. */
 function handleServerMessage(data) {
   switch (data.type) {
-    case MESSAGE_TYPES.SESSION_USERS: {
+    case MESSAGE_TYPES.SESSION_USERS:
       sessionUsers = data.users || [];
       renderSessionUsers();
       updateLocalUserUI();
-      sessionUsers.forEach(u => {
+      sessionUsers.forEach((u) => {
         handleUserColorUpdate(u.userId, u.name, u.color);
       });
-      removeCursorsForMissingUsers(sessionUsers.map(u => u.userId));
-
-      const me = sessionUsers.find(u => u.userId === activeUserId);
+      removeCursorsForMissingUsers(sessionUsers.map((u) => u.userId));
+      const me = sessionUsers.find((u) => u.userId === activeUserId);
       if (me) {
         userCircle.style.background = me.color;
         userCircleText.textContent = getInitial(me.name);
       }
       break;
-    }
+
     case MESSAGE_TYPES.PROJECT_NAME_CHANGE: {
       const { newName } = data;
       setProjectNameFromServer(newName);
@@ -6307,36 +6342,31 @@ function handleServerMessage(data) {
       showMessage(`Renamed to: ${newName}`);
       break;
     }
-    case MESSAGE_TYPES.CHAT_MESSAGE: {
+
+    case MESSAGE_TYPES.CHAT_MESSAGE:
       appendChatMessage(data.message.userId, data.message.text);
       break;
-    }
+
     case MESSAGE_TYPES.ELEMENT_STATE:
     case MESSAGE_TYPES.CURSOR_UPDATE:
     case MESSAGE_TYPES.CURSOR_UPDATES:
       handleCanvasMessage(data, activeUserId);
       break;
+
     case MESSAGE_TYPES.KICKED:
       alert("You have been kicked from the session.");
-      // Possibly close the WS here
       break;
+
     case MESSAGE_TYPES.UNDO_REDO_FAILED:
       showMessage(data.reason || "Undo/Redo failed", true);
       break;
+
     default:
       console.log("Unknown message:", data.type, data);
   }
 }
 
-/** Check if user is ephemeral owner or admin. */
-function amIOwnerOrAdmin() {
-  const me = sessionUsers.find(u => u.userId === activeUserId);
-  if (!me) return false;
-  if (me.globalRole === "admin") return true;
-  return me.sessionRole === "owner";
-}
-
-/** Show/hide certain UI elements based on login or roles. */
+/** Show/hide UI elements if I'm an owner/admin. */
 function updateUIVisibility() {
   if (!isLoggedIn()) {
     openPMBtn.style.display = "none";
@@ -6352,28 +6382,33 @@ function getInitial(str) {
   return str.trim().charAt(0).toUpperCase();
 }
 
-function updateLocalUserUI() {
-  let displayName = "Anonymous";
-  if (currentUser?.name) {
-    displayName = currentUser.name;
-  }
-  userNameSpan.textContent = displayName;
+/** Are we ephemeral owner or admin in ephemeral session logic? */
+function amIOwnerOrAdmin() {
+  const me = sessionUsers.find((u) => u.userId === activeUserId);
+  if (!me) return false;
+  if (me.globalRole === "admin") return true;
+  return me.sessionRole === "owner";
+}
 
-  const me = sessionUsers.find(u => u.userId === activeUserId);
+/** Called after login/out or user list changes => update user circle, name, etc. */
+function updateLocalUserUI() {
+  let displayName = currentUser?.name || "Anonymous";
+  userNameSpan.textContent = displayName;
+  const me = sessionUsers.find((x) => x.userId === activeUserId);
   let finalColor = "#888";
   if (me?.color) {
     finalColor = me.color;
   }
   userCircle.style.background = finalColor;
   userCircleText.textContent = getInitial(displayName);
-
   updateUIVisibility();
 }
 
 function renderSessionUsers() {
   sessionUsersList.innerHTML = "";
-  sessionUsers.forEach(u => {
+  sessionUsers.forEach((u) => {
     const li = document.createElement("li");
+
     const circle = document.createElement("div");
     circle.classList.add("session-user-circle");
     circle.style.background = u.color;
@@ -6403,11 +6438,10 @@ function getRoleEmoji(u) {
 }
 
 function canManageUser(u) {
-  const me = sessionUsers.find(x => x.userId === activeUserId);
+  const me = sessionUsers.find((x) => x.userId === activeUserId);
   if (!me) return false;
-  const iAmAdmin = (me.globalRole === "admin");
-  const iAmOwner = (me.sessionRole === "owner");
-
+  const iAmAdmin = me.globalRole === "admin";
+  const iAmOwner = me.sessionRole === "owner";
   if (!iAmOwner && !iAmAdmin) return false;
   if (u.userId === me.userId) return false;
   if (u.globalRole === "admin" && !iAmAdmin) return false;
@@ -6482,10 +6516,8 @@ function buildAndPositionPopover(u, labelElem) {
     const labelRect = labelElem.getBoundingClientRect();
     const anchorMidY = (labelRect.top + labelRect.bottom) / 2;
     const offsetX = 10;
-
     const finalLeft = userListRect.right + offsetX;
     const finalTop = anchorMidY - popHeight / 2;
-
     userActionPopover.style.left = finalLeft + "px";
     userActionPopover.style.top = finalTop + "px";
   });
@@ -6530,6 +6562,7 @@ function doLogout() {
   updateLocalUserUI();
 }
 
+// Toggle login dropdown if not logged in, or prompt logout if logged in
 userInfoPanel.addEventListener("click", (evt) => {
   if (isLoggedIn()) {
     if (confirm("Log out?")) {
@@ -6542,6 +6575,7 @@ userInfoPanel.addEventListener("click", (evt) => {
   }
 });
 
+// If user clicks outside => close the dropdown
 document.addEventListener("click", (evt) => {
   if (
     !loginDropdown.classList.contains("hidden") &&
@@ -6569,13 +6603,14 @@ loginForm.addEventListener("submit", async (e) => {
     localStorage.setItem("activeUserId", newUserId);
     activeUserId = newUserId;
 
+    // If previously ephemeral, we upgrade
     if (oldUserId.startsWith("anon_")) {
       sendWSMessage({
         type: MESSAGE_TYPES.UPGRADE_USER_ID,
         oldUserId,
         newUserId,
         newName: currentUser.name,
-        newIsAdmin: (currentUser.role === "admin"),
+        newIsAdmin: currentUser.role === "admin",
       });
     }
     updateCanvasUserId(newUserId);
@@ -6625,7 +6660,7 @@ registerForm.addEventListener("submit", async (e) => {
         oldUserId: oldId,
         newUserId: newId,
         newName: currentUser.name,
-        newIsAdmin: (currentUser.role === "admin"),
+        newIsAdmin: currentUser.role === "admin",
       });
     }
     updateCanvasUserId(newId);
@@ -6670,11 +6705,12 @@ deleteProjectBtn.addEventListener("click", () => {
   showMessage("Delete ephemeral project not implemented.", true);
 });
 
-projectNameEl.addEventListener("click", () => {
+projectNameEl?.addEventListener("click", () => {
   startEditingProjectName();
 });
 
 function startEditingProjectName() {
+  if (!projectNameEl) return;
   const input = document.createElement("input");
   input.type = "text";
   input.value = projectNameEl.textContent || "Untitled Project";
@@ -6730,7 +6766,7 @@ function revertNameChange() {
 
 window.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("contextmenu", (e) => e.preventDefault());
-  startWebSocket(); // initiate the WS
+  startWebSocket(); // connect and set up handleServerMessage
   initCanvas(activeUserId);
   updateLocalUserUI();
 });
@@ -6752,11 +6788,8 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-const chatMessagesDiv = document.getElementById("chat-messages");
-const chatInput = document.getElementById("chat-input");
-const chatSendBtn = document.getElementById("chat-send-btn");
-
 function appendChatMessage(userId, text) {
+  if (!chatMessagesDiv) return;
   const div = document.createElement("div");
   div.textContent = `${userId}: ${text}`;
   div.classList.add("chat-message");
@@ -6765,19 +6798,19 @@ function appendChatMessage(userId, text) {
 }
 
 function sendChatMessage() {
+  if (!chatInput) return;
   const text = chatInput.value.trim();
   if (!text) return;
-
   sendWSMessage({
     type: MESSAGE_TYPES.CHAT_MESSAGE,
     userId: activeUserId,
-    text
+    text,
   });
   chatInput.value = "";
 }
 
-chatSendBtn.addEventListener("click", sendChatMessage);
-chatInput.addEventListener("keydown", (e) => {
+chatSendBtn?.addEventListener("click", sendChatMessage);
+chatInput?.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     sendChatMessage();
@@ -6792,17 +6825,18 @@ chatInput.addEventListener("keydown", (e) => {
 // =========================
 
 let ws = null;
+// let queuedMessages = []; // if you want to queue
 
-/**
- * connectWebSocket(onMessageCallback)
- *  - Creates a WebSocket to ws://localhost:3000
- *  - Invokes `onMessageCallback(parsedData)` for each incoming message.
- */
 export function connectWebSocket(onMessageCallback) {
   ws = new WebSocket("ws://localhost:3000");
 
   ws.onopen = () => {
     console.log("WebSocket connected.");
+    // If you want to flush a queuedMessages array:
+    // while (queuedMessages.length > 0) {
+    //   const msg = queuedMessages.shift();
+    //   ws.send(JSON.stringify(msg));
+    // }
   };
 
   ws.onmessage = (evt) => {
@@ -6825,14 +6859,14 @@ export function connectWebSocket(onMessageCallback) {
 }
 
 /**
- * sendWSMessage(obj)
- *  - Sends the given object as JSON if the WebSocket is open.
+ * sendWSMessage(obj) => sends the given object as JSON if ws is open.
  */
+// eslint-disable-next-line import/prefer-default-export
 export function sendWSMessage(obj) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    // Optionally queue messages or log an error
-    // For now, just log
-    console.warn("WebSocket not open. Unable to send message:", obj);
+    console.warn("WebSocket not open, ignoring message:", obj);
+    // Or queue if you want:
+    // queuedMessages.push(obj);
     return;
   }
   ws.send(JSON.stringify(obj));
@@ -7716,17 +7750,20 @@ import { sendWSMessage } from '../../js/wsClient.js';
 
 /**
  * createOrUpdateElementsFromServer => sets state.elements to the latest from the server
+ * and triggers re-render if needed.
  */
 export function createOrUpdateElementsFromServer(serverElements) {
   state.elements = serverElements || [];
 }
 
 /**
- * removeObsoleteSelections => removes any local selections that are locked by others or deleted
+ * removeObsoleteSelections => clears any local selections that:
+ * - no longer exist,
+ * - or are locked by another user
  */
 export function removeObsoleteSelections(myUserId) {
-  state.selectedElementIds = state.selectedElementIds.filter(id => {
-    const el = state.elements.find(e => e.id === id);
+  state.selectedElementIds = state.selectedElementIds.filter((id) => {
+    const el = state.elements.find((e) => e.id === id);
     if (!el) return false;
     if (el.lockedBy && el.lockedBy !== myUserId) return false;
     return true;
@@ -7758,7 +7795,9 @@ export function handleCursorData(data, myUserId) {
   }
 }
 
-/** removeStaleRemoteCursors => remove cursors for user IDs not in the new user list */
+/**
+ * removeStaleRemoteCursors => remove cursors for user IDs not in current list
+ */
 export function removeStaleRemoteCursors(currentUserIds) {
   for (const [uId] of state.remoteCursors) {
     if (!currentUserIds.includes(uId)) {
@@ -7767,15 +7806,15 @@ export function removeStaleRemoteCursors(currentUserIds) {
   }
 }
 
-/** setLocalUserId => update the local user ID in state */
+/** Update local user ID */
 export function setLocalUserId(newId) {
   state.localUserId = newId;
 }
 
-/* ------------------------------------------------------------------
-   SHAPE CREATION, SELECTION, DRAG, etc.
------------------------------------------------------------------- */
-
+/**
+ * onPointerDownSelectOrCreate => called if user not resizing.
+ * Decide if the user is selecting an existing shape or creating a new shape based on the active tool.
+ */
 export function onPointerDownSelectOrCreate(e, canvas) {
   const rect = canvas.getBoundingClientRect();
   const sx = e.clientX - rect.left;
@@ -7787,13 +7826,11 @@ export function onPointerDownSelectOrCreate(e, canvas) {
   if (tool === 'select') {
     const clicked = findTopmostElementAt(wx, wy);
     if (clicked) {
-      if (clicked.lockedBy && clicked.lockedBy !== state.localUserId) {
-        return;
-      }
+      if (clicked.lockedBy && clicked.lockedBy !== state.localUserId) return;
       if (e.shiftKey) {
         if (state.selectedElementIds.includes(clicked.id)) {
           sendDeselectElement([clicked.id]);
-          state.selectedElementIds = state.selectedElementIds.filter(id => id !== clicked.id);
+          state.selectedElementIds = state.selectedElementIds.filter((id) => id !== clicked.id);
           delete state.lockedOffsets[clicked.id];
         } else {
           sendGrabElement(clicked.id);
@@ -7808,17 +7845,18 @@ export function onPointerDownSelectOrCreate(e, canvas) {
         state.selectedElementIds.push(clicked.id);
       }
       for (const id of state.selectedElementIds) {
-        const el = state.elements.find(ele => ele.id === id);
+        const el = state.elements.find((ele) => ele.id === id);
         if (el?.lockedBy === state.localUserId) {
           state.lockedOffsets[id] = {
             dx: wx - el.x,
-            dy: wy - el.y
+            dy: wy - el.y,
           };
         }
       }
       state.isDragging = true;
       canvas.classList.add('grabbing');
     } else {
+      // marquee
       state.isMarqueeSelecting = true;
       state.marqueeStart.xCanvas = sx * window.devicePixelRatio;
       state.marqueeStart.yCanvas = sy * window.devicePixelRatio;
@@ -7841,6 +7879,7 @@ export function onPointerDownSelectOrCreate(e, canvas) {
   }
 }
 
+/** pointermove => if isDragging => doDragSelected, etc. */
 export function onPointerMoveCommon(e, canvas) {
   if (state.isDragging && (e.buttons & 1)) {
     doDragSelected(e, canvas);
@@ -7857,6 +7896,7 @@ export function onPointerMoveCommon(e, canvas) {
   updateHoverCursor(e, canvas);
 }
 
+/** pointerup => end dragging, shape creation, or marquee */
 export function onPointerUpCommon(e, canvas) {
   if (state.isDragging && e.button === 0) {
     state.isDragging = false;
@@ -7873,6 +7913,7 @@ export function onPointerUpCommon(e, canvas) {
   }
 }
 
+/** pointercancel/leave => forcibly end if dragging or marquee. */
 export function onPointerCancelOrLeaveCommon(e) {
   if (state.isDragging) {
     state.isDragging = false;
@@ -7883,70 +7924,8 @@ export function onPointerCancelOrLeaveCommon(e) {
 }
 
 /* ------------------------------------------------------------------
-   DRAG, MARQUEE, CREATE
+   SHAPE CREATION
 ------------------------------------------------------------------ */
-
-function doDragSelected(e, canvas) {
-  const rect = canvas.getBoundingClientRect();
-  const sx = e.clientX - rect.left;
-  const sy = e.clientY - rect.top;
-  const wx = state.camX + sx / state.scale;
-  const wy = state.camY + sy / state.scale;
-
-  for (const id of state.selectedElementIds) {
-    const el = state.elements.find(ele => ele.id === id);
-    if (el?.lockedBy === state.localUserId) {
-      const off = state.lockedOffsets[id];
-      if (off) {
-        const nx = wx - off.dx;
-        const ny = wy - off.dy;
-        sendMoveElement(id, nx, ny);
-      }
-    }
-  }
-}
-
-function updateMarquee(e, canvas) {
-  const rect = canvas.getBoundingClientRect();
-  state.marqueeEnd.xCanvas = (e.clientX - rect.left) * window.devicePixelRatio;
-  state.marqueeEnd.yCanvas = (e.clientY - rect.top) * window.devicePixelRatio;
-
-  const sx = e.clientX - rect.left;
-  const sy = e.clientY - rect.top;
-  state.marqueeEnd.xWorld = state.camX + sx / state.scale;
-  state.marqueeEnd.yWorld = state.camY + sy / state.scale;
-}
-
-function finalizeMarquee(e, canvas) {
-  state.isMarqueeSelecting = false;
-  canvas.classList.remove('grabbing');
-
-  const rminX = Math.min(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
-  const rmaxX = Math.max(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
-  const rminY = Math.min(state.marqueeStart.yWorld, state.marqueeEnd.yWorld);
-  const rmaxY = Math.max(state.marqueeEnd.yWorld, state.marqueeStart.yWorld);
-
-  const newlySelected = [];
-  for (const el of state.elements) {
-    if (el.lockedBy && el.lockedBy !== state.localUserId) continue;
-    const ex2 = el.x + el.w;
-    const ey2 = el.y + el.h;
-    if (!boxesOverlap(rminX, rminY, rmaxX, rmaxY, el.x, el.y, ex2, ey2)) {
-      continue;
-    }
-    newlySelected.push(el.id);
-  }
-  if (!e.shiftKey) {
-    deselectAll();
-  }
-  for (const id of newlySelected) {
-    if (!state.selectedElementIds.includes(id)) {
-      state.selectedElementIds.push(id);
-      sendGrabElement(id);
-    }
-  }
-}
-
 function startShapeCreation(tool, wx, wy) {
   state.creationState = {
     active: true,
@@ -7954,7 +7933,7 @@ function startShapeCreation(tool, wx, wy) {
     startWX: wx,
     startWY: wy,
     curWX: wx,
-    curWY: wy
+    curWY: wy,
   };
 }
 
@@ -8002,9 +7981,72 @@ function finalizeShapeCreation() {
 }
 
 /* ------------------------------------------------------------------
+   DRAG SELECTED
+------------------------------------------------------------------ */
+function doDragSelected(e, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  const wx = state.camX + sx / state.scale;
+  const wy = state.camY + sy / state.scale;
+
+  for (const id of state.selectedElementIds) {
+    const el = state.elements.find((ele) => ele.id === id);
+    if (el?.lockedBy === state.localUserId) {
+      const off = state.lockedOffsets[id];
+      if (off) {
+        const nx = wx - off.dx;
+        const ny = wy - off.dy;
+        sendMoveElement(id, nx, ny);
+      }
+    }
+  }
+}
+
+function updateMarquee(e, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  state.marqueeEnd.xCanvas = (e.clientX - rect.left) * window.devicePixelRatio;
+  state.marqueeEnd.yCanvas = (e.clientY - rect.top) * window.devicePixelRatio;
+
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  state.marqueeEnd.xWorld = state.camX + sx / state.scale;
+  state.marqueeEnd.yWorld = state.camY + sy / state.scale;
+}
+
+function finalizeMarquee(e, canvas) {
+  state.isMarqueeSelecting = false;
+  canvas.classList.remove('grabbing');
+
+  const rminX = Math.min(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
+  const rmaxX = Math.max(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
+  const rminY = Math.min(state.marqueeStart.yWorld, state.marqueeEnd.yWorld);
+  const rmaxY = Math.max(state.marqueeStart.yWorld, state.marqueeEnd.yWorld);
+
+  const newlySelected = [];
+  for (const el of state.elements) {
+    if (el.lockedBy && el.lockedBy !== state.localUserId) continue;
+    const ex2 = el.x + el.w;
+    const ey2 = el.y + el.h;
+    if (!boxesOverlap(rminX, rminY, rmaxX, rmaxY, el.x, el.y, ex2, ey2)) {
+      continue;
+    }
+    newlySelected.push(el.id);
+  }
+  if (!e.shiftKey) {
+    deselectAll();
+  }
+  for (const id of newlySelected) {
+    if (!state.selectedElementIds.includes(id)) {
+      state.selectedElementIds.push(id);
+      sendGrabElement(id);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------
    RESIZING
 ------------------------------------------------------------------ */
-
 export function hitTestResizeHandles(e, canvas) {
   if (!canTransformSelection()) return null;
   const bb = getSelectionBoundingBox();
@@ -8020,29 +8062,49 @@ export function hitTestResizeHandles(e, canvas) {
   const cornerRadius = 8 / state.scale;
   const corners = [
     { x: bb.x, y: bb.y, name: 'top-left' },
-    { x: bb.x+bb.w, y: bb.y, name: 'top-right' },
-    { x: bb.x, y: bb.y+bb.h, name: 'bottom-left' },
-    { x: bb.x+bb.w, y: bb.y+bb.h, name: 'bottom-right' }
+    { x: bb.x + bb.w, y: bb.y, name: 'top-right' },
+    { x: bb.x, y: bb.y + bb.h, name: 'bottom-left' },
+    { x: bb.x + bb.w, y: bb.y + bb.h, name: 'bottom-right' },
   ];
   for (const c of corners) {
     const dx = wx - c.x;
     const dy = wy - c.y;
-    if (dx*dx + dy*dy <= cornerRadius*cornerRadius) {
+    if (dx * dx + dy * dy <= cornerRadius * cornerRadius) {
       return c.name;
     }
   }
 
   const edgeTol = 6 / state.scale;
-  if (wy >= bb.y - edgeTol && wy <= bb.y + edgeTol && wx >= bb.x && wx <= bb.x+bb.w) {
+  if (
+    wy >= bb.y - edgeTol &&
+    wy <= bb.y + edgeTol &&
+    wx >= bb.x &&
+    wx <= bb.x + bb.w
+  ) {
     return 'top';
   }
-  if (wy >= (bb.y+bb.h - edgeTol) && wy <= (bb.y+bb.h + edgeTol) && wx >= bb.x && wx <= bb.x+bb.w) {
+  if (
+    wy >= bb.y + bb.h - edgeTol &&
+    wy <= bb.y + bb.h + edgeTol &&
+    wx >= bb.x &&
+    wx <= bb.x + bb.w
+  ) {
     return 'bottom';
   }
-  if (wx >= bb.x - edgeTol && wx <= bb.x + edgeTol && wy >= bb.y && wy <= bb.y+bb.h) {
+  if (
+    wx >= bb.x - edgeTol &&
+    wx <= bb.x + edgeTol &&
+    wy >= bb.y &&
+    wy <= bb.y + bb.h
+  ) {
     return 'left';
   }
-  if (wx >= (bb.x+bb.w - edgeTol) && wx <= (bb.x+bb.w + edgeTol) && wy >= bb.y && wy <= bb.y+bb.h) {
+  if (
+    wx >= bb.x + bb.w - edgeTol &&
+    wx <= bb.x + bb.w + edgeTol &&
+    wy >= bb.y &&
+    wy <= bb.y + bb.h
+  ) {
     return 'right';
   }
 
@@ -8058,7 +8120,7 @@ export function startResizing(handleName, e, canvas) {
   state.shapesSnapshot = [];
 
   for (const id of state.selectedElementIds) {
-    const el = state.elements.find(x => x.id === id);
+    const el = state.elements.find((x) => x.id === id);
     if (!el) continue;
     const relX = el.x - bb.x;
     const relY = el.y - bb.y;
@@ -8069,7 +8131,7 @@ export function startResizing(handleName, e, canvas) {
       w: el.w,
       h: el.h,
       relX,
-      relY
+      relY,
     });
   }
 }
@@ -8104,14 +8166,13 @@ export function updateResizing(e, canvas) {
     bb.h = Math.max(2, wy - bb.y);
   }
 
+  // SHIFT => preserve aspect ratio if corner
   if (
     state.shiftDown &&
-    (
-      state.activeHandle === 'top-left' ||
+    (state.activeHandle === 'top-left' ||
       state.activeHandle === 'top-right' ||
       state.activeHandle === 'bottom-left' ||
-      state.activeHandle === 'bottom-right'
-    )
+      state.activeHandle === 'bottom-right')
   ) {
     const originalRatio = state.boundingBoxAtDragStart.w / state.boundingBoxAtDragStart.h;
     const newRatio = bb.w / bb.h;
@@ -8140,7 +8201,7 @@ export function updateResizing(e, canvas) {
   const scaleY = bb.h / state.boundingBoxAtDragStart.h;
 
   for (const snap of state.shapesSnapshot) {
-    const el = state.elements.find(x => x.id === snap.id);
+    const el = state.elements.find((x) => x.id === snap.id);
     if (!el) continue;
     if (el.lockedBy !== state.localUserId) continue;
 
@@ -8190,7 +8251,6 @@ export function endResizing(forceCancel) {
 /* ------------------------------------------------------------------
    UTILS
 ------------------------------------------------------------------ */
-
 function findTopmostElementAt(wx, wy) {
   for (let i = state.elements.length - 1; i >= 0; i--) {
     const el = state.elements[i];
@@ -8201,7 +8261,7 @@ function findTopmostElementAt(wx, wy) {
       const cy = el.y + ry;
       const dx = wx - cx;
       const dy = wy - cy;
-      if ((dx*dx)/(rx*rx) + (dy*dy)/(ry*ry) <= 1) {
+      if ((dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1) {
         return el;
       }
     } else {
@@ -8219,8 +8279,7 @@ function updateHoverCursor(e, canvas) {
     if (tool === 'select' && canTransformSelection()) {
       const handle = hitTestResizeHandles(e, canvas);
       if (handle) {
-        const cursor = getCursorForHandle(handle);
-        canvas.style.cursor = cursor;
+        canvas.style.cursor = getCursorForHandle(handle);
         return;
       }
     }
@@ -8236,30 +8295,42 @@ function getCurrentTool() {
 }
 
 function getCursorForHandle(handle) {
-  if (handle === 'top-left' || handle === 'bottom-right') return 'nwse-resize';
-  if (handle === 'top-right' || handle === 'bottom-left') return 'nesw-resize';
-  if (handle === 'top' || handle === 'bottom') return 'ns-resize';
-  if (handle === 'left' || handle === 'right') return 'ew-resize';
-  return 'default';
+  switch (handle) {
+    case 'top-left':
+    case 'bottom-right':
+      return 'nwse-resize';
+    case 'top-right':
+    case 'bottom-left':
+      return 'nesw-resize';
+    case 'top':
+    case 'bottom':
+      return 'ns-resize';
+    case 'left':
+    case 'right':
+      return 'ew-resize';
+    default:
+      return 'default';
+  }
 }
 
 function canTransformSelection() {
   if (!state.selectedElementIds.length) return false;
   for (const id of state.selectedElementIds) {
-    const el = state.elements.find(e => e.id === id);
+    const el = state.elements.find((e) => e.id === id);
     if (!el) continue;
-    if (el.lockedBy && el.lockedBy !== state.localUserId) {
-      return false;
-    }
+    if (el.lockedBy && el.lockedBy !== state.localUserId) return false;
   }
   return true;
 }
 
 function getSelectionBoundingBox() {
   if (!state.selectedElementIds.length) return null;
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
   for (const id of state.selectedElementIds) {
-    const el = state.elements.find(e => e.id === id);
+    const el = state.elements.find((e) => e.id === id);
     if (!el) continue;
     minX = Math.min(minX, el.x);
     minY = Math.min(minY, el.y);
@@ -8270,10 +8341,31 @@ function getSelectionBoundingBox() {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
+/**
+ * Called to deselect all shapes.
+ */
+export function deselectAll() {
+  if (state.selectedElementIds.length) {
+    sendDeselectElement(state.selectedElementIds);
+    state.selectedElementIds = [];
+  }
+}
+
+function revertToSelectTool() {
+  const palette = document.getElementById('tools-palette');
+  if (!palette) return;
+  const buttons = palette.querySelectorAll('.tool-btn');
+  buttons.forEach((b) => {
+    b.classList.remove('selected');
+    if (b.dataset.tool === 'select') {
+      b.classList.add('selected');
+    }
+  });
+}
+
 /* ------------------------------------------------------------------
    SEND
 ------------------------------------------------------------------ */
-
 function sendGrabElement(elementId) {
   sendWSMessage({
     type: MESSAGE_TYPES.ELEMENT_GRAB,
@@ -8324,14 +8416,6 @@ function sendDeselectElement(elementIds) {
   }
 }
 
-export function sendDeleteElements(elementIds) {
-  sendWSMessage({
-    type: MESSAGE_TYPES.ELEMENT_DELETE,
-    userId: state.localUserId,
-    elementIds: [...elementIds],
-  });
-}
-
 function sendElementCreate(shape, x, y, w, h) {
   sendWSMessage({
     type: MESSAGE_TYPES.ELEMENT_CREATE,
@@ -8341,25 +8425,6 @@ function sendElementCreate(shape, x, y, w, h) {
     y,
     w,
     h,
-  });
-}
-
-export function deselectAll() {
-  if (state.selectedElementIds.length) {
-    sendDeselectElement(state.selectedElementIds);
-    state.selectedElementIds = [];
-  }
-}
-
-function revertToSelectTool() {
-  const palette = document.getElementById('tools-palette');
-  if (!palette) return;
-  const buttons = palette.querySelectorAll('.tool-btn');
-  buttons.forEach((b) => {
-    b.classList.remove('selected');
-    if (b.dataset.tool === 'select') {
-      b.classList.add('selected');
-    }
   });
 }
 
