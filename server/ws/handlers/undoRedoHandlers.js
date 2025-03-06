@@ -2,13 +2,13 @@
 // FILE: server/ws/handlers/undoRedoHandlers.js
 // =========================
 
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
-import { broadcastElementState } from '../collabUtils.js';
-import { sessionGuard } from './handlerUtils.js';
+import { MESSAGE_TYPES } from "../../../shared/wsMessageTypes.js";
+import { broadcastElementState } from "../collabUtils.js";
+import { sessionGuard } from "./handlerUtils.js";
 import {
   finalizePendingMovesForUser,
-  finalizePendingResizesForUser
-} from './pendingActionsFinalizer.js';
+  finalizePendingResizesForUser,
+} from "./pendingActionsFinalizer.js";
 
 /**
  * pushUndoAction:
@@ -43,8 +43,8 @@ export const handleUndo = sessionGuard((session, data, ws) => {
     ws.send(
       JSON.stringify({
         type: MESSAGE_TYPES.UNDO_REDO_FAILED,
-        reason: 'Element locked by another user or concurrency issue.',
-      })
+        reason: "Element locked by another user or concurrency issue.",
+      }),
     );
     return;
   }
@@ -74,8 +74,8 @@ export const handleRedo = sessionGuard((session, data, ws) => {
     ws.send(
       JSON.stringify({
         type: MESSAGE_TYPES.UNDO_REDO_FAILED,
-        reason: 'Element locked by another user or concurrency issue.',
-      })
+        reason: "Element locked by another user or concurrency issue.",
+      }),
     );
     return;
   }
@@ -87,16 +87,17 @@ export const handleRedo = sessionGuard((session, data, ws) => {
   broadcastElementState(session);
 });
 
-/** 
- * canApplyAction => returns false if any element is locked by another user. 
+/**
+ * canApplyAction => returns false if any element is locked by another user.
  */
 function canApplyAction(session, action, userId) {
   if (!action?.diffs || !Array.isArray(action.diffs)) return true;
-  if (!['move','create','delete','resize'].includes(action.type)) return true;
+  if (!["move", "create", "delete", "resize"].includes(action.type))
+    return true;
 
   for (const diff of action.diffs) {
-    const elId = action.type === 'delete' ? diff.id : diff.elementId;
-    const el = session.elements.find(e => e.id === elId);
+    const elId = action.type === "delete" ? diff.id : diff.elementId;
+    const el = session.elements.find((e) => e.id === elId);
     if (!el) continue;
     if (el.lockedBy && el.lockedBy !== userId) {
       return false;
@@ -107,17 +108,17 @@ function canApplyAction(session, action, userId) {
 
 function applyAction(session, action) {
   switch (action.type) {
-    case 'move':
+    case "move":
       for (const diff of action.diffs) {
-        const el = session.elements.find(e => e.id === diff.elementId);
+        const el = session.elements.find((e) => e.id === diff.elementId);
         if (!el) continue;
         el.x = diff.to.x;
         el.y = diff.to.y;
       }
       break;
-    case 'create':
+    case "create":
       for (const diff of action.diffs) {
-        const existing = session.elements.find(e => e.id === diff.elementId);
+        const existing = session.elements.find((e) => e.id === diff.elementId);
         if (!existing) {
           session.elements.push({
             id: diff.elementId,
@@ -131,17 +132,17 @@ function applyAction(session, action) {
         }
       }
       break;
-    case 'delete':
+    case "delete":
       for (const d of action.diffs) {
-        const idx = session.elements.findIndex(e => e.id === d.id);
+        const idx = session.elements.findIndex((e) => e.id === d.id);
         if (idx >= 0) {
           session.elements.splice(idx, 1);
         }
       }
       break;
-    case 'resize':
+    case "resize":
       for (const diff of action.diffs) {
-        const el = session.elements.find(e => e.id === diff.elementId);
+        const el = session.elements.find((e) => e.id === diff.elementId);
         if (!el) continue;
         el.x = diff.to.x;
         el.y = diff.to.y;
@@ -156,25 +157,25 @@ function applyAction(session, action) {
 
 function revertAction(session, action) {
   switch (action.type) {
-    case 'move':
+    case "move":
       for (const diff of action.diffs) {
-        const el = session.elements.find(e => e.id === diff.elementId);
+        const el = session.elements.find((e) => e.id === diff.elementId);
         if (!el) continue;
         el.x = diff.from.x;
         el.y = diff.from.y;
       }
       break;
-    case 'create':
+    case "create":
       for (const diff of action.diffs) {
-        const idx = session.elements.findIndex(e => e.id === diff.elementId);
+        const idx = session.elements.findIndex((e) => e.id === diff.elementId);
         if (idx >= 0) {
           session.elements.splice(idx, 1);
         }
       }
       break;
-    case 'delete':
+    case "delete":
       for (const d of action.diffs) {
-        const exists = session.elements.find(e => e.id === d.id);
+        const exists = session.elements.find((e) => e.id === d.id);
         if (!exists) {
           session.elements.push({
             id: d.id,
@@ -188,9 +189,9 @@ function revertAction(session, action) {
         }
       }
       break;
-    case 'resize':
+    case "resize":
       for (const diff of action.diffs) {
-        const el = session.elements.find(e => e.id === diff.elementId);
+        const el = session.elements.find((e) => e.id === diff.elementId);
         if (!el) continue;
         el.x = diff.from.x;
         el.y = diff.from.y;

@@ -1,8 +1,8 @@
 // ./server/ws/handlers/projectHandlers.js
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
-import { broadcastToSession, broadcastElementState } from '../collabUtils.js';
-import { sessionGuard } from './handlerUtils.js';
-import { canRenameProject } from '../../utils/Permissions.js';
+import { MESSAGE_TYPES } from "../../../shared/wsMessageTypes.js";
+import { broadcastToSession, broadcastElementState } from "../collabUtils.js";
+import { sessionGuard } from "./handlerUtils.js";
+import { canRenameProject } from "../../utils/Permissions.js";
 
 export const handleProjectNameChange = sessionGuard((session, data, ws) => {
   const { userId, newName } = data;

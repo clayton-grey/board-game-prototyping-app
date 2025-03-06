@@ -1,8 +1,8 @@
 /**
  * ./server/ws/collabUtils.js
  */
-import { WebSocket } from 'ws';
-import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+import { WebSocket } from "ws";
+import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
 
 /**
  * Broadcast a data object (JSON) to all connected user sockets in a session.
@@ -32,18 +32,20 @@ export function broadcastElementState(session) {
  * Broadcast the current user list, sorted by joinOrder.
  */
 export function broadcastUserList(session) {
-  const sorted = [...session.users.values()].sort((a, b) => a.joinOrder - b.joinOrder);
+  const sorted = [...session.users.values()].sort(
+    (a, b) => a.joinOrder - b.joinOrder,
+  );
 
-  const userList = sorted.map(u => ({
+  const userList = sorted.map((u) => ({
     userId: u.userId,
     name: u.name,
     color: u.color,
     sessionRole: u.sessionRole,
-    globalRole: u.globalRole
+    globalRole: u.globalRole,
   }));
 
   broadcastToSession(session, {
     type: MESSAGE_TYPES.SESSION_USERS,
-    users: userList
+    users: userList,
   });
 }

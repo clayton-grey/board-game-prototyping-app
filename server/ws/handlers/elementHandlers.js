@@ -2,10 +2,10 @@
 // FILE: server/ws/handlers/elementHandlers.js
 // =========================
 
-import { broadcastElementState } from '../collabUtils.js';
-import { pushUndoAction } from './undoRedoHandlers.js';
-import { sessionGuard } from './handlerUtils.js';
-import { finalizePendingMovesForUser } from './pendingActionsFinalizer.js';
+import { broadcastElementState } from "../collabUtils.js";
+import { pushUndoAction } from "./undoRedoHandlers.js";
+import { sessionGuard } from "./handlerUtils.js";
+import { finalizePendingMovesForUser } from "./pendingActionsFinalizer.js";
 
 /** Helper to check if element is locked by another user. */
 function isElementLockedByOthers(element, userId) {
@@ -14,7 +14,7 @@ function isElementLockedByOthers(element, userId) {
 
 export const handleElementGrab = sessionGuard((session, data, ws) => {
   const { userId, elementId } = data;
-  const el = session.elements.find(e => e.id === elementId);
+  const el = session.elements.find((e) => e.id === elementId);
   if (!el) return;
 
   if (isElementLockedByOthers(el, userId)) return;
@@ -24,7 +24,7 @@ export const handleElementGrab = sessionGuard((session, data, ws) => {
 
 export const handleElementMove = sessionGuard((session, data, ws) => {
   const { userId, elementId, x, y } = data;
-  const el = session.elements.find(e => e.id === elementId);
+  const el = session.elements.find((e) => e.id === elementId);
   if (!el) return;
 
   if (el.lockedBy === userId) {
@@ -47,7 +47,7 @@ export const handleElementMove = sessionGuard((session, data, ws) => {
 
 export const handleElementRelease = sessionGuard((session, data, ws) => {
   const { userId, elementId } = data;
-  const el = session.elements.find(e => e.id === elementId);
+  const el = session.elements.find((e) => e.id === elementId);
   if (!el) return;
 
   if (el.lockedBy === userId) {
@@ -64,7 +64,7 @@ export const handleElementDeselect = sessionGuard((session, data, ws) => {
   if (!Array.isArray(elementIds)) return;
 
   for (const elementId of elementIds) {
-    const el = session.elements.find(e => e.id === elementId);
+    const el = session.elements.find((e) => e.id === elementId);
     if (!el) continue;
     if (el.lockedBy === userId) {
       el.lockedBy = null;
@@ -89,18 +89,26 @@ export const handleElementCreate = sessionGuard((session, data, ws) => {
   const newElement = {
     id: newId,
     shape,
-    x, y, w, h,
-    lockedBy: userId
+    x,
+    y,
+    w,
+    h,
+    lockedBy: userId,
   };
   session.elements.push(newElement);
 
   const action = {
-    type: 'create',
-    diffs: [{
-      elementId: newId,
-      shape,
-      x, y, w, h
-    }],
+    type: "create",
+    diffs: [
+      {
+        elementId: newId,
+        shape,
+        x,
+        y,
+        w,
+        h,
+      },
+    ],
   };
   pushUndoAction(session, action);
 
@@ -113,7 +121,7 @@ export const handleElementDelete = sessionGuard((session, data, ws) => {
 
   const toDelete = [];
   for (const id of elementIds) {
-    const idx = session.elements.findIndex(e => e.id === id);
+    const idx = session.elements.findIndex((e) => e.id === id);
     if (idx >= 0) {
       const el = session.elements[idx];
       if (isElementLockedByOthers(el, userId)) {
@@ -129,8 +137,8 @@ export const handleElementDelete = sessionGuard((session, data, ws) => {
   }
 
   const action = {
-    type: 'delete',
-    diffs: toDelete.map(el => ({
+    type: "delete",
+    diffs: toDelete.map((el) => ({
       id: el.id,
       shape: el.shape,
       x: el.x,
@@ -147,7 +155,7 @@ export const handleElementDelete = sessionGuard((session, data, ws) => {
 
 export const handleElementResize = sessionGuard((session, data, ws) => {
   const { userId, elementId, x, y, w, h } = data;
-  const el = session.elements.find(e => e.id === elementId);
+  const el = session.elements.find((e) => e.id === elementId);
   if (!el) return;
 
   if (isElementLockedByOthers(el, userId)) return;
@@ -190,7 +198,7 @@ export const handleElementResizeEnd = sessionGuard((session, data, ws) => {
   const diffs = [];
 
   for (const elementId of elementIds) {
-    const el = session.elements.find(e => e.id === elementId);
+    const el = session.elements.find((e) => e.id === elementId);
     if (!el) continue;
     if (el.lockedBy !== userId) continue;
 
@@ -217,7 +225,7 @@ export const handleElementResizeEnd = sessionGuard((session, data, ws) => {
 
   if (diffs.length > 0) {
     const action = {
-      type: 'resize',
+      type: "resize",
       diffs,
     };
     pushUndoAction(session, action);

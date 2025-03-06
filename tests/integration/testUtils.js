@@ -1,8 +1,8 @@
 // tests/integration/testUtils.js
 
-import request from 'supertest';
-import app from '../../server/app.js';
-import pool from '../../server/database.js';
+import request from "supertest";
+import app from "../../server/app.js";
+import pool from "../../server/database.js";
 
 /**
  * Creates a new user by calling POST /auth/register,
@@ -18,23 +18,23 @@ import pool from '../../server/database.js';
  * }
  */
 export async function createTestUser({
-  name = 'TestUser',
+  name = "TestUser",
   email = `test_${Date.now()}@example.com`,
-  password = 'secret123',
-  role = 'user'
+  password = "secret123",
+  role = "user",
 } = {}) {
   // Step 1: Register the user normally
-  const reg = await request(app)
-    .post('/auth/register')
-    .send({
-      name,
-      email,
-      password,
-      confirmPassword: password
-    });
+  const reg = await request(app).post("/auth/register").send({
+    name,
+    email,
+    password,
+    confirmPassword: password,
+  });
 
   if (reg.statusCode !== 201) {
-    throw new Error(`Failed to register test user: ${reg.statusCode} => ${reg.body.message || reg.text}`);
+    throw new Error(
+      `Failed to register test user: ${reg.statusCode} => ${reg.body.message || reg.text}`,
+    );
   }
 
   const { token, user } = reg.body;
@@ -42,20 +42,23 @@ export async function createTestUser({
   let finalRole = user.role; // typically 'user'
 
   // Step 2: If 'admin' role was requested, update the DB, then re-login
-  if (role === 'admin') {
-    await pool.query('UPDATE users SET role=$1 WHERE id=$2', ['admin', user.id]);
+  if (role === "admin") {
+    await pool.query("UPDATE users SET role=$1 WHERE id=$2", [
+      "admin",
+      user.id,
+    ]);
     const reLogin = await request(app)
-      .post('/auth/login')
+      .post("/auth/login")
       .send({ email, password });
     finalToken = reLogin.body.token;
-    finalRole = 'admin';
+    finalRole = "admin";
   }
 
   return {
     token: finalToken,
     userId: user.id,
     email,
-    role: finalRole
+    role: finalRole,
   };
 }
 

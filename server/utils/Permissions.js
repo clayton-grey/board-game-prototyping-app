@@ -12,20 +12,20 @@
  */
 
 export function isAdmin(user) {
-  return user.globalRole === 'admin';
+  return user.globalRole === "admin";
 }
 
 export function isOwner(user) {
-  return user.sessionRole === 'owner';
+  return user.sessionRole === "owner";
 }
 
 export function isEditor(user) {
   // Let's treat "owner" as at least "editor" level in session
-  return user.sessionRole === 'editor' || user.sessionRole === 'owner';
+  return user.sessionRole === "editor" || user.sessionRole === "owner";
 }
 
 export function isViewer(user) {
-  return user.sessionRole === 'viewer';
+  return user.sessionRole === "viewer";
 }
 
 /**

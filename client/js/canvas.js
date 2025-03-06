@@ -1,5 +1,5 @@
 // ./client/js/canvas.js
-import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
+import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
 
 /**
  * client/js/canvas.js
@@ -18,8 +18,8 @@ export {
   updateCanvasUserId,
   setProjectNameFromServer,
   removeCursorsForMissingUsers,
-  handleUserColorUpdate
-} from './canvas/index.js';
+  handleUserColorUpdate,
+} from "./canvas/index.js";
 
 // Optionally export MESSAGE_TYPES if your code/tests expect it from here:
 export { MESSAGE_TYPES };

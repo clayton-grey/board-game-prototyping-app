@@ -12,14 +12,14 @@ let ws = null;
  */
 export function connectWebSocket(onMessageCallback, onOpenCallback) {
   // Dynamically choose ws:// or wss:// based on the page location
-  const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const url = scheme + '://' + window.location.host;
+  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+  const url = scheme + "://" + window.location.host;
 
   ws = new WebSocket(url);
 
   ws.onopen = () => {
-    console.log('WebSocket connected.');
-    if (typeof onOpenCallback === 'function') {
+    console.log("WebSocket connected.");
+    if (typeof onOpenCallback === "function") {
       onOpenCallback();
     }
   };
@@ -29,16 +29,16 @@ export function connectWebSocket(onMessageCallback, onOpenCallback) {
     try {
       data = JSON.parse(evt.data);
     } catch (err) {
-      console.error('WS parse error:', err);
+      console.error("WS parse error:", err);
       return;
     }
-    if (typeof onMessageCallback === 'function') {
+    if (typeof onMessageCallback === "function") {
       onMessageCallback(data);
     }
   };
 
   ws.onclose = () => {
-    console.log('WebSocket closed.');
+    console.log("WebSocket closed.");
     ws = null;
   };
 }
@@ -49,7 +49,7 @@ export function connectWebSocket(onMessageCallback, onOpenCallback) {
  */
 export function sendWSMessage(obj) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    console.warn('WebSocket not open; ignoring message:', obj);
+    console.warn("WebSocket not open; ignoring message:", obj);
     return;
   }
   ws.send(JSON.stringify(obj));

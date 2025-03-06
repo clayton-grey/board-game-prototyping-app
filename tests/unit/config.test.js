@@ -1,5 +1,5 @@
 // tests/unit/config.test.js
-describe('config.js under NODE_ENV=test', () => {
+describe("config.js under NODE_ENV=test", () => {
   let originalEnv;
 
   beforeAll(() => {
@@ -10,18 +10,18 @@ describe('config.js under NODE_ENV=test', () => {
     process.env = originalEnv;
   });
 
-  test('Node environment is pinned to test => DB_NAME forced; DB_USER, etc. come from env', () => {
-    process.env.NODE_ENV = 'test';
+  test("Node environment is pinned to test => DB_NAME forced; DB_USER, etc. come from env", () => {
+    process.env.NODE_ENV = "test";
     // Suppose .env.test or Docker sets DB_USER=admin, DB_PASSWORD=whatever
 
     jest.resetModules();
-    const config = require('../../server/config.js').default;
+    const config = require("../../server/config.js").default;
 
     // DB_NAME forced to test
-    expect(config.DB_NAME).toBe('board_game_prototyping_test');
+    expect(config.DB_NAME).toBe("board_game_prototyping_test");
 
     // DB_USER might be 'admin' if your .env.test says so:
-    expect(config.DB_USER).toBe('admin');
+    expect(config.DB_USER).toBe("admin");
 
     // If DB_PASSWORD is set in .env.test as well, we confirm that:
     // expect(config.DB_PASSWORD).toBe('mySecretPassword');

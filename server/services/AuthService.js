@@ -1,7 +1,7 @@
 // server/services/AuthService.js
 
-import jwt from 'jsonwebtoken';
-import config from '../config.js';
+import jwt from "jsonwebtoken";
+import config from "../config.js";
 
 /**
  * Centralizes all logic for creating and verifying JWTs,
@@ -16,16 +16,16 @@ export class AuthService {
     return {
       id: user.id,
       email: user.email,
-      role: user.role, 
+      role: user.role,
       name: user.name,
-      isAdmin: user.role === 'admin'
+      isAdmin: user.role === "admin",
     };
   }
 
   /**
    * Create a JWT string from a given payload object.
    */
-  static createToken(payload, expiresIn = '1h') {
+  static createToken(payload, expiresIn = "1h") {
     return jwt.sign(payload, config.JWT_SECRET, { expiresIn });
   }
 

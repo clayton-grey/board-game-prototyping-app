@@ -5,12 +5,12 @@
  * shapes, cursors, ephemeral creation, etc.
  */
 
-import { state } from './canvasState.js';
+import { state } from "./canvasState.js";
 import {
   getCanvas2DContext,
   getEffectiveMajorSpacing,
-  boxesOverlap
-} from './canvasUtils.js';
+  boxesOverlap,
+} from "./canvasUtils.js";
 
 // Track whether we’ve already scheduled a render
 let animId = null;
@@ -68,8 +68,8 @@ function render() {
 /** Fill the screen with a neutral background. */
 function fillBackground(ctx) {
   ctx.save();
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle = '#F0F0F0';
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#F0F0F0";
   ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   ctx.restore();
 }
@@ -89,7 +89,7 @@ function drawGrid(ctx) {
   const startY = Math.floor(state.camY / majorSpacing) * majorSpacing;
   const endY = Math.ceil((state.camY + ch) / majorSpacing) * majorSpacing;
 
-  ctx.strokeStyle = 'rgb(220,220,220)';
+  ctx.strokeStyle = "rgb(220,220,220)";
   ctx.lineWidth = 1 / state.scale;
   ctx.beginPath();
   for (let x = startX; x <= endX; x += majorSpacing) {
@@ -131,19 +131,27 @@ function drawGrid(ctx) {
 function drawAllElements(ctx) {
   for (const el of state.elements) {
     ctx.save();
-    ctx.fillStyle = '#CCC';
+    ctx.fillStyle = "#CCC";
 
-    if (el.shape === 'ellipse') {
+    if (el.shape === "ellipse") {
       ctx.beginPath();
-      ctx.ellipse(el.x + el.w/2, el.y + el.h/2, el.w/2, el.h/2, 0, 0, Math.PI*2);
+      ctx.ellipse(
+        el.x + el.w / 2,
+        el.y + el.h / 2,
+        el.w / 2,
+        el.h / 2,
+        0,
+        0,
+        Math.PI * 2,
+      );
       ctx.fill();
-    } else if (el.shape === 'text') {
+    } else if (el.shape === "text") {
       // placeholder text box
-      ctx.fillStyle = '#FFE';
+      ctx.fillStyle = "#FFE";
       ctx.fillRect(el.x, el.y, el.w, el.h);
-      ctx.fillStyle = '#333';
-      ctx.font = '14px sans-serif';
-      ctx.fillText('Text', el.x + 5, el.y + (el.h/2) + 5);
+      ctx.fillStyle = "#333";
+      ctx.font = "14px sans-serif";
+      ctx.fillText("Text", el.x + 5, el.y + el.h / 2 + 5);
     } else {
       // rectangle
       ctx.fillRect(el.x, el.y, el.w, el.h);
@@ -152,12 +160,20 @@ function drawAllElements(ctx) {
     // Outline if locked by someone else
     if (el.lockedBy && el.lockedBy !== state.localUserId) {
       const info = state.userInfoMap.get(el.lockedBy);
-      const outlineColor = info?.color || '#FFA500';
+      const outlineColor = info?.color || "#FFA500";
       ctx.lineWidth = 2 / state.scale;
       ctx.strokeStyle = outlineColor;
-      if (el.shape === 'ellipse') {
+      if (el.shape === "ellipse") {
         ctx.beginPath();
-        ctx.ellipse(el.x + el.w/2, el.y + el.h/2, el.w/2, el.h/2, 0, 0, Math.PI*2);
+        ctx.ellipse(
+          el.x + el.w / 2,
+          el.y + el.h / 2,
+          el.w / 2,
+          el.h / 2,
+          0,
+          0,
+          Math.PI * 2,
+        );
         ctx.stroke();
       } else {
         ctx.strokeRect(el.x, el.y, el.w, el.h);
@@ -169,9 +185,12 @@ function drawAllElements(ctx) {
 
 /** Draw bounding box + corner handles for selected shapes. */
 function drawSelectionBoundingBox(ctx) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
   for (const id of state.selectedElementIds) {
-    const el = state.elements.find(e => e.id === id);
+    const el = state.elements.find((e) => e.id === id);
     if (!el) continue;
     minX = Math.min(minX, el.x);
     minY = Math.min(minY, el.y);
@@ -181,7 +200,7 @@ function drawSelectionBoundingBox(ctx) {
   if (minX > maxX || minY > maxY) return;
 
   ctx.save();
-  ctx.strokeStyle = 'rgba(0,0,255,0.8)';
+  ctx.strokeStyle = "rgba(0,0,255,0.8)";
   ctx.lineWidth = 2 / state.scale;
   ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
 
@@ -189,17 +208,17 @@ function drawSelectionBoundingBox(ctx) {
   const radius = 6 / state.scale;
   const cornerStroke = 4 / state.scale;
   const corners = [
-    { x: minX,      y: minY },
-    { x: maxX,      y: minY },
-    { x: minX,      y: maxY },
-    { x: maxX,      y: maxY },
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: minX, y: maxY },
+    { x: maxX, y: maxY },
   ];
-  ctx.fillStyle = '#FFF';
-  ctx.strokeStyle = '#A0A0A0';
+  ctx.fillStyle = "#FFF";
+  ctx.strokeStyle = "#A0A0A0";
   ctx.lineWidth = cornerStroke;
   for (const c of corners) {
     ctx.beginPath();
-    ctx.ellipse(c.x, c.y, radius, radius, 0, 0, Math.PI*2);
+    ctx.ellipse(c.x, c.y, radius, radius, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }
@@ -216,12 +235,12 @@ function drawEphemeralCreation(ctx) {
   let w = Math.abs(curWX - startWX);
   let h = Math.abs(curWY - startWY);
 
-  if (state.shiftDown && (tool === 'rectangle' || tool === 'ellipse')) {
+  if (state.shiftDown && (tool === "rectangle" || tool === "ellipse")) {
     const side = Math.max(w, h);
     w = side;
     h = side;
   }
-  if (tool === 'text') {
+  if (tool === "text") {
     // default text height
     const TEXT_DEFAULT_HEIGHT = 30;
     h = TEXT_DEFAULT_HEIGHT;
@@ -233,14 +252,14 @@ function drawEphemeralCreation(ctx) {
   ctx.save();
   // We’re already in camera space, so these coords match up exactly
   ctx.beginPath();
-  if (tool === 'ellipse') {
-    ctx.ellipse(x + w/2, y + h/2, w/2, h/2, 0, 0, Math.PI*2);
+  if (tool === "ellipse") {
+    ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
   } else {
     ctx.rect(x, y, w, h);
   }
-  ctx.fillStyle = 'rgba(255,0,0,0.2)';
+  ctx.fillStyle = "rgba(255,0,0,0.2)";
   ctx.fill();
-  ctx.strokeStyle = 'red';
+  ctx.strokeStyle = "red";
   ctx.lineWidth = 2 / state.scale;
   ctx.stroke();
   ctx.restore();
@@ -254,12 +273,12 @@ function drawMarquee(ctx) {
   const rh = Math.abs(state.marqueeEnd.yCanvas - state.marqueeStart.yCanvas);
 
   ctx.save();
-  ctx.setTransform(1,0,0,1,0,0); // screen coords
+  ctx.setTransform(1, 0, 0, 1, 0, 0); // screen coords
   ctx.beginPath();
   ctx.rect(rx, ry, rw, rh);
-  ctx.fillStyle = 'rgba(0,0,255,0.2)';
+  ctx.fillStyle = "rgba(0,0,255,0.2)";
   ctx.fill();
-  ctx.strokeStyle = 'blue';
+  ctx.strokeStyle = "blue";
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.restore();
@@ -271,7 +290,7 @@ function drawRemoteCursors(ctx) {
   for (const [uId, pos] of state.remoteCursors.entries()) {
     if (uId === state.localUserId) continue;
     const info = state.userInfoMap.get(uId);
-    const outlineColor = info?.color || '#FFA500';
+    const outlineColor = info?.color || "#FFA500";
 
     const sx = (pos.x - state.camX) * state.scale;
     const sy = (pos.y - state.camY) * state.scale;
@@ -279,24 +298,24 @@ function drawRemoteCursors(ctx) {
     ctx.save();
     ctx.translate(sx, sy);
     ctx.beginPath();
-    ctx.moveTo(0,0);
-    ctx.lineTo(0,14);
-    ctx.lineTo(4,10);
-    ctx.lineTo(6,14);
-    ctx.lineTo(8,12);
-    ctx.lineTo(5,7);
-    ctx.lineTo(9,3);
-    ctx.lineTo(0,0);
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, 14);
+    ctx.lineTo(4, 10);
+    ctx.lineTo(6, 14);
+    ctx.lineTo(8, 12);
+    ctx.lineTo(5, 7);
+    ctx.lineTo(9, 3);
+    ctx.lineTo(0, 0);
     ctx.closePath();
 
-    ctx.fillStyle = 'white';
+    ctx.fillStyle = "white";
     ctx.fill();
     ctx.strokeStyle = outlineColor;
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    ctx.font = '6px sans-serif';
-    ctx.fillStyle = '#000';
+    ctx.font = "6px sans-serif";
+    ctx.fillStyle = "#000";
     let label = info?.name || uId;
     ctx.fillText(label, 10, 6);
 

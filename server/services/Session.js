@@ -2,12 +2,12 @@
 // FILE: server/services/Session.js
 // =========================
 
-import { isAdmin } from '../utils/Permissions.js';
+import { isAdmin } from "../utils/Permissions.js";
 
 export class Session {
   constructor(code) {
     this.code = code;
-    this.projectName = 'New Project';
+    this.projectName = "New Project";
 
     this.users = new Map();
     this.elements = [
@@ -32,7 +32,7 @@ export class Session {
   canManage(userId) {
     const user = this.users.get(userId);
     if (!user) return false;
-    return isAdmin(user) || (user.sessionRole === 'owner');
+    return isAdmin(user) || user.sessionRole === "owner";
   }
 
   /**
@@ -47,10 +47,10 @@ export class Session {
       // brand new
       userObj = {
         userId,
-        name: userName || 'Anonymous',
+        name: userName || "Anonymous",
         color: this._colorFromUserId(userId),
-        globalRole: isAdminFlag ? 'admin' : 'user',
-        sessionRole: 'viewer',
+        globalRole: isAdminFlag ? "admin" : "user",
+        sessionRole: "viewer",
         socket: wsSocket,
         x: 0,
         y: 0,
@@ -64,13 +64,13 @@ export class Session {
         userObj.name = userName;
       }
       if (isAdminFlag) {
-        userObj.globalRole = 'admin';
+        userObj.globalRole = "admin";
       }
     }
 
     // If there's truly no owner, make this user the owner
     if (!this._hasOwner()) {
-      userObj.sessionRole = 'owner';
+      userObj.sessionRole = "owner";
     }
 
     return userObj;
@@ -87,7 +87,7 @@ export class Session {
       }
     }
 
-    const wasOwner = (user.sessionRole === 'owner');
+    const wasOwner = user.sessionRole === "owner";
     this.users.delete(userId);
 
     if (wasOwner) {
@@ -102,7 +102,7 @@ export class Session {
     if (!kicker || !target) return null;
 
     if (!this.canManage(kickerUserId)) return null;
-    if (target.sessionRole === 'owner' || target.globalRole === 'admin') {
+    if (target.sessionRole === "owner" || target.globalRole === "admin") {
       return null;
     }
 
@@ -114,7 +114,7 @@ export class Session {
     }
     this.users.delete(targetUserId);
 
-    if (target.sessionRole === 'owner') {
+    if (target.sessionRole === "owner") {
       this._reassignOwnerIfNeeded();
     }
     return target;
@@ -133,10 +133,10 @@ export class Session {
       // create a placeholder so we can "upgrade" it
       oldUser = {
         userId: oldUserId,
-        name: 'Anonymous',
+        name: "Anonymous",
         color: this._colorFromUserId(oldUserId),
-        globalRole: 'user',
-        sessionRole: 'viewer',
+        globalRole: "user",
+        sessionRole: "viewer",
         socket: null,
         joinOrder: this.nextJoinOrder++,
       };
@@ -160,7 +160,7 @@ export class Session {
     // 4) Overwrite fields in oldUser => store as newUserId
     oldUser.userId = newUserId;
     oldUser.name = newName || oldUser.name;
-    oldUser.globalRole = newIsAdmin ? 'admin' : 'user';
+    oldUser.globalRole = newIsAdmin ? "admin" : "user";
     oldUser.sessionRole = oldSessionRole;
     if (wsSocket) {
       oldUser.socket = wsSocket;
@@ -200,17 +200,17 @@ export class Session {
       // create a placeholder so we can "downgrade" it
       oldUser = {
         userId: oldUserId,
-        name: 'Anonymous',
+        name: "Anonymous",
         color: this._colorFromUserId(oldUserId),
-        globalRole: 'user',
-        sessionRole: 'viewer',
+        globalRole: "user",
+        sessionRole: "viewer",
         socket: null,
         joinOrder: this.nextJoinOrder++,
       };
       this.users.set(oldUserId, oldUser);
     }
 
-    const wasOwner = (oldUser.sessionRole === 'owner');
+    const wasOwner = oldUser.sessionRole === "owner";
 
     // free or reassign locks
     for (const el of this.elements) {
@@ -222,9 +222,9 @@ export class Session {
     this.users.delete(oldUserId);
 
     oldUser.userId = newUserId;
-    oldUser.name = 'Anonymous';
-    oldUser.globalRole = 'user';
-    oldUser.sessionRole = 'viewer';
+    oldUser.name = "Anonymous";
+    oldUser.globalRole = "user";
+    oldUser.sessionRole = "viewer";
     oldUser.joinOrder = this.nextJoinOrder++;
 
     if (wsSocket) {
@@ -260,7 +260,7 @@ export class Session {
   setEditorRole(targetUserId, isEditor) {
     const user = this.users.get(targetUserId);
     if (!user) return false;
-    user.sessionRole = isEditor ? 'editor' : 'viewer';
+    user.sessionRole = isEditor ? "editor" : "viewer";
     return true;
   }
 
@@ -274,16 +274,16 @@ export class Session {
 
     let candidates = [...this.users.values()];
     if (excludeUserId) {
-      candidates = candidates.filter(u => u.userId !== excludeUserId);
+      candidates = candidates.filter((u) => u.userId !== excludeUserId);
     }
     if (candidates.length === 0) return;
 
     candidates.sort((a, b) => a.joinOrder - b.joinOrder);
-    candidates[0].sessionRole = 'owner';
+    candidates[0].sessionRole = "owner";
   }
 
   _hasOwner() {
-    return [...this.users.values()].some(u => u.sessionRole === 'owner');
+    return [...this.users.values()].some((u) => u.sessionRole === "owner");
   }
 
   _colorFromUserId(userId) {

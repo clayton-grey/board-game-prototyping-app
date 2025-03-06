@@ -2,11 +2,11 @@
 // FILE: client/js/canvas/canvasTools.js
 // =========================
 
-import { state } from './canvasState.js';
-import { requestRender } from './canvasRender.js';
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
-import { boxesOverlap } from './canvasUtils.js';
-import { sendWSMessage } from '../../js/wsClient.js';
+import { state } from "./canvasState.js";
+import { requestRender } from "./canvasRender.js";
+import { MESSAGE_TYPES } from "../../../shared/wsMessageTypes.js";
+import { boxesOverlap } from "./canvasUtils.js";
+import { sendWSMessage } from "../../js/wsClient.js";
 
 /**
  * createOrUpdateElementsFromServer => sets state.elements to the latest from the server
@@ -83,14 +83,16 @@ export function onPointerDownSelectOrCreate(e, canvas) {
   const wy = state.camY + sy / state.scale;
 
   const tool = getCurrentTool();
-  if (tool === 'select') {
+  if (tool === "select") {
     const clicked = findTopmostElementAt(wx, wy);
     if (clicked) {
       if (clicked.lockedBy && clicked.lockedBy !== state.localUserId) return;
       if (e.shiftKey) {
         if (state.selectedElementIds.includes(clicked.id)) {
           sendDeselectElement([clicked.id]);
-          state.selectedElementIds = state.selectedElementIds.filter((id) => id !== clicked.id);
+          state.selectedElementIds = state.selectedElementIds.filter(
+            (id) => id !== clicked.id,
+          );
           delete state.lockedOffsets[clicked.id];
         } else {
           sendGrabElement(clicked.id);
@@ -114,7 +116,7 @@ export function onPointerDownSelectOrCreate(e, canvas) {
         }
       }
       state.isDragging = true;
-      canvas.classList.add('grabbing');
+      canvas.classList.add("grabbing");
     } else {
       // marquee
       state.isMarqueeSelecting = true;
@@ -132,7 +134,7 @@ export function onPointerDownSelectOrCreate(e, canvas) {
         deselectAll();
       }
       state.isDragging = false;
-      canvas.classList.add('grabbing');
+      canvas.classList.add("grabbing");
     }
   } else {
     startShapeCreation(tool, wx, wy);
@@ -141,15 +143,15 @@ export function onPointerDownSelectOrCreate(e, canvas) {
 
 /** pointermove => if isDragging => doDragSelected, etc. */
 export function onPointerMoveCommon(e, canvas) {
-  if (state.isDragging && (e.buttons & 1)) {
+  if (state.isDragging && e.buttons & 1) {
     doDragSelected(e, canvas);
     return;
   }
-  if (state.isMarqueeSelecting && (e.buttons & 1)) {
+  if (state.isMarqueeSelecting && e.buttons & 1) {
     updateMarquee(e, canvas);
     return;
   }
-  if (state.creationState?.active && (e.buttons & 1)) {
+  if (state.creationState?.active && e.buttons & 1) {
     updateShapeCreation(e, canvas);
     return;
   }
@@ -160,7 +162,7 @@ export function onPointerMoveCommon(e, canvas) {
 export function onPointerUpCommon(e, canvas) {
   if (state.isDragging && e.button === 0) {
     state.isDragging = false;
-    canvas.classList.remove('grabbing');
+    canvas.classList.remove("grabbing");
     for (const k of Object.keys(state.lockedOffsets)) {
       delete state.lockedOffsets[k];
     }
@@ -219,12 +221,12 @@ function finalizeShapeCreation() {
   let w = Math.abs(curWX - startWX);
   let h = Math.abs(curWY - startWY);
 
-  if (state.shiftDown && (tool === 'rectangle' || tool === 'ellipse')) {
+  if (state.shiftDown && (tool === "rectangle" || tool === "ellipse")) {
     const side = Math.max(w, h);
     w = side;
     h = side;
   }
-  if (tool === 'text') {
+  if (tool === "text") {
     const TEXT_DEFAULT_HEIGHT = 30;
     h = TEXT_DEFAULT_HEIGHT;
   }
@@ -276,7 +278,7 @@ function updateMarquee(e, canvas) {
 
 function finalizeMarquee(e, canvas) {
   state.isMarqueeSelecting = false;
-  canvas.classList.remove('grabbing');
+  canvas.classList.remove("grabbing");
 
   const rminX = Math.min(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
   const rmaxX = Math.max(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
@@ -321,10 +323,10 @@ export function hitTestResizeHandles(e, canvas) {
 
   const cornerRadius = 8 / state.scale;
   const corners = [
-    { x: bb.x, y: bb.y, name: 'top-left' },
-    { x: bb.x + bb.w, y: bb.y, name: 'top-right' },
-    { x: bb.x, y: bb.y + bb.h, name: 'bottom-left' },
-    { x: bb.x + bb.w, y: bb.y + bb.h, name: 'bottom-right' },
+    { x: bb.x, y: bb.y, name: "top-left" },
+    { x: bb.x + bb.w, y: bb.y, name: "top-right" },
+    { x: bb.x, y: bb.y + bb.h, name: "bottom-left" },
+    { x: bb.x + bb.w, y: bb.y + bb.h, name: "bottom-right" },
   ];
   for (const c of corners) {
     const dx = wx - c.x;
@@ -341,7 +343,7 @@ export function hitTestResizeHandles(e, canvas) {
     wx >= bb.x &&
     wx <= bb.x + bb.w
   ) {
-    return 'top';
+    return "top";
   }
   if (
     wy >= bb.y + bb.h - edgeTol &&
@@ -349,7 +351,7 @@ export function hitTestResizeHandles(e, canvas) {
     wx >= bb.x &&
     wx <= bb.x + bb.w
   ) {
-    return 'bottom';
+    return "bottom";
   }
   if (
     wx >= bb.x - edgeTol &&
@@ -357,7 +359,7 @@ export function hitTestResizeHandles(e, canvas) {
     wy >= bb.y &&
     wy <= bb.y + bb.h
   ) {
-    return 'left';
+    return "left";
   }
   if (
     wx >= bb.x + bb.w - edgeTol &&
@@ -365,7 +367,7 @@ export function hitTestResizeHandles(e, canvas) {
     wy >= bb.y &&
     wy <= bb.y + bb.h
   ) {
-    return 'right';
+    return "right";
   }
 
   return null;
@@ -406,53 +408,66 @@ export function updateResizing(e, canvas) {
 
   let bb = { ...state.boundingBoxAtDragStart };
 
-  if (state.activeHandle.includes('left')) {
+  if (state.activeHandle.includes("left")) {
     const newX = Math.min(bb.x + bb.w - 2, wx);
     const deltaLeft = newX - bb.x;
     bb.x = newX;
     bb.w -= deltaLeft;
   }
-  if (state.activeHandle.includes('right')) {
+  if (state.activeHandle.includes("right")) {
     const newW = Math.max(2, wx - bb.x);
     bb.w = newW;
   }
-  if (state.activeHandle.includes('top')) {
+  if (state.activeHandle.includes("top")) {
     const newY = Math.min(bb.y + bb.h - 2, wy);
     const deltaTop = newY - bb.y;
     bb.y = newY;
     bb.h -= deltaTop;
   }
-  if (state.activeHandle.includes('bottom')) {
+  if (state.activeHandle.includes("bottom")) {
     bb.h = Math.max(2, wy - bb.y);
   }
 
   // SHIFT => preserve aspect ratio if corner
   if (
     state.shiftDown &&
-    (state.activeHandle === 'top-left' ||
-      state.activeHandle === 'top-right' ||
-      state.activeHandle === 'bottom-left' ||
-      state.activeHandle === 'bottom-right')
+    (state.activeHandle === "top-left" ||
+      state.activeHandle === "top-right" ||
+      state.activeHandle === "bottom-left" ||
+      state.activeHandle === "bottom-right")
   ) {
-    const originalRatio = state.boundingBoxAtDragStart.w / state.boundingBoxAtDragStart.h;
+    const originalRatio =
+      state.boundingBoxAtDragStart.w / state.boundingBoxAtDragStart.h;
     const newRatio = bb.w / bb.h;
     if (newRatio > originalRatio) {
       const wFactor = bb.w / state.boundingBoxAtDragStart.w;
       bb.h = state.boundingBoxAtDragStart.h * wFactor;
-      if (state.activeHandle.includes('top')) {
-        bb.y = state.boundingBoxAtDragStart.y + state.boundingBoxAtDragStart.h - bb.h;
+      if (state.activeHandle.includes("top")) {
+        bb.y =
+          state.boundingBoxAtDragStart.y +
+          state.boundingBoxAtDragStart.h -
+          bb.h;
       }
-      if (state.activeHandle.includes('left')) {
-        bb.x = state.boundingBoxAtDragStart.x + state.boundingBoxAtDragStart.w - bb.w;
+      if (state.activeHandle.includes("left")) {
+        bb.x =
+          state.boundingBoxAtDragStart.x +
+          state.boundingBoxAtDragStart.w -
+          bb.w;
       }
     } else {
       const hFactor = bb.h / state.boundingBoxAtDragStart.h;
       bb.w = state.boundingBoxAtDragStart.w * hFactor;
-      if (state.activeHandle.includes('top')) {
-        bb.y = state.boundingBoxAtDragStart.y + state.boundingBoxAtDragStart.h - bb.h;
+      if (state.activeHandle.includes("top")) {
+        bb.y =
+          state.boundingBoxAtDragStart.y +
+          state.boundingBoxAtDragStart.h -
+          bb.h;
       }
-      if (state.activeHandle.includes('left')) {
-        bb.x = state.boundingBoxAtDragStart.x + state.boundingBoxAtDragStart.w - bb.w;
+      if (state.activeHandle.includes("left")) {
+        bb.x =
+          state.boundingBoxAtDragStart.x +
+          state.boundingBoxAtDragStart.w -
+          bb.w;
       }
     }
   }
@@ -471,19 +486,19 @@ export function updateResizing(e, canvas) {
     let newH = el.h;
 
     if (
-      state.activeHandle.includes('left') ||
-      state.activeHandle.includes('right') ||
-      state.activeHandle.includes('top-') ||
-      state.activeHandle.includes('bottom-')
+      state.activeHandle.includes("left") ||
+      state.activeHandle.includes("right") ||
+      state.activeHandle.includes("top-") ||
+      state.activeHandle.includes("bottom-")
     ) {
       newX = bb.x + snap.relX * scaleX;
       newW = snap.w * scaleX;
     }
     if (
-      state.activeHandle.includes('top') ||
-      state.activeHandle.includes('bottom') ||
-      state.activeHandle.includes('left-') ||
-      state.activeHandle.includes('right-')
+      state.activeHandle.includes("top") ||
+      state.activeHandle.includes("bottom") ||
+      state.activeHandle.includes("left-") ||
+      state.activeHandle.includes("right-")
     ) {
       newY = bb.y + snap.relY * scaleY;
       newH = snap.h * scaleY;
@@ -514,7 +529,7 @@ export function endResizing(forceCancel) {
 function findTopmostElementAt(wx, wy) {
   for (let i = state.elements.length - 1; i >= 0; i--) {
     const el = state.elements[i];
-    if (el.shape === 'ellipse') {
+    if (el.shape === "ellipse") {
       const rx = el.w / 2;
       const ry = el.h / 2;
       const cx = el.x + rx;
@@ -536,40 +551,40 @@ function findTopmostElementAt(wx, wy) {
 function updateHoverCursor(e, canvas) {
   if (!state.isPanning && !state.isResizing && !state.isDragging) {
     const tool = getCurrentTool();
-    if (tool === 'select' && canTransformSelection()) {
+    if (tool === "select" && canTransformSelection()) {
       const handle = hitTestResizeHandles(e, canvas);
       if (handle) {
         canvas.style.cursor = getCursorForHandle(handle);
         return;
       }
     }
-    canvas.style.cursor = 'default';
+    canvas.style.cursor = "default";
   }
 }
 
 function getCurrentTool() {
-  const palette = document.getElementById('tools-palette');
-  if (!palette) return 'select';
-  const btn = palette.querySelector('.tool-btn.selected');
-  return btn?.dataset?.tool || 'select';
+  const palette = document.getElementById("tools-palette");
+  if (!palette) return "select";
+  const btn = palette.querySelector(".tool-btn.selected");
+  return btn?.dataset?.tool || "select";
 }
 
 function getCursorForHandle(handle) {
   switch (handle) {
-    case 'top-left':
-    case 'bottom-right':
-      return 'nwse-resize';
-    case 'top-right':
-    case 'bottom-left':
-      return 'nesw-resize';
-    case 'top':
-    case 'bottom':
-      return 'ns-resize';
-    case 'left':
-    case 'right':
-      return 'ew-resize';
+    case "top-left":
+    case "bottom-right":
+      return "nwse-resize";
+    case "top-right":
+    case "bottom-left":
+      return "nesw-resize";
+    case "top":
+    case "bottom":
+      return "ns-resize";
+    case "left":
+    case "right":
+      return "ew-resize";
     default:
-      return 'default';
+      return "default";
   }
 }
 
@@ -612,13 +627,13 @@ export function deselectAll() {
 }
 
 function revertToSelectTool() {
-  const palette = document.getElementById('tools-palette');
+  const palette = document.getElementById("tools-palette");
   if (!palette) return;
-  const buttons = palette.querySelectorAll('.tool-btn');
+  const buttons = palette.querySelectorAll(".tool-btn");
   buttons.forEach((b) => {
-    b.classList.remove('selected');
-    if (b.dataset.tool === 'select') {
-      b.classList.add('selected');
+    b.classList.remove("selected");
+    if (b.dataset.tool === "select") {
+      b.classList.add("selected");
     }
   });
 }

@@ -1,7 +1,7 @@
 // server/database.js
-import pkg from 'pg';
+import pkg from "pg";
 const { Pool } = pkg;
-import config from './config.js';
+import config from "./config.js";
 
 const pool = new Pool({
   user: config.DB_USER,
@@ -14,10 +14,10 @@ const pool = new Pool({
 
 export const connectDB = async () => {
   try {
-    await pool.query('SELECT 1');
-    console.log('Connected to PostgreSQL database');
+    await pool.query("SELECT 1");
+    console.log("Connected to PostgreSQL database");
   } catch (error) {
-    console.error('Database connection error:', error);
+    console.error("Database connection error:", error);
     process.exit(1);
   }
 };

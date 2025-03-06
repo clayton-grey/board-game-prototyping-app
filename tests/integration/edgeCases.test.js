@@ -1,15 +1,15 @@
 // tests/integration/edgeCases.test.js
 
-import request from 'supertest';
-import app from '../../server/app.js';
-import { createTestUser, closeDBPool } from './testUtils.js';
+import request from "supertest";
+import app from "../../server/app.js";
+import { createTestUser, closeDBPool } from "./testUtils.js";
 
-describe('Edge Cases Integration Tests', () => {
+describe("Edge Cases Integration Tests", () => {
   let token;
 
   beforeAll(async () => {
     // Create a user to test with
-    const user = await createTestUser({ name: 'EdgeTester' });
+    const user = await createTestUser({ name: "EdgeTester" });
     token = user.token;
   });
 
@@ -17,36 +17,34 @@ describe('Edge Cases Integration Tests', () => {
     await closeDBPool();
   });
 
-  test('Creating a project with missing name => uses fallback or fails gracefully', async () => {
+  test("Creating a project with missing name => uses fallback or fails gracefully", async () => {
     const res = await request(app)
-      .post('/projects')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ description: 'No name provided' });
+      .post("/projects")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ description: "No name provided" });
     // If your route requires name strictly, expect 400
     // else if it sets a default name, expect 201 or similar
     // We'll just check for not 500:
     expect([400, 201]).toContain(res.statusCode);
   });
 
-  test('Requesting a non-existent project => 403 or 404 when user is not owner/admin', async () => {
+  test("Requesting a non-existent project => 403 or 404 when user is not owner/admin", async () => {
     const getRes = await request(app)
-      .get('/projects/99999999') // presumably doesn't exist
-      .set('Authorization', `Bearer ${token}`);
+      .get("/projects/99999999") // presumably doesn't exist
+      .set("Authorization", `Bearer ${token}`);
     expect([403, 404]).toContain(getRes.statusCode);
   });
 
-  test('Register with a duplicate email => 400 or 409', async () => {
+  test("Register with a duplicate email => 400 or 409", async () => {
     // Use a unique "duplicate" email each time so the first registration always succeeds
     const uniqueEmail = `edge_dup_${Date.now()}@example.com`;
     const existing = await createTestUser({ email: uniqueEmail });
 
-    const dup = await request(app)
-      .post('/auth/register')
-      .send({
-      name: 'DupUser',
+    const dup = await request(app).post("/auth/register").send({
+      name: "DupUser",
       email: uniqueEmail,
-      password: 'pass123',
-      confirmPassword: 'pass123',
+      password: "pass123",
+      confirmPassword: "pass123",
     });
     expect([400, 409]).toContain(dup.statusCode);
   });

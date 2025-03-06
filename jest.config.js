@@ -1,28 +1,24 @@
 export default {
   projects: [
     {
-      displayName: 'server',
-      testEnvironment: 'node',
+      displayName: "server",
+      testEnvironment: "node",
       transform: {
-        '^.+\\.[tj]s$': 'babel-jest'
+        "^.+\\.[tj]s$": "babel-jest",
       },
       testMatch: [
-        '<rootDir>/tests/unit/**/*.test.js',
-        '<rootDir>/tests/integration/**/*.test.js'
-      ]
+        "<rootDir>/tests/unit/**/*.test.js",
+        "<rootDir>/tests/integration/**/*.test.js",
+      ],
     },
     {
-      displayName: 'client',
-      testEnvironment: 'jsdom',
+      displayName: "client",
+      testEnvironment: "jsdom",
       transform: {
-        '^.+\\.[tj]s$': 'babel-jest'
+        "^.+\\.[tj]s$": "babel-jest",
       },
-      testMatch: [
-        '<rootDir>/tests/client/**/*.test.js'
-      ],
-      setupFiles: [
-        'jest-canvas-mock'
-      ]
-    }
-  ]
+      testMatch: ["<rootDir>/tests/client/**/*.test.js"],
+      setupFiles: ["jest-canvas-mock"],
+    },
+  ],
 };

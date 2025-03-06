@@ -5,7 +5,7 @@
  * for setting each user's color/name in userInfoMap.
  */
 
-import { state } from './canvasState.js';
+import { state } from "./canvasState.js";
 
 /**
  * handleUserColorUpdate(userId, name, color):

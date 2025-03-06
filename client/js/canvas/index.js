@@ -3,22 +3,22 @@
  *
  * The main orchestrator that initializes the canvas, sets up
  * event listeners for the Zoom In / Zoom Out / Frame All buttons,
- * and re-exports relevant functions. 
+ * and re-exports relevant functions.
  */
 
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
-import { state, setCurrentProjectName } from './canvasState.js';
-import { initPointerAndKeyEvents } from './canvasEvents.js';
+import { MESSAGE_TYPES } from "../../../shared/wsMessageTypes.js";
+import { state, setCurrentProjectName } from "./canvasState.js";
+import { initPointerAndKeyEvents } from "./canvasEvents.js";
 import {
   setLocalUserId,
   createOrUpdateElementsFromServer,
   removeObsoleteSelections,
   handleCursorData,
-  removeStaleRemoteCursors
-} from './canvasTools.js';
-import { requestRender } from './canvasRender.js';
-import { handleUserColorUpdate } from './canvasUsers.js';
-import { zoomAroundCenter, frameAllElements } from './canvasCamera.js';
+  removeStaleRemoteCursors,
+} from "./canvasTools.js";
+import { requestRender } from "./canvasRender.js";
+import { handleUserColorUpdate } from "./canvasUsers.js";
+import { zoomAroundCenter, frameAllElements } from "./canvasCamera.js";
 
 /**
  * Initialize the canvas with the current userId,
@@ -45,7 +45,7 @@ export function handleCanvasMessage(data, myUserId) {
   switch (data.type) {
     case MESSAGE_TYPES.ELEMENT_STATE: {
       createOrUpdateElementsFromServer(data.elements);
-      if (typeof data.projectName === 'string') {
+      if (typeof data.projectName === "string") {
         setCurrentProjectName(data.projectName);
         window.currentProjectName = data.projectName; // fallback for UI
       }
@@ -58,7 +58,7 @@ export function handleCanvasMessage(data, myUserId) {
       handleCursorData(data, myUserId);
       break;
     default:
-      // Other server messages (move, grab, etc.) 
+      // Other server messages (move, grab, etc.)
       // get handled indirectly by the local pointer logic or do nothing.
       break;
   }

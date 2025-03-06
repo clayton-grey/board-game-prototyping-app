@@ -1,8 +1,8 @@
 // ./server/ws/handlers/chatHandlers.js
 
-import { broadcastToSession } from '../collabUtils.js';
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
-import { sessionGuard } from './handlerUtils.js';
+import { broadcastToSession } from "../collabUtils.js";
+import { MESSAGE_TYPES } from "../../../shared/wsMessageTypes.js";
+import { sessionGuard } from "./handlerUtils.js";
 
 export const handleChatMessage = sessionGuard((session, data, ws) => {
   const { userId, text } = data;

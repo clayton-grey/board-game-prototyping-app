@@ -2,14 +2,14 @@
 // FILE: client/js/canvas/canvasUtils.js
 // =========================
 
-import { state } from './canvasState.js';
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
-import { sendWSMessage } from '../../js/wsClient.js'; // New import
+import { state } from "./canvasState.js";
+import { MESSAGE_TYPES } from "../../../shared/wsMessageTypes.js";
+import { sendWSMessage } from "../../js/wsClient.js"; // New import
 
 export function getCanvas2DContext() {
-  const canvas = document.getElementById('gameCanvas');
+  const canvas = document.getElementById("gameCanvas");
   if (!canvas) return null;
-  return canvas.getContext('2d');
+  return canvas.getContext("2d");
 }
 
 export function clamp(value, min, max) {

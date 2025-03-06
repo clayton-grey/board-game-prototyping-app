@@ -4,7 +4,7 @@
 
 const state = {
   elements: [],
-  currentProjectName: 'New Project',
+  currentProjectName: "New Project",
 
   // Selection
   selectedElementIds: [],
@@ -28,12 +28,16 @@ const state = {
 
   // For marquee
   marqueeStart: {
-    xCanvas: 0, yCanvas: 0,
-    xWorld: 0, yWorld: 0
+    xCanvas: 0,
+    yCanvas: 0,
+    xWorld: 0,
+    yWorld: 0,
   },
   marqueeEnd: {
-    xCanvas: 0, yCanvas: 0,
-    xWorld: 0, yWorld: 0
+    xCanvas: 0,
+    yCanvas: 0,
+    xWorld: 0,
+    yWorld: 0,
   },
 
   // For dragging offsets (elementId -> { dx, dy })
@@ -44,27 +48,20 @@ const state = {
 
   // Resizing
   isResizing: false,
-  activeHandle: null,  // e.g. 'top-left','bottom-right','left','top', etc.
+  activeHandle: null, // e.g. 'top-left','bottom-right','left','top', etc.
   boundingBoxAtDragStart: { x: 0, y: 0, w: 0, h: 0 },
   shapesSnapshot: [], // array of { id, x, y, w, h, relX, relY }
 
-
-  userInfoMap: new Map(),   // userId -> { name, color }
-  remoteCursors: new Map()  // userId -> { x, y }
-
+  userInfoMap: new Map(), // userId -> { name, color }
+  remoteCursors: new Map(), // userId -> { x, y }
 };
-
 
 /** Set or get project name */
 function setCurrentProjectName(newName) {
-  state.currentProjectName = newName || 'New Project';
+  state.currentProjectName = newName || "New Project";
 }
 function getCurrentProjectName() {
   return state.currentProjectName;
 }
 
-export {
-  state,
-  setCurrentProjectName,
-  getCurrentProjectName
-};
+export { state, setCurrentProjectName, getCurrentProjectName };

@@ -9,14 +9,16 @@ This project aims to create an interactive board game prototyping environment th
 ## Core Features
 
 ### Security
+
 - All text input fields must have security precautions to prevent injection attacks.
 - User authentication and data storage must adhere to industry-standard security practices.
 - **Implementation Note**:  
-  In the current code, JWT authentication is used (via `AuthService`) for secure routes, and user passwords are salted & hashed with `bcryptjs`.  
+  In the current code, JWT authentication is used (via `AuthService`) for secure routes, and user passwords are salted & hashed with `bcryptjs`.
 
 ### Canvas & User Interaction
 
 - **Scrollable & Zoomable Canvas**:
+
   - The canvas has a fixed center point and supports zooming.
   - Minimum and maximum zoom levels are configurable in code.
   - Clicking and dragging the canvas moves the viewport (panning).
@@ -25,6 +27,7 @@ This project aims to create an interactive board game prototyping environment th
     This behavior exists in `client/js/canvas.js`, with real-time rendering updates and user-based transformations.
 
 - **Live Collaboration**:
+
   - Multiple users in the same session each have a labeled, color-coded icon.
   - Cursor positions of connected users update in real time.
   - Movement or modification of elements propagates to all users.
@@ -33,6 +36,7 @@ This project aims to create an interactive board game prototyping environment th
     This is handled via WebSockets (`ws/` folder). Each user is assigned a color, and the server broadcasts cursor & element changes.
 
 - **Floating UI Elements**:
+
   - UI elements do not scale with canvas zoom.
   - A floating zoom control UI (bottom-right corner) includes:
     - Zoom percentage display (clickable for manual input, not fully implemented yet in the final UI).
@@ -49,6 +53,7 @@ This project aims to create an interactive board game prototyping environment th
 ### User Management
 
 - **User Accounts**:
+
   - Users can register with an email and password.
   - Passwords must be securely stored (currently done via `bcryptjs`).
   - User preferences (like hotkeys) are planned for future storage.
@@ -73,6 +78,7 @@ This project aims to create an interactive board game prototyping environment th
 ### Project & Session Management
 
 - **Session Activity Tracking**:
+
   - Each session should have an activity queue to enable multi-step undo/redo.
   - Undo/redo controls as floating UI elements.
   - All project changes to elements should be undoable.
@@ -82,6 +88,7 @@ This project aims to create an interactive board game prototyping environment th
     Undo/redo is **not yet** implemented. The current code tracks real-time moves but does not store a local or server-based undo stack.
 
 - **Session Persistence & Project Versioning**:
+
   - Sessions should persist, each having a unique, human-readable code (e.g., “SilverPeregrinFolly”).
   - Sessions tie explicitly to a project version.
   - If an older project version is used, a popover should warn users.
@@ -89,19 +96,20 @@ This project aims to create an interactive board game prototyping environment th
   - Only changes from the original version should be tracked until saved.
   - Session data must be minimal, only storing essential deltas.
   - Expired sessions remain until manually ended if needed.
-  - **Implementation Note**:  
-    - Project versioning is implemented in the `project_versions` table, with rollback and version-number increments.  
-    - Sessions are partially in-memory (`SessionService.js`) and do not yet fully integrate with the database for automatic expiration or partial deltas.  
+  - **Implementation Note**:
+    - Project versioning is implemented in the `project_versions` table, with rollback and version-number increments.
+    - Sessions are partially in-memory (`SessionService.js`) and do not yet fully integrate with the database for automatic expiration or partial deltas.
     - A basic ephemeral session code approach is used; a more robust naming scheme is still planned.
 
 - **Project Ownership & Permissions**:
+
   - Users can create, edit, and delete projects.
   - A project owner can assign permissions to others.
   - Only the owner or admin can delete a project.
   - Only authorized users can save changes.
-  - **Implementation Note**:  
-    - Owner is tracked via `projects.owner_id`.  
-    - A basic user permission check is in `ProjectService.userCanEditProject()`.  
+  - **Implementation Note**:
+    - Owner is tracked via `projects.owner_id`.
+    - A basic user permission check is in `ProjectService.userCanEditProject()`.
 
 - **Project Loading & Saving**:
   - The site should allow opening existing projects or creating new ones.

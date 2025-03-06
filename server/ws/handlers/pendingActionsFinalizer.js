@@ -2,7 +2,7 @@
 // FILE: server/ws/handlers/pendingActionsFinalizer.js
 // =========================
 
-import { pushUndoAction } from './undoRedoHandlers.js';
+import { pushUndoAction } from "./undoRedoHandlers.js";
 
 /**
  * finalizePendingMovesForUser(session, userId, isUndoRedo=false)
@@ -11,7 +11,11 @@ import { pushUndoAction } from './undoRedoHandlers.js';
  *  - If `isUndoRedo` is true, we skip the pushUndoAction (because undoRedo flow
  *    might handle it differently). Typically used by elementHandlers.
  */
-export function finalizePendingMovesForUser(session, userId, isUndoRedo = false) {
+export function finalizePendingMovesForUser(
+  session,
+  userId,
+  isUndoRedo = false,
+) {
   if (!session.pendingMoves) {
     session.pendingMoves = new Map();
     return;
@@ -20,7 +24,7 @@ export function finalizePendingMovesForUser(session, userId, isUndoRedo = false)
 
   for (const [elementId, moveData] of session.pendingMoves.entries()) {
     if (moveData.userId !== userId) continue;
-    const el = session.elements.find(e => e.id === elementId);
+    const el = session.elements.find((e) => e.id === elementId);
     // If the element was deleted or does not exist anymore, remove from map
     if (!el) {
       session.pendingMoves.delete(elementId);
@@ -47,24 +51,28 @@ export function finalizePendingMovesForUser(session, userId, isUndoRedo = false)
   }
 
   if (diffs.length > 0 && !isUndoRedo) {
-    const action = { type: 'move', diffs };
+    const action = { type: "move", diffs };
     pushUndoAction(session, action);
   }
 }
 
 /**
  * finalizePendingResizesForUser(session, userId, isUndoRedo=false)
- *  - Similar logic for resizes. 
+ *  - Similar logic for resizes.
  *  - If `isUndoRedo` is false, we push an undo action immediately.
  */
-export function finalizePendingResizesForUser(session, userId, isUndoRedo = false) {
+export function finalizePendingResizesForUser(
+  session,
+  userId,
+  isUndoRedo = false,
+) {
   if (!session.pendingResizes) return;
   const userMap = session.pendingResizes.get(userId);
   if (!userMap) return;
 
   const diffs = [];
   for (const [elementId, original] of userMap.entries()) {
-    const el = session.elements.find(e => e.id === elementId);
+    const el = session.elements.find((e) => e.id === elementId);
     if (!el) continue;
     if (
       original.x !== el.x ||
@@ -82,7 +90,7 @@ export function finalizePendingResizesForUser(session, userId, isUndoRedo = fals
   session.pendingResizes.delete(userId);
 
   if (diffs.length > 0 && !isUndoRedo) {
-    const action = { type: 'resize', diffs };
+    const action = { type: "resize", diffs };
     pushUndoAction(session, action);
   }
 }

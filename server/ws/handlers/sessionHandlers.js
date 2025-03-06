@@ -2,9 +2,9 @@
 // FILE: server/ws/handlers/sessionHandlers.js
 // =========================
 
-import { SessionService } from '../../services/SessionService.js';
-import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
-import { sessionGuard } from './handlerUtils.js';
+import { SessionService } from "../../services/SessionService.js";
+import { broadcastUserList, broadcastElementState } from "../collabUtils.js";
+import { sessionGuard } from "./handlerUtils.js";
 
 /**
  * handleJoinSession remains unguarded because it can create or retrieve a session
@@ -15,10 +15,12 @@ export function handleJoinSession(session, data, ws) {
   if (!userId) return;
 
   // If session is not explicitly passed, we fetch or create:
-  const theSession = session || SessionService.getOrCreateSession(sessionCode || 'defaultSession');
+  const theSession =
+    session ||
+    SessionService.getOrCreateSession(sessionCode || "defaultSession");
 
   // Instead of always "false" for non-admin, we pass `undefined` if userRole != 'admin'.
-  const isAdmin = (userRole === 'admin') ? true : undefined;
+  const isAdmin = userRole === "admin" ? true : undefined;
 
   const userObj = theSession.addUser(userId, name, isAdmin, ws);
 
@@ -37,7 +39,7 @@ export const handleUpgradeUserId = sessionGuard((session, data, ws) => {
     newUserId,
     newName,
     newIsAdmin,
-    ws
+    ws,
   );
   if (!userObj) return;
 

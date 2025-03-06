@@ -5,8 +5,8 @@
  * updates the zoom-level UI whenever scale changes.
  */
 
-import { state } from './canvasState.js';
-import { requestRender } from './canvasRender.js';
+import { state } from "./canvasState.js";
+import { requestRender } from "./canvasRender.js";
 
 /** Speed constants for wheel & button zoom. Feel free to adjust. */
 const WHEEL_ZOOM_SPEED = 0.0015;
@@ -50,7 +50,7 @@ export function handleWheelZoom(e, canvas) {
 
 /** For the +/- zoom buttons => anchor around center. */
 export function zoomAroundCenter(step) {
-  const canvas = document.getElementById('gameCanvas');
+  const canvas = document.getElementById("gameCanvas");
   if (!canvas) return;
   const cw = canvas.clientWidth;
   const ch = canvas.clientHeight;
@@ -64,13 +64,16 @@ export function zoomAroundCenter(step) {
  */
 export function frameAllElements() {
   if (!state.elements.length) return;
-  let minX = Infinity, maxX = -Infinity;
-  let minY = Infinity, maxY = -Infinity;
+  let minX = Infinity,
+    maxX = -Infinity;
+  let minY = Infinity,
+    maxY = -Infinity;
 
   // If there's a selection, frame just that. Else frame everything.
-  const targets = (state.selectedElementIds.length > 0)
-    ? state.elements.filter(el => state.selectedElementIds.includes(el.id))
-    : state.elements;
+  const targets =
+    state.selectedElementIds.length > 0
+      ? state.elements.filter((el) => state.selectedElementIds.includes(el.id))
+      : state.elements;
 
   for (const el of targets) {
     minX = Math.min(minX, el.x);
@@ -82,9 +85,10 @@ export function frameAllElements() {
   const h = maxY - minY;
   if (w <= 0 || h <= 0) return;
 
-  const canvas = document.getElementById('gameCanvas');
+  const canvas = document.getElementById("gameCanvas");
   if (!canvas) return;
-  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  const cw = canvas.clientWidth,
+    ch = canvas.clientHeight;
   const margin = 50;
   const scaleX = (cw - margin * 2) / w;
   const scaleY = (ch - margin * 2) / h;
@@ -103,7 +107,7 @@ export function frameAllElements() {
 
 /** updateZoomUI => set #zoom-level text to e.g. "125%" */
 function updateZoomUI() {
-  const el = document.getElementById('zoom-level');
+  const el = document.getElementById("zoom-level");
   if (el) {
     el.textContent = `${Math.round(state.scale * 100)}%`;
   }

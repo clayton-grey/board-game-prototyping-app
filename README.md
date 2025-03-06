@@ -1,22 +1,26 @@
 # Board Game Prototyping App
 
 ## Overview
+
 An interactive board game prototyping environment that allows multiple users to collaborate in real time. Users can connect to a shared session and interact with a full-screen canvas containing various virtual board game elements.
 
 ## Features
-- **Real-time collaboration** via WebSockets  
-- **Scrollable & Zoomable Canvas**  
-- **User authentication** with JWT  
-- **Admin panel** for user and project management  
-- **Project versioning and session persistence** (projects stored in PostgreSQL, sessions currently use in-memory storage with partial DB integration)  
-- **Secure database connection** using PostgreSQL  
+
+- **Real-time collaboration** via WebSockets
+- **Scrollable & Zoomable Canvas**
+- **User authentication** with JWT
+- **Admin panel** for user and project management
+- **Project versioning and session persistence** (projects stored in PostgreSQL, sessions currently use in-memory storage with partial DB integration)
+- **Secure database connection** using PostgreSQL
 
 ## Installation
 
 ### Prerequisites
+
 - Docker & Docker Compose
 
 ### Steps
+
 1. Clone the repository:
    ```sh
    git clone https://github.com/your-repo/board-game-prototyping-app.git
@@ -32,6 +36,7 @@ An interactive board game prototyping environment that allows multiple users to 
    ```
 
 ## Folder Structure
+
 ```
 board-game-prototyping-app/
 ├── server/
@@ -68,4 +73,5 @@ board-game-prototyping-app/
 ```
 
 ## License
+
 This project is licensed under the MIT License.

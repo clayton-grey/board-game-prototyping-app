@@ -1,9 +1,9 @@
 // server/ws/handlers/permissionHandlers.js
 
-import { broadcastUserList, broadcastElementState } from '../collabUtils.js';
-import { WebSocket } from 'ws';
-import { sessionGuard } from './handlerUtils.js';
-import { canManageOthers, canKickUser } from '../../utils/Permissions.js';
+import { broadcastUserList, broadcastElementState } from "../collabUtils.js";
+import { WebSocket } from "ws";
+import { sessionGuard } from "./handlerUtils.js";
+import { canManageOthers, canKickUser } from "../../utils/Permissions.js";
 
 export const handleMakeEditor = sessionGuard((session, data, ws) => {
   const { userId, targetUserId } = data;
@@ -15,10 +15,10 @@ export const handleMakeEditor = sessionGuard((session, data, ws) => {
     return;
   }
 
-  // set sessionRole='editor' if target isn't already 'owner' or 'admin' 
-  // (though admin is global, we could allow an admin to also be an 'editor', 
+  // set sessionRole='editor' if target isn't already 'owner' or 'admin'
+  // (though admin is global, we could allow an admin to also be an 'editor',
   // but that may be redundant).
-  if (target.sessionRole !== 'owner') {
+  if (target.sessionRole !== "owner") {
     session.setEditorRole(targetUserId, true);
     broadcastUserList(session);
   }
@@ -34,7 +34,7 @@ export const handleRemoveEditor = sessionGuard((session, data, ws) => {
     return;
   }
 
-  if (target.sessionRole === 'editor') {
+  if (target.sessionRole === "editor") {
     session.setEditorRole(targetUserId, false);
     broadcastUserList(session);
   }
@@ -59,7 +59,7 @@ export const handleKickUser = sessionGuard((session, data, ws) => {
   broadcastElementState(session);
 
   if (kickedUser.socket && kickedUser.socket.readyState === WebSocket.OPEN) {
-    kickedUser.socket.send(JSON.stringify({ type: 'kicked' }), () => {
+    kickedUser.socket.send(JSON.stringify({ type: "kicked" }), () => {
       setTimeout(() => kickedUser.socket.close(), 50);
     });
   } else {

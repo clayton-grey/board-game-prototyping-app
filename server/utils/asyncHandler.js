@@ -1,7 +1,7 @@
 // server/utils/asyncHandler.js
 
 /**
- * A higher-order function to wrap async route handlers, 
+ * A higher-order function to wrap async route handlers,
  * automatically passing errors to next() for the global error handler.
  */
 

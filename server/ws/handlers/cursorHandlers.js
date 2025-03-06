@@ -1,8 +1,8 @@
 // ./server/ws/handlers/cursorHandlers.js
 
-import { broadcastToSession } from '../collabUtils.js';
-import { MESSAGE_TYPES } from '../../../shared/wsMessageTypes.js';
-import { sessionGuard } from './handlerUtils.js';
+import { broadcastToSession } from "../collabUtils.js";
+import { MESSAGE_TYPES } from "../../../shared/wsMessageTypes.js";
+import { sessionGuard } from "./handlerUtils.js";
 
 export const handleCursorUpdate = sessionGuard((session, data, ws) => {
   const { userId, x, y } = data;

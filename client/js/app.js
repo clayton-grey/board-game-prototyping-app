@@ -27,7 +27,8 @@ const isLoggedIn = () => !!token && !!currentUser;
 const isCurrentUserAdmin = () => currentUser && currentUser.role === "admin";
 
 let sessionUsers = [];
-let ephemeralSessionCode = localStorage.getItem("sessionCode") || "defaultSession";
+let ephemeralSessionCode =
+  localStorage.getItem("sessionCode") || "defaultSession";
 
 // DOM references
 const projectNameEl = document.getElementById("project-name");
@@ -391,7 +392,10 @@ loginForm.addEventListener("submit", async (e) => {
   const pass = document.getElementById("loginPassword").value;
 
   try {
-    const data = await fetchJSON("/auth/login", "POST", { email, password: pass });
+    const data = await fetchJSON("/auth/login", "POST", {
+      email,
+      password: pass,
+    });
     token = data.token;
     currentUser = data.user;
     localStorage.setItem("token", token);
@@ -554,7 +558,10 @@ function revertNameChange() {
   span.id = "project-name";
   span.title = "Click to edit project name";
 
-  if (typeof window.currentProjectName === "string" && window.currentProjectName) {
+  if (
+    typeof window.currentProjectName === "string" &&
+    window.currentProjectName
+  ) {
     span.textContent = window.currentProjectName;
   } else {
     span.textContent = "Untitled Project";
@@ -588,7 +595,7 @@ window.addEventListener("keydown", (e) => {
     sendWSMessage({ type: MESSAGE_TYPES.UNDO, userId: activeUserId });
   } else if (
     ctrlOrCmd &&
-    ( (e.shiftKey && e.key.toLowerCase() === "z") || e.key.toLowerCase() === "y" )
+    ((e.shiftKey && e.key.toLowerCase() === "z") || e.key.toLowerCase() === "y")
   ) {
     e.preventDefault();
     sendWSMessage({ type: MESSAGE_TYPES.REDO, userId: activeUserId });

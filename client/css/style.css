@@ -1,5 +1,6 @@
 /* Basic Reset */
-html, body {
+html,
+body {
   margin: 0;
   padding: 0;
   width: 100%;
@@ -9,7 +10,9 @@ html, body {
   box-sizing: border-box;
 }
 
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: inherit;
 }
 
@@ -39,7 +42,7 @@ html, body {
   background-color: #fff;
   color: #333;
   border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   padding: 8px;
   position: absolute;
   z-index: 10;
@@ -186,7 +189,7 @@ html, body {
   background-color: #eee;
 }
 .tool-btn.selected {
-  border: 2px solid #007ACC;
+  border: 2px solid #007acc;
 }
 
 /* 
@@ -199,7 +202,7 @@ html, body {
   left: 0;
   width: 100vw;
   height: 100vh;
-  background: rgba(0,0,0,0.4);
+  background: rgba(0, 0, 0, 0.4);
   display: flex;
   justify-content: center;
   align-items: center;
@@ -346,7 +349,7 @@ button.danger:hover {
   color: #333;
   padding: 8px 10px;
   border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   z-index: 9999;
 }
 #user-action-popover::before {
@@ -365,7 +368,7 @@ button.danger:hover {
   cursor: pointer;
 }
 .user-action-item:hover {
-  background: rgba(0,0,0,0.05);
+  background: rgba(0, 0, 0, 0.05);
 }
 
 /*
@@ -374,7 +377,7 @@ button.danger:hover {
 .selection-rectangle {
   position: absolute;
   border: 2px solid blue;
-  background: rgba(0,0,255,0.2);
+  background: rgba(0, 0, 255, 0.2);
   pointer-events: none;
   z-index: 9999;
 }

@@ -1,7 +1,11 @@
 // ./server/ws/messageDispatcher.js
-import { MESSAGE_TYPES } from '../../shared/wsMessageTypes.js';
-import { handleJoinSession, handleUpgradeUserId, handleDowngradeUserId } from './handlers/sessionHandlers.js';
-import { handleCursorUpdate } from './handlers/cursorHandlers.js';
+import { MESSAGE_TYPES } from "../../shared/wsMessageTypes.js";
+import {
+  handleJoinSession,
+  handleUpgradeUserId,
+  handleDowngradeUserId,
+} from "./handlers/sessionHandlers.js";
+import { handleCursorUpdate } from "./handlers/cursorHandlers.js";
 import {
   handleElementGrab,
   handleElementMove,
@@ -10,12 +14,16 @@ import {
   handleElementCreate,
   handleElementDelete,
   handleElementResize,
-  handleElementResizeEnd
-} from './handlers/elementHandlers.js';
-import { handleMakeEditor, handleRemoveEditor, handleKickUser } from './handlers/permissionHandlers.js';
-import { handleProjectNameChange } from './handlers/projectHandlers.js';
-import { handleUndo, handleRedo } from './handlers/undoRedoHandlers.js';
-import { handleChatMessage } from './handlers/chatHandlers.js';
+  handleElementResizeEnd,
+} from "./handlers/elementHandlers.js";
+import {
+  handleMakeEditor,
+  handleRemoveEditor,
+  handleKickUser,
+} from "./handlers/permissionHandlers.js";
+import { handleProjectNameChange } from "./handlers/projectHandlers.js";
+import { handleUndo, handleRedo } from "./handlers/undoRedoHandlers.js";
+import { handleChatMessage } from "./handlers/chatHandlers.js";
 
 export function handleIncomingMessage(session, data, ws) {
   switch (data.type) {
