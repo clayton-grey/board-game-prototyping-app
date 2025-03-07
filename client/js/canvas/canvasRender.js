@@ -1,71 +1,76 @@
-/**
- * client/js/canvas/canvasRender.js
- *
- * Renders the canvas each frame: draws background, grid,
- * shapes, cursors, ephemeral creation, etc.
- */
+// =========================
+// FILE: client/js/canvas/canvasRender.js
+// =========================
 
 import { state } from "./canvasState.js";
+import { getCanvas2DContext, getEffectiveMajorSpacing } from "./canvasUtils.js";
 import {
-  getCanvas2DContext,
-  getEffectiveMajorSpacing,
-  boxesOverlap,
-} from "./canvasUtils.js";
+  drawRotationHandleScreenSpace,
+  getSelectionBoundingBox,
+} from "./canvasTools.js";
 
-// Track whether we’ve already scheduled a render
 let animId = null;
 
-/** requestRender() => schedule a new render pass (once) */
+/**
+ * requestRender => queue up a requestAnimationFrame if not already queued
+ */
 export function requestRender() {
   if (!animId) {
     animId = requestAnimationFrame(render);
   }
 }
 
-/** The main rendering loop. */
+/**
+ * Main render function
+ */
 function render() {
-  animId = null; // reset so we can schedule again
+  animId = null;
   const ctx = getCanvas2DContext();
   if (!ctx) return;
 
-  // Clear the entire canvas
+  // Clear entire canvas
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   ctx.restore();
 
-  // Fill background, draw grid
   fillBackground(ctx);
   drawGrid(ctx);
 
-  // Setup camera
+  // 1) Setup camera for world-space
   ctx.save();
   ctx.translate(-state.camX * state.scale, -state.camY * state.scale);
   ctx.scale(state.scale, state.scale);
 
-  // Draw the actual shapes
+  // 2) Draw shapes
   drawAllElements(ctx);
 
-  // Draw bounding box if selection
+  // 3) Draw bounding box (in world coords) if needed
+  let selectionBox = null;
   if (state.selectedElementIds.length && !state.creationState?.active) {
-    drawSelectionBoundingBox(ctx);
+    selectionBox = drawSelectionBoundingBox(ctx);
   }
 
-  // Ephemeral shape creation
+  // 4) Ephemeral shape creation
   drawEphemeralCreation(ctx);
 
+  // done with world transform
   ctx.restore();
 
-  // Marquee
+  // 5) Draw rotation handle in screen coords if there's a bounding box
+  if (selectionBox) {
+    drawRotationHandleScreenSpace(ctx, selectionBox);
+  }
+
+  // 6) Marquee in screen coords
   if (state.isMarqueeSelecting) {
     drawMarquee(ctx);
   }
 
-  // Remote cursors
+  // 7) Remote cursors in screen coords
   drawRemoteCursors(ctx);
 }
 
-/** Fill the screen with a neutral background. */
 function fillBackground(ctx) {
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -74,7 +79,6 @@ function fillBackground(ctx) {
   ctx.restore();
 }
 
-/** Draw a grid that scales with zoom. */
 function drawGrid(ctx) {
   ctx.save();
   ctx.translate(-state.camX * state.scale, -state.camY * state.scale);
@@ -102,7 +106,6 @@ function drawGrid(ctx) {
   }
   ctx.stroke();
 
-  // Sub-lines if fraction > 0
   if (fraction > 0) {
     ctx.strokeStyle = `rgba(230,230,230,${fraction})`;
     const subSpacing = majorSpacing / 4;
@@ -127,68 +130,66 @@ function drawGrid(ctx) {
   ctx.restore();
 }
 
-/** Draw all elements (rect, ellipse, text, etc.). */
+/**
+ * Draw all shapes, applying rotation if el.angle is defined.
+ */
 function drawAllElements(ctx) {
   for (const el of state.elements) {
     ctx.save();
-    ctx.fillStyle = "#CCC";
 
+    // If 'angle' is in degrees, convert to radians
+    const angleDeg = el.angle || 0;
+    const angleRad = (angleDeg * Math.PI) / 180;
+
+    // Move origin to shape center => rotate => then draw
+    const cx = el.x + el.w / 2;
+    const cy = el.y + el.h / 2;
+    ctx.translate(cx, cy);
+    ctx.rotate(angleRad);
+    ctx.translate(-el.w / 2, -el.h / 2);
+
+    // Fill shape
     if (el.shape === "ellipse") {
       ctx.beginPath();
-      ctx.ellipse(
-        el.x + el.w / 2,
-        el.y + el.h / 2,
-        el.w / 2,
-        el.h / 2,
-        0,
-        0,
-        Math.PI * 2,
-      );
+      ctx.ellipse(0, 0, el.w / 2, el.h / 2, 0, 0, Math.PI * 2);
+      ctx.fillStyle = "#CCC";
       ctx.fill();
     } else if (el.shape === "text") {
-      // placeholder text box
       ctx.fillStyle = "#FFE";
-      ctx.fillRect(el.x, el.y, el.w, el.h);
+      ctx.fillRect(0, 0, el.w, el.h);
       ctx.fillStyle = "#333";
       ctx.font = "14px sans-serif";
-      ctx.fillText("Text", el.x + 5, el.y + el.h / 2 + 5);
+      ctx.fillText("Text", 5, el.h / 2 + 5);
     } else {
       // rectangle
-      ctx.fillRect(el.x, el.y, el.w, el.h);
+      ctx.fillStyle = "#CCC";
+      ctx.fillRect(0, 0, el.w, el.h);
     }
 
     // Outline if locked by someone else
     if (el.lockedBy && el.lockedBy !== state.localUserId) {
       const info = state.userInfoMap.get(el.lockedBy);
       const outlineColor = info?.color || "#FFA500";
-      ctx.lineWidth = 2 / state.scale;
+      ctx.lineWidth = 2;
       ctx.strokeStyle = outlineColor;
       if (el.shape === "ellipse") {
         ctx.beginPath();
-        ctx.ellipse(
-          el.x + el.w / 2,
-          el.y + el.h / 2,
-          el.w / 2,
-          el.h / 2,
-          0,
-          0,
-          Math.PI * 2,
-        );
+        ctx.ellipse(0, 0, el.w / 2, el.h / 2, 0, 0, Math.PI * 2);
         ctx.stroke();
       } else {
-        ctx.strokeRect(el.x, el.y, el.w, el.h);
+        ctx.strokeRect(0, 0, el.w, el.h);
       }
     }
     ctx.restore();
   }
 }
 
-/** Draw bounding box + corner handles for selected shapes. */
 function drawSelectionBoundingBox(ctx) {
   let minX = Infinity,
     minY = Infinity,
     maxX = -Infinity,
     maxY = -Infinity;
+
   for (const id of state.selectedElementIds) {
     const el = state.elements.find((e) => e.id === id);
     if (!el) continue;
@@ -197,14 +198,16 @@ function drawSelectionBoundingBox(ctx) {
     maxX = Math.max(maxX, el.x + el.w);
     maxY = Math.max(maxY, el.y + el.h);
   }
-  if (minX > maxX || minY > maxY) return;
+  if (minX > maxX || minY > maxY) {
+    return null;
+  }
 
   ctx.save();
   ctx.strokeStyle = "rgba(0,0,255,0.8)";
   ctx.lineWidth = 2 / state.scale;
   ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
 
-  // corner handles
+  // Draw corner handles
   const radius = 6 / state.scale;
   const cornerStroke = 4 / state.scale;
   const corners = [
@@ -223,9 +226,10 @@ function drawSelectionBoundingBox(ctx) {
     ctx.stroke();
   }
   ctx.restore();
+
+  return { minX, minY, maxX, maxY };
 }
 
-/** Ephemeral shape creation => uses creationState {startWX, startWY, curWX, curWY}. */
 function drawEphemeralCreation(ctx) {
   if (!state.creationState?.active) return;
   const { tool, startWX, startWY, curWX, curWY } = state.creationState;
@@ -241,16 +245,11 @@ function drawEphemeralCreation(ctx) {
     h = side;
   }
   if (tool === "text") {
-    // default text height
-    const TEXT_DEFAULT_HEIGHT = 30;
-    h = TEXT_DEFAULT_HEIGHT;
+    h = 30;
   }
-
-  // If shape is too small, don't bother showing anything
   if (w < 1 && h < 1) return;
 
   ctx.save();
-  // We’re already in camera space, so these coords match up exactly
   ctx.beginPath();
   if (tool === "ellipse") {
     ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
@@ -259,13 +258,13 @@ function drawEphemeralCreation(ctx) {
   }
   ctx.fillStyle = "rgba(255,0,0,0.2)";
   ctx.fill();
-  ctx.strokeStyle = "red";
   ctx.lineWidth = 2 / state.scale;
+  ctx.strokeStyle = "red";
   ctx.stroke();
   ctx.restore();
 }
 
-/** Draw a marquee in screen coordinates for selection. */
+/** Draw marquee in screen coords */
 function drawMarquee(ctx) {
   const rx = Math.min(state.marqueeStart.xCanvas, state.marqueeEnd.xCanvas);
   const ry = Math.min(state.marqueeStart.yCanvas, state.marqueeEnd.yCanvas);
@@ -273,7 +272,7 @@ function drawMarquee(ctx) {
   const rh = Math.abs(state.marqueeEnd.yCanvas - state.marqueeStart.yCanvas);
 
   ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0); // screen coords
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.beginPath();
   ctx.rect(rx, ry, rw, rh);
   ctx.fillStyle = "rgba(0,0,255,0.2)";
@@ -284,7 +283,7 @@ function drawMarquee(ctx) {
   ctx.restore();
 }
 
-/** Draw remote user cursors. */
+/** Draw remote cursors in screen coords */
 function drawRemoteCursors(ctx) {
   ctx.save();
   for (const [uId, pos] of state.remoteCursors.entries()) {
@@ -292,6 +291,7 @@ function drawRemoteCursors(ctx) {
     const info = state.userInfoMap.get(uId);
     const outlineColor = info?.color || "#FFA500";
 
+    // Convert world coords -> screen coords
     const sx = (pos.x - state.camX) * state.scale;
     const sy = (pos.y - state.camY) * state.scale;
 
@@ -307,7 +307,6 @@ function drawRemoteCursors(ctx) {
     ctx.lineTo(9, 3);
     ctx.lineTo(0, 0);
     ctx.closePath();
-
     ctx.fillStyle = "white";
     ctx.fill();
     ctx.strokeStyle = outlineColor;
@@ -316,7 +315,7 @@ function drawRemoteCursors(ctx) {
 
     ctx.font = "6px sans-serif";
     ctx.fillStyle = "#000";
-    let label = info?.name || uId;
+    const label = info?.name || uId;
     ctx.fillText(label, 10, 6);
 
     ctx.restore();

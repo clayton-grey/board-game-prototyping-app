@@ -1,23 +1,13 @@
-// =========================
-// FILE: server/ws/handlers/elementHandlers.js
-// =========================
-
+// ./server/ws/handlers/elementHandlers.js
 import { broadcastElementState } from "../collabUtils.js";
 import { pushUndoAction } from "./undoRedoHandlers.js";
 import { sessionGuard } from "./handlerUtils.js";
 
-/** Helper to check if element is locked by another user. */
 function isElementLockedByOthers(element, userId) {
   return element.lockedBy && element.lockedBy !== userId;
 }
 
-/**
- * finalizeAllPendingMovesForUser:
- *  - For every entry in session.pendingMoves belonging to userId,
- *    create a "move" diff if the element's current position is different
- *    from the old position, then push a single "move" action.
- *  - Clears those entries from session.pendingMoves so they won't be combined.
- */
+// Finalize all pending moves for user ...
 function finalizeAllPendingMovesForUser(session, userId) {
   if (!session.pendingMoves) return;
   const diffs = [];
@@ -26,7 +16,6 @@ function finalizeAllPendingMovesForUser(session, userId) {
     if (moveData.userId !== userId) continue;
 
     const el = session.elements.find((e) => e.id === elId);
-    // remove from map
     session.pendingMoves.delete(elId);
 
     if (!el) continue;
@@ -45,13 +34,7 @@ function finalizeAllPendingMovesForUser(session, userId) {
   }
 }
 
-/**
- * finalizeAllPendingResizesForUser:
- *  - Looks up the userMap in session.pendingResizes
- *  - For each element, if it has changed size/pos from original => create a diff.
- *  - Then push one "resize" action.
- *  - Clears userMap from session.pendingResizes.
- */
+// Finalize all pending resizes ...
 function finalizeAllPendingResizesForUser(session, userId) {
   if (!session.pendingResizes) return;
   const userMap = session.pendingResizes.get(userId);
@@ -79,20 +62,46 @@ function finalizeAllPendingResizesForUser(session, userId) {
   session.pendingResizes.delete(userId);
 
   if (diffs.length > 0) {
-    const action = {
-      type: "resize",
-      diffs,
-    };
+    const action = { type: "resize", diffs };
+    pushUndoAction(session, action);
+  }
+}
+
+/**
+ * NEW: finalizeAllPendingRotationsForUser
+ * Similar approach: gather "from->to" angle diffs and push to undo stack.
+ */
+function finalizeAllPendingRotationsForUser(session, userId) {
+  if (!session.pendingRotations) return;
+  const userMap = session.pendingRotations.get(userId);
+  if (!userMap) return;
+
+  const diffs = [];
+  for (const [elId, originalAngle] of userMap.entries()) {
+    const el = session.elements.find((e) => e.id === elId);
+    if (!el) continue;
+
+    if (el.angle !== originalAngle) {
+      diffs.push({
+        elementId: elId,
+        fromAngle: originalAngle,
+        toAngle: el.angle,
+      });
+    }
+  }
+  userMap.clear();
+  session.pendingRotations.delete(userId);
+
+  if (diffs.length > 0) {
+    const action = { type: "rotate", diffs };
     pushUndoAction(session, action);
   }
 }
 
 export const handleElementGrab = sessionGuard((session, data, ws) => {
   const { userId, elementId } = data;
-
-  // If user was previously resizing but never ended, finalize it,
-  // so we don't merge a move operation with a partial resize.
   finalizeAllPendingResizesForUser(session, userId);
+  finalizeAllPendingRotationsForUser(session, userId);
 
   const el = session.elements.find((e) => e.id === elementId);
   if (!el) return;
@@ -105,8 +114,8 @@ export const handleElementGrab = sessionGuard((session, data, ws) => {
 export const handleElementMove = sessionGuard((session, data, ws) => {
   const { userId, elementId, x, y } = data;
 
-  // Switching from a resize to a move => finalize any partial resizes
   finalizeAllPendingResizesForUser(session, userId);
+  finalizeAllPendingRotationsForUser(session, userId);
 
   const el = session.elements.find((e) => e.id === elementId);
   if (!el) return;
@@ -131,18 +140,9 @@ export const handleElementMove = sessionGuard((session, data, ws) => {
 export const handleElementRelease = sessionGuard((session, data, ws) => {
   const { userId } = data;
 
-  // On pointer up for a move => finalize all pending moves for this user
+  // finalize moves only
   finalizeAllPendingMovesForUser(session, userId);
-
-  // We intentionally do NOT unlock the element here.
-  // This allows the user to continue a subsequent operation (like resize)
-  // without re-selecting. If you prefer to unlock on pointer-up, re-add:
-  //
-  //   const el = session.elements.find((e) => e.id === elementId);
-  //   if (el && el.lockedBy === userId) {
-  //     el.lockedBy = null;
-  //   }
-
+  // we do NOT unlock the element here by design
   broadcastElementState(session);
 });
 
@@ -150,12 +150,10 @@ export const handleElementDeselect = sessionGuard((session, data, ws) => {
   const { userId, elementIds } = data;
   if (!Array.isArray(elementIds)) return;
 
-  // Finalize any moves for user
   finalizeAllPendingMovesForUser(session, userId);
-  // Also finalize any resizes for user
   finalizeAllPendingResizesForUser(session, userId);
+  finalizeAllPendingRotationsForUser(session, userId);
 
-  // Unlock all requested elements
   for (const elementId of elementIds) {
     const el = session.elements.find((e) => e.id === elementId);
     if (el && el.lockedBy === userId) {
@@ -169,9 +167,9 @@ export const handleElementCreate = sessionGuard((session, data, ws) => {
   const { userId, shape, x, y, w, h } = data;
   if (!userId || !shape) return;
 
-  // If user had a pending move or resize, finalize them first
   finalizeAllPendingMovesForUser(session, userId);
   finalizeAllPendingResizesForUser(session, userId);
+  finalizeAllPendingRotationsForUser(session, userId);
 
   let maxId = 0;
   for (const e of session.elements) {
@@ -186,6 +184,7 @@ export const handleElementCreate = sessionGuard((session, data, ws) => {
     y,
     w,
     h,
+    angle: 0, // NEW: default angle
     lockedBy: userId,
   };
   session.elements.push(newElement);
@@ -212,9 +211,9 @@ export const handleElementDelete = sessionGuard((session, data, ws) => {
   const { userId, elementIds } = data;
   if (!Array.isArray(elementIds) || elementIds.length === 0) return;
 
-  // If user had a pending move or resize, finalize them
   finalizeAllPendingMovesForUser(session, userId);
   finalizeAllPendingResizesForUser(session, userId);
+  finalizeAllPendingRotationsForUser(session, userId);
 
   const toDelete = [];
   for (const id of elementIds) {
@@ -222,7 +221,7 @@ export const handleElementDelete = sessionGuard((session, data, ws) => {
     if (idx >= 0) {
       const el = session.elements[idx];
       if (isElementLockedByOthers(el, userId)) {
-        continue; // skip locked by another user
+        continue;
       }
       toDelete.push({ ...el });
       session.elements.splice(idx, 1);
@@ -253,8 +252,8 @@ export const handleElementDelete = sessionGuard((session, data, ws) => {
 export const handleElementResize = sessionGuard((session, data, ws) => {
   const { userId, elementId, x, y, w, h } = data;
 
-  // Switching from a move to a resize => finalize any partial moves
   finalizeAllPendingMovesForUser(session, userId);
+  finalizeAllPendingRotationsForUser(session, userId);
 
   const el = session.elements.find((e) => e.id === elementId);
   if (!el) return;
@@ -290,13 +289,54 @@ export const handleElementResizeEnd = sessionGuard((session, data, ws) => {
     broadcastElementState(session);
     return;
   }
+  finalizeAllPendingResizesForUser(session, userId);
+  broadcastElementState(session);
+});
 
-  // finalize all resizes for this user
+/* ------------------------------------------------------------------
+   NEW: Rotation Handlers
+------------------------------------------------------------------ */
+export const handleElementRotate = sessionGuard((session, data, ws) => {
+  const { userId, elementId, angle } = data;
+  console.log(userId, elementId, angle);
+  // finalize moves/resizes so they don't merge
+  finalizeAllPendingMovesForUser(session, userId);
   finalizeAllPendingResizesForUser(session, userId);
 
-  // We do NOT unlock the elements here,
-  // so the user can continue to move them without reselecting.
-  // If you want them unlocked, you can do so here, but that would require reselecting.
+  const el = session.elements.find((e) => e.id === elementId);
+  if (!el) return;
+  if (isElementLockedByOthers(el, userId)) return;
 
+  // auto-lock if not locked
+  if (!el.lockedBy) {
+    el.lockedBy = userId;
+  }
+  if (el.lockedBy !== userId) return;
+
+  if (!session.pendingRotations) {
+    session.pendingRotations = new Map();
+  }
+  let userMap = session.pendingRotations.get(userId);
+  if (!userMap) {
+    userMap = new Map();
+    session.pendingRotations.set(userId, userMap);
+  }
+  if (!userMap.has(elementId)) {
+    userMap.set(elementId, el.angle); // store original angle
+  }
+
+  // update element's angle
+  el.angle = angle;
+  broadcastElementState(session);
+});
+
+export const handleElementRotateEnd = sessionGuard((session, data, ws) => {
+  const { userId, elementIds } = data;
+  if (!Array.isArray(elementIds) || elementIds.length === 0) {
+    broadcastElementState(session);
+    return;
+  }
+  // finalize rotation diffs into an undo action
+  finalizeAllPendingRotationsForUser(session, userId);
   broadcastElementState(session);
 });

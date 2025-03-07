@@ -1,16 +1,8 @@
-// =========================
-// FILE: server/ws/handlers/undoRedoHandlers.js
-// =========================
-
+// ./server/ws/handlers/undoRedoHandlers.js
 import { MESSAGE_TYPES } from "../../../shared/wsMessageTypes.js";
 import { broadcastElementState } from "../collabUtils.js";
 import { sessionGuard } from "./handlerUtils.js";
 
-/**
- * pushUndoAction:
- *  - Clears the redoStack
- *  - Appends this action to the undoStack
- */
 export function pushUndoAction(session, action) {
   session.redoStack = [];
   session.undoStack.push(action);
@@ -19,10 +11,6 @@ export function pushUndoAction(session, action) {
   }
 }
 
-/**
- * handleUndo:
- *  - Pop from undoStack, revert it, push onto redoStack
- */
 export const handleUndo = sessionGuard((session, data, ws) => {
   const { userId } = data;
 
@@ -47,10 +35,6 @@ export const handleUndo = sessionGuard((session, data, ws) => {
   broadcastElementState(session);
 });
 
-/**
- * handleRedo:
- *  - Pop from redoStack, re-apply it, push onto undoStack
- */
 export const handleRedo = sessionGuard((session, data, ws) => {
   const { userId } = data;
 
@@ -75,17 +59,21 @@ export const handleRedo = sessionGuard((session, data, ws) => {
   broadcastElementState(session);
 });
 
-/**
- * canApplyAction => returns false if any element is locked by another user.
- */
 function canApplyAction(session, action, userId) {
   if (!action?.diffs || !Array.isArray(action.diffs)) return true;
-  if (!["move", "create", "delete", "resize"].includes(action.type))
+  if (!["move", "create", "delete", "resize", "rotate"].includes(action.type))
     return true;
 
   for (const diff of action.diffs) {
-    // For delete, the elementId is 'diff.id'; for others it's 'diff.elementId'
-    const elId = action.type === "delete" ? diff.id : diff.elementId;
+    let elId;
+    if (action.type === "delete") {
+      elId = diff.id;
+    } else if (action.type === "rotate") {
+      elId = diff.elementId;
+    } else {
+      elId = diff.elementId;
+    }
+
     const el = session.elements.find((e) => e.id === elId);
     if (!el) continue;
     if (el.lockedBy && el.lockedBy !== userId) {
@@ -116,6 +104,7 @@ function applyAction(session, action) {
             y: diff.y,
             w: diff.w,
             h: diff.h,
+            angle: diff.angle || 0,
             lockedBy: null,
           });
         }
@@ -137,6 +126,13 @@ function applyAction(session, action) {
         el.y = diff.to.y;
         el.w = diff.to.w;
         el.h = diff.to.h;
+      }
+      break;
+    case "rotate":
+      for (const diff of action.diffs) {
+        const el = session.elements.find((e) => e.id === diff.elementId);
+        if (!el) continue;
+        el.angle = diff.toAngle;
       }
       break;
     default:
@@ -173,6 +169,7 @@ function revertAction(session, action) {
             y: d.y,
             w: d.w,
             h: d.h,
+            angle: d.angle || 0,
             lockedBy: null,
           });
         }
@@ -186,6 +183,13 @@ function revertAction(session, action) {
         el.y = diff.from.y;
         el.w = diff.from.w;
         el.h = diff.from.h;
+      }
+      break;
+    case "rotate":
+      for (const diff of action.diffs) {
+        const el = session.elements.find((e) => e.id === diff.elementId);
+        if (!el) continue;
+        el.angle = diff.fromAngle;
       }
       break;
     default:

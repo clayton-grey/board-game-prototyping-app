@@ -9,18 +9,106 @@ import { boxesOverlap } from "./canvasUtils.js";
 import { sendWSMessage } from "../../js/wsClient.js";
 
 /**
- * createOrUpdateElementsFromServer => sets state.elements to the latest from the server
- * and triggers re-render if needed.
+ * UTILITY: Called by canvasRender to get bounding box data
+ * for the selected shapes. Returns { minX, minY, maxX, maxY } or null.
  */
+export function getSelectionBoundingBox() {
+  if (!state.selectedElementIds.length) return null;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+
+  for (const id of state.selectedElementIds) {
+    const el = state.elements.find((e) => e.id === id);
+    if (!el) continue;
+    minX = Math.min(minX, el.x);
+    minY = Math.min(minY, el.y);
+    maxX = Math.max(maxX, el.x + el.w);
+    maxY = Math.max(maxY, el.y + el.h);
+  }
+  if (minX > maxX || minY > maxY) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+/**
+ * drawRotationHandleScreenSpace(ctx, {minX, minY, maxX, maxY})
+ *   - Called by canvasRender after the bounding box is drawn
+ *   - We compute bottom-right corner in world coords => convert to SCREEN coords
+ *   - Then offset by +20,+20 pixels and draw a circle in device pixels
+ */
+export function drawRotationHandleScreenSpace(ctx, bounds) {
+  const { minX, minY, maxX, maxY } = bounds;
+  const brWorldX = maxX;
+  const brWorldY = maxY;
+
+  // -- The core fix: multiply by window.devicePixelRatio so that
+  //    everything lines up consistently on HiDPI screens
+  const dpr = window.devicePixelRatio || 1;
+
+  const brScreenX = (brWorldX - state.camX) * state.scale * dpr;
+  const brScreenY = (brWorldY - state.camY) * state.scale * dpr;
+
+  const handleScreenX = brScreenX + 20; // +20 px offset in device coords
+  const handleScreenY = brScreenY + 20;
+
+  ctx.save();
+  // reset transform => we’re drawing in absolute screen coords
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  ctx.beginPath();
+  ctx.arc(handleScreenX, handleScreenY, 10, 0, Math.PI * 2);
+  ctx.fillStyle = "white";
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "blue";
+  ctx.stroke();
+
+  // optional small arc or arrow shape
+  ctx.beginPath();
+  ctx.arc(handleScreenX, handleScreenY, 8, 0, 2.2, false);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/**
+ * Check if the pointer event is on the rotation handle in screen space.
+ * Returns true if yes, false otherwise.
+ */
+function hitTestRotationHandle(e, canvas) {
+  const bounds = getSelectionBoundingBox();
+  if (!bounds) return false;
+
+  const { maxX, maxY } = bounds;
+  const dpr = window.devicePixelRatio || 1;
+
+  // Convert bounding-box corner to device coords
+  const brScreenX = (maxX - state.camX) * state.scale * dpr;
+  const brScreenY = (maxY - state.camY) * state.scale * dpr;
+
+  const handleX = brScreenX + 20;
+  const handleY = brScreenY + 20;
+  const radius = 10;
+
+  const rect = canvas.getBoundingClientRect();
+  // Convert pointer from clientX/clientY to device coords
+  const px = (e.clientX - rect.left) * dpr;
+  const py = (e.clientY - rect.top) * dpr;
+
+  const dx = px - handleX;
+  const dy = py - handleY;
+  return dx * dx + dy * dy <= radius * radius;
+}
+
+/* ------------------------------------------------------------------
+   CREATE / UPDATE / DELETE
+------------------------------------------------------------------ */
+
 export function createOrUpdateElementsFromServer(serverElements) {
   state.elements = serverElements || [];
 }
 
-/**
- * removeObsoleteSelections => clears any local selections that:
- * - no longer exist,
- * - or are locked by another user
- */
 export function removeObsoleteSelections(myUserId) {
   state.selectedElementIds = state.selectedElementIds.filter((id) => {
     const el = state.elements.find((e) => e.id === id);
@@ -35,9 +123,6 @@ export function removeObsoleteSelections(myUserId) {
   }
 }
 
-/**
- * handleCursorData => store remote cursors in state
- */
 export function handleCursorData(data, myUserId) {
   if (data.type === MESSAGE_TYPES.CURSOR_UPDATE) {
     if (data.userId !== myUserId) {
@@ -55,9 +140,6 @@ export function handleCursorData(data, myUserId) {
   }
 }
 
-/**
- * removeStaleRemoteCursors => remove cursors for user IDs not in current list
- */
 export function removeStaleRemoteCursors(currentUserIds) {
   for (const [uId] of state.remoteCursors) {
     if (!currentUserIds.includes(uId)) {
@@ -66,23 +148,30 @@ export function removeStaleRemoteCursors(currentUserIds) {
   }
 }
 
-/** Update local user ID */
 export function setLocalUserId(newId) {
   state.localUserId = newId;
 }
 
-/**
- * onPointerDownSelectOrCreate => called if user not resizing.
- * Decide if the user is selecting an existing shape or creating a new shape based on the active tool.
- */
+/* ------------------------------------------------------------------
+   Pointer logic for select/drag/resize/marquee/creation/ROTATION
+------------------------------------------------------------------ */
+
 export function onPointerDownSelectOrCreate(e, canvas) {
+  const tool = getCurrentTool();
+  // 1) Check rotation handle first
+  if (tool === "select" && hitTestRotationHandle(e, canvas)) {
+    startRotating(e, canvas);
+    canvas.classList.add("grabbing");
+    return;
+  }
+
+  // 2) Otherwise do the usual shape selection / marquee / creation
   const rect = canvas.getBoundingClientRect();
   const sx = e.clientX - rect.left;
   const sy = e.clientY - rect.top;
   const wx = state.camX + sx / state.scale;
   const wy = state.camY + sy / state.scale;
 
-  const tool = getCurrentTool();
   if (tool === "select") {
     const clicked = findTopmostElementAt(wx, wy);
     if (clicked) {
@@ -120,6 +209,10 @@ export function onPointerDownSelectOrCreate(e, canvas) {
     } else {
       // marquee
       state.isMarqueeSelecting = true;
+      state.isDragging = false;
+      canvas.classList.add("grabbing");
+
+      // For the marquee, store in both world and device coords
       state.marqueeStart.xCanvas = sx * window.devicePixelRatio;
       state.marqueeStart.yCanvas = sy * window.devicePixelRatio;
       state.marqueeEnd.xCanvas = state.marqueeStart.xCanvas;
@@ -133,16 +226,19 @@ export function onPointerDownSelectOrCreate(e, canvas) {
       if (!e.shiftKey) {
         deselectAll();
       }
-      state.isDragging = false;
-      canvas.classList.add("grabbing");
     }
   } else {
+    // shape creation
     startShapeCreation(tool, wx, wy);
   }
 }
 
-/** pointermove => if isDragging => doDragSelected, etc. */
 export function onPointerMoveCommon(e, canvas) {
+  if (state.isRotating) {
+    updateRotating(e, canvas);
+    requestRender();
+    return;
+  }
   if (state.isDragging && e.buttons & 1) {
     doDragSelected(e, canvas);
     return;
@@ -158,8 +254,12 @@ export function onPointerMoveCommon(e, canvas) {
   updateHoverCursor(e, canvas);
 }
 
-/** pointerup => end dragging, shape creation, or marquee */
 export function onPointerUpCommon(e, canvas) {
+  if (state.isRotating && e.button === 0) {
+    endRotating(false);
+    canvas.classList.remove("grabbing");
+    return;
+  }
   if (state.isDragging && e.button === 0) {
     state.isDragging = false;
     canvas.classList.remove("grabbing");
@@ -175,8 +275,10 @@ export function onPointerUpCommon(e, canvas) {
   }
 }
 
-/** pointercancel/leave => forcibly end if dragging or marquee. */
 export function onPointerCancelOrLeaveCommon(e) {
+  if (state.isRotating) {
+    endRotating(true);
+  }
   if (state.isDragging) {
     state.isDragging = false;
     for (const k of Object.keys(state.lockedOffsets)) {
@@ -186,124 +288,88 @@ export function onPointerCancelOrLeaveCommon(e) {
 }
 
 /* ------------------------------------------------------------------
-   SHAPE CREATION
+   ROTATION LOGIC
 ------------------------------------------------------------------ */
-function startShapeCreation(tool, wx, wy) {
-  state.creationState = {
-    active: true,
-    tool,
-    startWX: wx,
-    startWY: wy,
-    curWX: wx,
-    curWY: wy,
-  };
-}
 
-function updateShapeCreation(e, canvas) {
-  if (!state.creationState?.active) return;
-  const rect = canvas.getBoundingClientRect();
-  const sx = e.clientX - rect.left;
-  const sy = e.clientY - rect.top;
-  const wx = state.camX + sx / state.scale;
-  const wy = state.camY + sy / state.scale;
+export function startRotating(e, canvas) {
+  state.isRotating = true;
+  state.rotationSnapshot = [];
 
-  state.creationState.curWX = wx;
-  state.creationState.curWY = wy;
-}
+  const bounds = getSelectionBoundingBox();
+  if (!bounds) return;
+  const cx = (bounds.minX + bounds.maxX) / 2;
+  const cy = (bounds.minY + bounds.maxY) / 2;
+  state.rotationCenter = { x: cx, y: cy };
 
-function finalizeShapeCreation() {
-  if (!state.creationState) return;
-  const { tool, startWX, startWY, curWX, curWY } = state.creationState;
-  state.creationState.active = false;
-
-  let x = Math.min(startWX, curWX);
-  let y = Math.min(startWY, curWY);
-  let w = Math.abs(curWX - startWX);
-  let h = Math.abs(curWY - startWY);
-
-  if (state.shiftDown && (tool === "rectangle" || tool === "ellipse")) {
-    const side = Math.max(w, h);
-    w = side;
-    h = side;
-  }
-  if (tool === "text") {
-    const TEXT_DEFAULT_HEIGHT = 30;
-    h = TEXT_DEFAULT_HEIGHT;
-  }
-  if (w < 2 && h < 2) return;
-
-  x = Math.round(x);
-  y = Math.round(y);
-  w = Math.round(w);
-  h = Math.round(h);
-
-  deselectAll();
-  sendElementCreate(tool, x, y, w, h);
-  revertToSelectTool();
-}
-
-/* ------------------------------------------------------------------
-   DRAG SELECTED
------------------------------------------------------------------- */
-function doDragSelected(e, canvas) {
-  const rect = canvas.getBoundingClientRect();
-  const sx = e.clientX - rect.left;
-  const sy = e.clientY - rect.top;
-  const wx = state.camX + sx / state.scale;
-  const wy = state.camY + sy / state.scale;
-
+  // store old angles
   for (const id of state.selectedElementIds) {
-    const el = state.elements.find((ele) => ele.id === id);
-    if (el?.lockedBy === state.localUserId) {
-      const off = state.lockedOffsets[id];
-      if (off) {
-        const nx = wx - off.dx;
-        const ny = wy - off.dy;
-        sendMoveElement(id, nx, ny);
-      }
+    const el = state.elements.find((x) => x.id === id);
+    if (!el) continue;
+    if (el.lockedBy === state.localUserId) {
+      state.rotationSnapshot.push({ id, angle: el.angle || 0 });
     }
+  }
+
+  const { pointerAngle } = pointerAngleFromCenter(e, canvas, cx, cy);
+  state.rotationPointerStart = pointerAngle;
+}
+
+export function updateRotating(e, canvas) {
+  if (!state.isRotating) return;
+  const { x: cx, y: cy } = state.rotationCenter;
+  const { pointerAngle } = pointerAngleFromCenter(e, canvas, cx, cy);
+
+  let delta = pointerAngle - state.rotationPointerStart;
+  // SHIFT => snap to 15 degree increments
+  if (state.shiftDown) {
+    const degrees = (delta * 180) / Math.PI;
+    const snapped = Math.round(degrees / 15) * 15;
+    delta = (snapped * Math.PI) / 180;
+  }
+
+  for (const snap of state.rotationSnapshot) {
+    const el = state.elements.find((x) => x.id === snap.id);
+    if (!el) continue;
+    const newAngleDeg = snap.angle + (delta * 180) / Math.PI;
+    sendElementRotate(el.id, newAngleDeg);
   }
 }
 
-function updateMarquee(e, canvas) {
-  const rect = canvas.getBoundingClientRect();
-  state.marqueeEnd.xCanvas = (e.clientX - rect.left) * window.devicePixelRatio;
-  state.marqueeEnd.yCanvas = (e.clientY - rect.top) * window.devicePixelRatio;
+export function endRotating(forceCancel) {
+  state.isRotating = false;
+  if (!forceCancel && state.selectedElementIds.length) {
+    sendWSMessage({
+      type: MESSAGE_TYPES.ELEMENT_ROTATE_END,
+      userId: state.localUserId,
+      elementIds: state.selectedElementIds,
+    });
+  }
+  // cleanup
+  state.rotationSnapshot = [];
+  state.rotationCenter = null;
+  state.rotationPointerStart = 0;
+}
 
+function pointerAngleFromCenter(e, canvas, cx, cy) {
+  const rect = canvas.getBoundingClientRect();
   const sx = e.clientX - rect.left;
   const sy = e.clientY - rect.top;
-  state.marqueeEnd.xWorld = state.camX + sx / state.scale;
-  state.marqueeEnd.yWorld = state.camY + sy / state.scale;
+  const wx = state.camX + sx / state.scale;
+  const wy = state.camY + sy / state.scale;
+
+  const dx = wx - cx;
+  const dy = wy - cy;
+  const pointerAngle = Math.atan2(dy, dx);
+  return { pointerAngle };
 }
 
-function finalizeMarquee(e, canvas) {
-  state.isMarqueeSelecting = false;
-  canvas.classList.remove("grabbing");
-
-  const rminX = Math.min(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
-  const rmaxX = Math.max(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
-  const rminY = Math.min(state.marqueeStart.yWorld, state.marqueeEnd.yWorld);
-  const rmaxY = Math.max(state.marqueeStart.yWorld, state.marqueeEnd.yWorld);
-
-  const newlySelected = [];
-  for (const el of state.elements) {
-    if (el.lockedBy && el.lockedBy !== state.localUserId) continue;
-    const ex2 = el.x + el.w;
-    const ey2 = el.y + el.h;
-    if (!boxesOverlap(rminX, rminY, rmaxX, rmaxY, el.x, el.y, ex2, ey2)) {
-      continue;
-    }
-    newlySelected.push(el.id);
-  }
-  if (!e.shiftKey) {
-    deselectAll();
-  }
-  for (const id of newlySelected) {
-    if (!state.selectedElementIds.includes(id)) {
-      state.selectedElementIds.push(id);
-      sendGrabElement(id);
-    }
-  }
+function sendElementRotate(elementId, angleDeg) {
+  sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_ROTATE,
+    userId: state.localUserId,
+    elementId,
+    angle: angleDeg,
+  });
 }
 
 /* ------------------------------------------------------------------
@@ -311,22 +377,29 @@ function finalizeMarquee(e, canvas) {
 ------------------------------------------------------------------ */
 export function hitTestResizeHandles(e, canvas) {
   if (!canTransformSelection()) return null;
-  const bb = getSelectionBoundingBox();
-  if (!bb) return null;
+  const rawBB = getSelectionBoundingBox();
+  if (!rawBB) return null;
+
+  const { minX, minY, maxX, maxY } = rawBB;
+  const x = minX;
+  const y = minY;
+  const w = maxX - minX;
+  const h = maxY - minY;
+
+  const dpr = window.devicePixelRatio || 1;
 
   const rect = canvas.getBoundingClientRect();
-  const sx = e.clientX - rect.left;
+  const sx = e.clientX - rect.left; // screen coords in CSS pixels
   const sy = e.clientY - rect.top;
-
   const wx = state.camX + sx / state.scale;
   const wy = state.camY + sy / state.scale;
 
   const cornerRadius = 8 / state.scale;
   const corners = [
-    { x: bb.x, y: bb.y, name: "top-left" },
-    { x: bb.x + bb.w, y: bb.y, name: "top-right" },
-    { x: bb.x, y: bb.y + bb.h, name: "bottom-left" },
-    { x: bb.x + bb.w, y: bb.y + bb.h, name: "bottom-right" },
+    { x: x, y: y, name: "top-left" },
+    { x: x + w, y: y, name: "top-right" },
+    { x: x, y: y + h, name: "bottom-left" },
+    { x: x + w, y: y + h, name: "bottom-right" },
   ];
   for (const c of corners) {
     const dx = wx - c.x;
@@ -337,35 +410,25 @@ export function hitTestResizeHandles(e, canvas) {
   }
 
   const edgeTol = 6 / state.scale;
-  if (
-    wy >= bb.y - edgeTol &&
-    wy <= bb.y + edgeTol &&
-    wx >= bb.x &&
-    wx <= bb.x + bb.w
-  ) {
+  if (wy >= y - edgeTol && wy <= y + edgeTol && wx >= x && wx <= x + w) {
     return "top";
   }
   if (
-    wy >= bb.y + bb.h - edgeTol &&
-    wy <= bb.y + bb.h + edgeTol &&
-    wx >= bb.x &&
-    wx <= bb.x + bb.w
+    wy >= y + h - edgeTol &&
+    wy <= y + h + edgeTol &&
+    wx >= x &&
+    wx <= x + w
   ) {
     return "bottom";
   }
-  if (
-    wx >= bb.x - edgeTol &&
-    wx <= bb.x + edgeTol &&
-    wy >= bb.y &&
-    wy <= bb.y + bb.h
-  ) {
+  if (wx >= x - edgeTol && wx <= x + edgeTol && wy >= y && wy <= y + h) {
     return "left";
   }
   if (
-    wx >= bb.x + bb.w - edgeTol &&
-    wx <= bb.x + bb.w + edgeTol &&
-    wy >= bb.y &&
-    wy <= bb.y + bb.h
+    wx >= x + w - edgeTol &&
+    wx <= x + w + edgeTol &&
+    wy >= y &&
+    wy <= y + h
   ) {
     return "right";
   }
@@ -376,16 +439,19 @@ export function hitTestResizeHandles(e, canvas) {
 export function startResizing(handleName, e, canvas) {
   state.isResizing = true;
   state.activeHandle = handleName;
-  const bb = getSelectionBoundingBox();
-  if (!bb) return;
-  state.boundingBoxAtDragStart = { ...bb };
+  const rawBB = getSelectionBoundingBox();
+  if (!rawBB) return;
+  const { minX, minY, maxX, maxY } = rawBB;
+  const w = maxX - minX;
+  const h = maxY - minY;
+  state.boundingBoxAtDragStart = { x: minX, y: minY, w, h };
   state.shapesSnapshot = [];
 
   for (const id of state.selectedElementIds) {
     const el = state.elements.find((x) => x.id === id);
     if (!el) continue;
-    const relX = el.x - bb.x;
-    const relY = el.y - bb.y;
+    const relX = el.x - minX;
+    const relY = el.y - minY;
     state.shapesSnapshot.push({
       id: el.id,
       x: el.x,
@@ -524,8 +590,160 @@ export function endResizing(forceCancel) {
 }
 
 /* ------------------------------------------------------------------
-   UTILS
+   DRAGGING SELECTED
 ------------------------------------------------------------------ */
+
+export function doDragSelected(e, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  const wx = state.camX + sx / state.scale;
+  const wy = state.camY + sy / state.scale;
+
+  for (const id of state.selectedElementIds) {
+    const el = state.elements.find((ele) => ele.id === id);
+    if (el?.lockedBy === state.localUserId) {
+      const off = state.lockedOffsets[id];
+      if (off) {
+        const nx = wx - off.dx;
+        const ny = wy - off.dy;
+        sendMoveElement(id, nx, ny);
+      }
+    }
+  }
+}
+
+/* ------------------------------------------------------------------
+   MARQUEE
+------------------------------------------------------------------ */
+
+function updateMarquee(e, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  state.marqueeEnd.xCanvas = (e.clientX - rect.left) * window.devicePixelRatio;
+  state.marqueeEnd.yCanvas = (e.clientY - rect.top) * window.devicePixelRatio;
+
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  state.marqueeEnd.xWorld = state.camX + sx / state.scale;
+  state.marqueeEnd.yWorld = state.camY + sy / state.scale;
+}
+
+function finalizeMarquee(e, canvas) {
+  state.isMarqueeSelecting = false;
+  canvas.classList.remove("grabbing");
+
+  const rminX = Math.min(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
+  const rmaxX = Math.max(state.marqueeStart.xWorld, state.marqueeEnd.xWorld);
+  const rminY = Math.min(state.marqueeStart.yWorld, state.marqueeEnd.yWorld);
+  const rmaxY = Math.max(state.marqueeStart.yWorld, state.marqueeEnd.yWorld);
+
+  const newlySelected = [];
+  for (const el of state.elements) {
+    if (el.lockedBy && el.lockedBy !== state.localUserId) continue;
+    const ex2 = el.x + el.w;
+    const ey2 = el.y + el.h;
+    if (!boxesOverlap(rminX, rminY, rmaxX, rmaxY, el.x, el.y, ex2, ey2)) {
+      continue;
+    }
+    newlySelected.push(el.id);
+  }
+  if (!e.shiftKey) {
+    deselectAll();
+  }
+  for (const id of newlySelected) {
+    if (!state.selectedElementIds.includes(id)) {
+      state.selectedElementIds.push(id);
+      sendGrabElement(id);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------
+   SHAPE CREATION
+------------------------------------------------------------------ */
+
+function startShapeCreation(tool, wx, wy) {
+  state.creationState = {
+    active: true,
+    tool,
+    startWX: wx,
+    startWY: wy,
+    curWX: wx,
+    curWY: wy,
+  };
+}
+
+function updateShapeCreation(e, canvas) {
+  if (!state.creationState?.active) return;
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  const wx = state.camX + sx / state.scale;
+  const wy = state.camY + sy / state.scale;
+
+  state.creationState.curWX = wx;
+  state.creationState.curWY = wy;
+}
+
+function finalizeShapeCreation() {
+  if (!state.creationState) return;
+  const { tool, startWX, startWY, curWX, curWY } = state.creationState;
+  state.creationState.active = false;
+
+  let x = Math.min(startWX, curWX);
+  let y = Math.min(startWY, curWY);
+  let w = Math.abs(curWX - startWX);
+  let h = Math.abs(curWY - startWY);
+
+  if (state.shiftDown && (tool === "rectangle" || tool === "ellipse")) {
+    const side = Math.max(w, h);
+    w = side;
+    h = side;
+  }
+  if (tool === "text") {
+    // default text height
+    h = 30;
+  }
+  if (w < 2 && h < 2) return;
+
+  x = Math.round(x);
+  y = Math.round(y);
+  w = Math.round(w);
+  h = Math.round(h);
+
+  deselectAll();
+  sendElementCreate(tool, x, y, w, h);
+  revertToSelectTool();
+}
+
+/* ------------------------------------------------------------------
+   HOVER CURSOR
+------------------------------------------------------------------ */
+
+function updateHoverCursor(e, canvas) {
+  if (
+    !state.isPanning &&
+    !state.isResizing &&
+    !state.isDragging &&
+    !state.isRotating
+  ) {
+    const tool = getCurrentTool();
+    if (tool === "select" && canTransformSelection()) {
+      const handle = hitTestResizeHandles(e, canvas);
+      if (handle) {
+        canvas.style.cursor = getCursorForHandle(handle);
+        return;
+      }
+    }
+    canvas.style.cursor = "default";
+    canvas.style.cursor = "default";
+  }
+}
+
+/* ------------------------------------------------------------------
+   HELPERS
+------------------------------------------------------------------ */
+
 function findTopmostElementAt(wx, wy) {
   for (let i = state.elements.length - 1; i >= 0; i--) {
     const el = state.elements[i];
@@ -547,28 +765,6 @@ function findTopmostElementAt(wx, wy) {
   }
   return null;
 }
-
-function updateHoverCursor(e, canvas) {
-  if (!state.isPanning && !state.isResizing && !state.isDragging) {
-    const tool = getCurrentTool();
-    if (tool === "select" && canTransformSelection()) {
-      const handle = hitTestResizeHandles(e, canvas);
-      if (handle) {
-        canvas.style.cursor = getCursorForHandle(handle);
-        return;
-      }
-    }
-    canvas.style.cursor = "default";
-  }
-}
-
-function getCurrentTool() {
-  const palette = document.getElementById("tools-palette");
-  if (!palette) return "select";
-  const btn = palette.querySelector(".tool-btn.selected");
-  return btn?.dataset?.tool || "select";
-}
-
 function getCursorForHandle(handle) {
   switch (handle) {
     case "top-left":
@@ -588,6 +784,20 @@ function getCursorForHandle(handle) {
   }
 }
 
+export function deselectAll() {
+  if (state.selectedElementIds.length) {
+    sendDeselectElement(state.selectedElementIds);
+    state.selectedElementIds = [];
+  }
+}
+
+function getCurrentTool() {
+  const palette = document.getElementById("tools-palette");
+  if (!palette) return "select";
+  const btn = palette.querySelector(".tool-btn.selected");
+  return btn?.dataset?.tool || "select";
+}
+
 function canTransformSelection() {
   if (!state.selectedElementIds.length) return false;
   for (const id of state.selectedElementIds) {
@@ -598,49 +808,10 @@ function canTransformSelection() {
   return true;
 }
 
-function getSelectionBoundingBox() {
-  if (!state.selectedElementIds.length) return null;
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
-  for (const id of state.selectedElementIds) {
-    const el = state.elements.find((e) => e.id === id);
-    if (!el) continue;
-    minX = Math.min(minX, el.x);
-    minY = Math.min(minY, el.y);
-    maxX = Math.max(maxX, el.x + el.w);
-    maxY = Math.max(maxY, el.y + el.h);
-  }
-  if (minX > maxX || minY > maxY) return null;
-  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-}
-
-/**
- * Called to deselect all shapes.
- */
-export function deselectAll() {
-  if (state.selectedElementIds.length) {
-    sendDeselectElement(state.selectedElementIds);
-    state.selectedElementIds = [];
-  }
-}
-
-function revertToSelectTool() {
-  const palette = document.getElementById("tools-palette");
-  if (!palette) return;
-  const buttons = palette.querySelectorAll(".tool-btn");
-  buttons.forEach((b) => {
-    b.classList.remove("selected");
-    if (b.dataset.tool === "select") {
-      b.classList.add("selected");
-    }
-  });
-}
-
 /* ------------------------------------------------------------------
-   SEND
+   SEND MESSAGES
 ------------------------------------------------------------------ */
+
 function sendGrabElement(elementId) {
   sendWSMessage({
     type: MESSAGE_TYPES.ELEMENT_GRAB,
@@ -656,26 +827,6 @@ function sendMoveElement(elementId, x, y) {
     elementId,
     x,
     y,
-  });
-}
-
-function sendResizeElement(elementId, x, y, w, h) {
-  sendWSMessage({
-    type: MESSAGE_TYPES.ELEMENT_RESIZE,
-    userId: state.localUserId,
-    elementId,
-    x,
-    y,
-    w,
-    h,
-  });
-}
-
-function sendElementResizeEnd(ids) {
-  sendWSMessage({
-    type: MESSAGE_TYPES.ELEMENT_RESIZE_END,
-    userId: state.localUserId,
-    elementIds: ids,
   });
 }
 
@@ -700,5 +851,37 @@ function sendElementCreate(shape, x, y, w, h) {
     y,
     w,
     h,
+  });
+}
+
+function sendResizeElement(elementId, x, y, w, h) {
+  sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_RESIZE,
+    userId: state.localUserId,
+    elementId,
+    x,
+    y,
+    w,
+    h,
+  });
+}
+
+function sendElementResizeEnd(ids) {
+  sendWSMessage({
+    type: MESSAGE_TYPES.ELEMENT_RESIZE_END,
+    userId: state.localUserId,
+    elementIds: ids,
+  });
+}
+
+function revertToSelectTool() {
+  const palette = document.getElementById("tools-palette");
+  if (!palette) return;
+  const buttons = palette.querySelectorAll(".tool-btn");
+  buttons.forEach((b) => {
+    b.classList.remove("selected");
+    if (b.dataset.tool === "select") {
+      b.classList.add("selected");
+    }
   });
 }

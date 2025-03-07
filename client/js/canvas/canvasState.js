@@ -23,6 +23,11 @@ const state = {
   isMarqueeSelecting: false,
   shiftDown: false,
 
+  isRotating: false,
+  rotationCenter: { x: 0, y: 0 },
+  rotationPointerStart: 0,
+  rotationSnapshot: [], // array of { id, angle }
+
   // For ephemeral creation
   creationState: null, // { active, tool, startX, startY, curX, curY }
 

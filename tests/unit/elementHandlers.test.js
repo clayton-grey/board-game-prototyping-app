@@ -31,10 +31,69 @@ describe("elementHandlers", () => {
     mockSession = {
       code: "test-element-session",
       elements: [
-        { id: 1, x: 0, y: 0, w: 50, h: 50, lockedBy: null },
-        { id: 2, x: 10, y: 10, w: 100, h: 40, lockedBy: "someoneElse" },
+        { id: 1, x: 0, y: 0, w: 50, h: 50, angle: 0, lockedBy: null },
+        {
+          id: 2,
+          x: 10,
+          y: 10,
+          w: 100,
+          h: 40,
+          angle: 0,
+          lockedBy: "someoneElse",
+        },
       ],
     };
+  });
+
+  test("handleElementRotate => locks element if needed, updates angle, broadcasts", () => {
+    handleElementRotate(
+      mockSession,
+      { userId: "userA", elementId: 1, angle: 45 },
+      mockWs,
+    );
+    expect(mockSession.elements[0].lockedBy).toBe("userA");
+    expect(mockSession.elements[0].angle).toBe(45);
+    expect(broadcastElementState).toHaveBeenCalled();
+  });
+
+  test("handleElementRotate => does nothing if locked by another user", () => {
+    mockSession.elements[0].lockedBy = "someoneElse";
+    handleElementRotate(
+      mockSession,
+      { userId: "userA", elementId: 1, angle: 90 },
+      mockWs,
+    );
+    expect(mockSession.elements[0].angle).toBe(0); // unchanged
+    expect(broadcastElementState).not.toHaveBeenCalled();
+  });
+
+  test("handleElementRotateEnd => finalizes undo action if angle changed", () => {
+    // Suppose userA locked & changed angle from 0 to 30
+    mockSession.elements[0].lockedBy = "userA";
+    mockSession.elements[0].angle = 30;
+
+    // pendingRotations => oldAngle=0
+    mockSession.pendingRotations = new Map([["userA", new Map([[1, 0]])]]);
+
+    handleElementRotateEnd(
+      mockSession,
+      { userId: "userA", elementIds: [1] },
+      mockWs,
+    );
+    expect(pushUndoAction).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        type: "rotate",
+        diffs: [
+          {
+            elementId: 1,
+            fromAngle: 0,
+            toAngle: 30,
+          },
+        ],
+      }),
+    );
+    expect(broadcastElementState).toHaveBeenCalled();
   });
 
   test("handleElementGrab => locks element if not locked or locked by self", () => {
