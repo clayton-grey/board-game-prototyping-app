@@ -5,10 +5,6 @@
 import { MESSAGE_TYPES } from "../../../shared/wsMessageTypes.js";
 import { broadcastElementState } from "../collabUtils.js";
 import { sessionGuard } from "./handlerUtils.js";
-import {
-  finalizePendingMovesForUser,
-  finalizePendingResizesForUser,
-} from "./pendingActionsFinalizer.js";
 
 /**
  * pushUndoAction:
@@ -25,15 +21,10 @@ export function pushUndoAction(session, action) {
 
 /**
  * handleUndo:
- *  - Finalize any partial moves/resizes for the user
  *  - Pop from undoStack, revert it, push onto redoStack
  */
 export const handleUndo = sessionGuard((session, data, ws) => {
   const { userId } = data;
-
-  // Finalize partial moves/resizes, but mark isUndoRedo=true to skip immediate push
-  finalizePendingMovesForUser(session, userId, true);
-  finalizePendingResizesForUser(session, userId, true);
 
   if (session.undoStack.length === 0) {
     return;
@@ -58,13 +49,10 @@ export const handleUndo = sessionGuard((session, data, ws) => {
 
 /**
  * handleRedo:
- *  - Finalize partial moves/resizes
  *  - Pop from redoStack, re-apply it, push onto undoStack
  */
 export const handleRedo = sessionGuard((session, data, ws) => {
   const { userId } = data;
-  finalizePendingMovesForUser(session, userId, true);
-  finalizePendingResizesForUser(session, userId, true);
 
   if (session.redoStack.length === 0) {
     return;
@@ -96,6 +84,7 @@ function canApplyAction(session, action, userId) {
     return true;
 
   for (const diff of action.diffs) {
+    // For delete, the elementId is 'diff.id'; for others it's 'diff.elementId'
     const elId = action.type === "delete" ? diff.id : diff.elementId;
     const el = session.elements.find((e) => e.id === elId);
     if (!el) continue;
