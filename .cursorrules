@@ -1,0 +1,162 @@
+# Project Instructions
+
+This is a Node.js, Express, and WebSocket-based board game prototyping environment. The goal is to provide real-time collaborative features, user authentication with JWT, project versioning, and session management, all running in Docker with a PostgreSQL database.
+
+**Key Points**:
+- The app uses Node.js, Express, Postgres, and WebSockets.
+- Docker Compose is used for local development and testing.
+- Tests are organized into `unit/` and `integration/` folders under `tests/`, using Jest.
+
+---
+
+## Overview
+
+**Board Game Prototyping App**  
+Allows multiple users to connect, move game elements on a shared canvas, zoom/pan/resize, chat, and collaborate in real time. The server portion handles both REST routes and a WebSocket interface. A minimal client is provided in `client/`, with HTML/CSS/JS for the frontend.
+
+---
+
+## Tech Stack
+
+- **Backend**: Node.js, Express, WebSockets, PostgreSQL
+- **Frontend**: Plain HTML, CSS, JavaScript (in `client/`)
+- **Testing**: Jest (unit + integration)
+- **Containerization**: Docker & Docker Compose
+
+---
+
+## Project Structure
+
+- `server/`
+  - `app.js` – Main Express application
+  - `index.js` – Entry point (creates HTTP + WebSocket servers)
+  - `config.js` – Environment configuration
+  - `database.js` – PostgreSQL connection pool
+  - `routes/` – Express routes (auth, admin, projects, etc.)
+  - `services/` – Backend logic (UserService, ProjectService, etc.)
+  - `utils/` – Utility modules (HttpError, asyncHandler, etc.)
+  - `ws/` – WebSocket handling code (collaboration.js, messageDispatcher.js, handlers/)
+- `client/`
+  - `index.html` – Main client HTML
+  - `css/` – Client styles
+  - `js/` – Client scripts (canvas, wsClient, etc.)
+- `db-init-scripts/` – SQL scripts for DB initialization
+- `tests/`
+  - `unit/` – Unit tests
+  - `integration/` – Integration tests
+- `.env` – Environment variables for local development
+- `.env.test` – Environment variables for test environment
+- `docker-compose.yml` – Docker Compose config
+- `Dockerfile` – Server Dockerfile
+- `package.json` – Dependencies and scripts
+
+---
+
+## Rules
+
+Below are guidelines to keep the project consistent and maintainable.
+
+### General Rules
+
+1. **Consistent Naming**:  
+   - Prefer kebab case for filenames and folders (e.g., `project-service.js`) unless already established otherwise (e.g., `ProjectService.js`).
+   - Keep existing filenames as-is if they are already in common usage.
+
+2. **Imports**:
+   - Relative imports are acceptable (`import pool from "../database.js"`).
+   - If you add new library-style modules, place them in `server/utils/`, `server/services/`, or relevant folders for clarity.
+
+3. **Environment Variables**:
+   - When you add or remove environment variables, ensure they appear in both `.env` and `.env.test` (if relevant).
+   - Never commit sensitive values (like real passwords) into version control.  
+   - `JWT_SECRET` should remain private.  
+   - If you need different configuration for dev/test, keep them in separate `.env` files.
+
+4. **Error Handling**:
+   - Use the global Express error handler or throw an `HttpError` to standardize error responses.
+   - For async routes, use `asyncHandler` to avoid unhandled Promise rejections.
+
+5. **Docker**:
+   - The app is expected to run via `docker-compose up` in local development.
+   - The `db-init-scripts/` folder is mounted to auto-run `init.sql`.
+
+6. **Tests**:
+   - Use Jest for both unit and integration tests.
+   - Keep test files in either `tests/unit` or `tests/integration`.
+   - Maintain coverage for critical server features (auth, collaboration, database operations).
+   - If new environment variables are required in tests, update `.env.test`.
+
+7. **Commits & Pull Requests**:
+   - Keep commits focused; each commit or pull request should address a specific feature or fix.
+   - Ensure tests pass before merging changes.
+
+8. **Code Style**:
+   - Use Prettier (if desired) or a consistent code style for JavaScript/TypeScript files.
+   - Prefer consistent semicolons, quotes, and indentation rules.
+
+---
+
+### Express & WebSocket Rules
+
+- **Routes**:
+  - Place REST routes under `server/routes/`.
+  - Each main resource or feature (e.g., `auth`, `admin`, `projects`) has its own router file.
+
+- **Services**:
+  - Reusable logic that is separate from Express route handlers goes in `server/services/` (e.g., `UserService.js`, `ProjectService.js`).
+  - Keep business logic, DB queries, etc., out of the route files where possible.
+
+- **WebSocket**:
+  - The `server/ws/` folder contains code for real-time collaboration.
+  - The `collaboration.js` file sets up the connection; `messageDispatcher.js` routes messages to handlers.
+
+- **File Imports**:
+  - For internal server code, prefer relative imports. For the client, use standard script tags or ES modules in `index.html` if needed.
+
+---
+
+### Frontend Rules
+
+1. **Client Folder**:
+   - Plain HTML/CSS/JS in `client/`.
+   - The main entry is `index.html`. The primary JavaScript is under `client/js/`.
+
+2. **No Framework**:
+   - Currently, the project does not use React, Vue, or Next.js.
+   - Keep it simple with minimal bundling or direct script references.
+
+3. **Canvas & Collaboration**:
+   - The Canvas in `client/js/canvas.js` (and submodules) handles drawing, selection, and real-time events.
+   - The WebSocket client code in `client/js/wsClient.js` connects to the server.
+
+4. **DOM Structure**:
+   - If you add new UI elements, keep them semantically minimal (divs, spans, buttons).
+   - Place new CSS in `client/css/style.css` or a separate file if needed.
+
+5. **Testing Client Code**:
+   - For client tests that require DOM, use a `jest-environment jsdom`.
+   - See example client test in `tests/client/`.
+
+---
+
+### Type / Language Rules
+
+- **JavaScript**:
+  - The project is primarily JS (ES modules). If adding TypeScript, place `.ts` files consistently and configure `tsconfig.json` accordingly.
+  - No custom type directory is needed unless you introduce TypeScript definitions.
+
+- **Prefer Consistency**:
+  - Keep function and variable naming consistent with existing code.
+  - If you do add TypeScript, prefer interfaces for object shapes.
+
+---
+
+### Example Patterns
+
+**Registering a new user** (HTTP):
+```js
+// POST /auth/register
+// Body: { name, email, password, confirmPassword }
+router.post("/register", asyncHandler(async (req, res) => {
+  // ...
+}));

@@ -15,10 +15,14 @@ def collate_project(output_file):
             dirs[:] = [d for d in dirs if not d.startswith(".") and d != "node_modules"]
 
             for file in files:
+                # lets ignore tests for a sec
+                
                 if file in EXCLUDE:
                     continue
                 if any(file.endswith(ext) for ext in INCLUDE_EXTENSIONS):
                     file_path = os.path.join(root, file)
+                    if "/tests" in file_path:
+                        continue
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         out_f.write(f"\n\n===== {file_path} =====\n\n")
                         out_f.write(f.read())
