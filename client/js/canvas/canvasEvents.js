@@ -80,10 +80,8 @@ function onPointerDown(e) {
     // Check if user is about to resize
     if (!state.isResizing) {
       const tool = getCurrentTool();
-      console.log(tool);
       if (tool === "select" && canTransformSelection()) {
         const handle = hitTestResizeHandles(e, canvas);
-        console.log(handle);
         if (handle) {
           // Start resizing
           startResizing(handle, e, canvas);

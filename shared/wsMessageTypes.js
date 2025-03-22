@@ -17,9 +17,6 @@ export const MESSAGE_TYPES = {
   ELEMENT_RESIZE: "element-resize",
   ELEMENT_RESIZE_END: "element-resize-end",
 
-  ELEMENT_ROTATE: "element-rotate",
-  ELEMENT_ROTATE_END: "element-rotate-end",
-
   PROJECT_NAME_CHANGE: "project-name-change",
   SESSION_USERS: "session-users",
   UPGRADE_USER_ID: "upgrade-user-id",
